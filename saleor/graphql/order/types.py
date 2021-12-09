@@ -740,13 +740,14 @@ class Order(CountableDjangoObjectType):
         default_value=[],
         required=True,
     )
+    billing_address = graphene.Field("saleor.graphql.account.types.Address")
+    shipping_address = graphene.Field("saleor.graphql.account.types.Address")
 
     class Meta:
         description = "Represents an order in the shop."
         interfaces = [relay.Node, ObjectWithMetadata]
         model = models.Order
         only_fields = [
-            "billing_address",
             "created",
             "customer_note",
             "channel",
@@ -755,7 +756,6 @@ class Order(CountableDjangoObjectType):
             "display_gross_prices",
             "gift_cards",
             "id",
-            "shipping_address",
             "shipping_method_name",
             "collection_point_name",
             "shipping_price",
