@@ -354,6 +354,7 @@ class ShippingPriceTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a shipping method."
         model = shipping_models.ShippingMethod
+        object_type = shipping_types.ShippingMethod
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -363,10 +364,6 @@ class ShippingPriceTranslate(BaseTranslateMutation):
         response = super().perform_mutation(_root, info, **data)
         instance = ChannelContext(node=response.shippingMethod, channel_slug=None)
         return cls(**{cls._meta.return_field_name: instance})
-
-    @classmethod
-    def get_type_for_model(cls):
-        return shipping_types.ShippingMethod
 
     @classmethod
     def get_node_or_error(cls, info, node_id, field="id", only_type=None, qs=None):
@@ -388,6 +385,7 @@ class MenuItemTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a menu item."
         model = menu_models.MenuItem
+        object_type = shipping_types.ShippingMethod
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
