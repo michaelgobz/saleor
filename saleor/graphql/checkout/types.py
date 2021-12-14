@@ -17,6 +17,7 @@ from ..account.dataloaders import AddressByIdLoader
 from ..account.utils import requestor_has_access
 from ..channel import ChannelContext
 from ..channel.dataloaders import ChannelByCheckoutLineIDLoader, ChannelByIdLoader
+from ..channel.types import Channel
 from ..core.connection import CountableConnection, CountableDjangoObjectType
 from ..core.descriptions import ADDED_IN_31, DEPRECATED_IN_3X_FIELD
 from ..core.enums import LanguageCodeEnum
@@ -257,6 +258,7 @@ class Checkout(CountableDjangoObjectType):
     billing_address = graphene.Field("saleor.graphql.account.types.Address")
     shipping_address = graphene.Field("saleor.graphql.account.types.Address")
     user = graphene.Field("saleor.graphql.account.types.User")
+    channel = graphene.Field(Channel, required=True)
 
     class Meta:
         only_fields = [
@@ -265,7 +267,6 @@ class Checkout(CountableDjangoObjectType):
             "gift_cards",
             "is_shipping_required",
             "last_change",
-            "channel",
             "note",
             "translated_discount_name",
             "voucher_code",
