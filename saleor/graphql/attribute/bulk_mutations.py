@@ -4,6 +4,7 @@ from ...attribute import models
 from ...core.permissions import PageTypePermissions
 from ..core.mutations import ModelBulkDeleteMutation
 from ..core.types.common import AttributeError
+from .types import Attribute, AttributeValue
 
 
 class AttributeBulkDelete(ModelBulkDeleteMutation):
@@ -15,6 +16,7 @@ class AttributeBulkDelete(ModelBulkDeleteMutation):
     class Meta:
         description = "Deletes attributes."
         model = models.Attribute
+        object_type = Attribute
         permissions = (PageTypePermissions.MANAGE_PAGE_TYPES_AND_ATTRIBUTES,)
         error_type_class = AttributeError
         error_type_field = "attribute_errors"
@@ -31,6 +33,7 @@ class AttributeValueBulkDelete(ModelBulkDeleteMutation):
     class Meta:
         description = "Deletes values of attributes."
         model = models.AttributeValue
+        object_type = AttributeValue
         permissions = (PageTypePermissions.MANAGE_PAGE_TYPES_AND_ATTRIBUTES,)
         error_type_class = AttributeError
         error_type_field = "attribute_errors"

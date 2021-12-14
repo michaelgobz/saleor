@@ -10,20 +10,18 @@ from ...menu import models as menu_models
 from ...page import models as page_models
 from ...product import models as product_models
 from ...shipping import models as shipping_models
+from ..attribute.types import Attribute, AttributeValue
 from ..channel import ChannelContext
 from ..core.enums import LanguageCodeEnum
-from ..core.mutations import BaseMutation, ModelMutation, registry
+from ..core.mutations import BaseMutation, ModelMutation
 from ..core.types.common import TranslationError
-from ..product.types import Product, ProductVariant
+from ..discount.types import Sale, Voucher
+from ..menu.types import MenuItem
+from ..page.types import Page
+from ..product.types import Category, Collection, Product, ProductVariant
 from ..shipping import types as shipping_types
 from ..shop.types import Shop
 from . import types as translation_types
-
-# discount and menu types need to be imported to get
-# Voucher and Menu in the graphene registry
-from ..discount import types  # noqa # pylint: disable=unused-import, isort:skip
-from ..menu import types  # type: ignore # noqa # pylint: disable=unused-import, isort:skip
-
 
 TRANSLATABLE_CONTENT_TO_MODEL = {
     str(
@@ -73,17 +71,16 @@ class BaseTranslateMutation(ModelMutation):
 
         node_id = data["id"]
         node_type, node_pk = graphene.Node.from_global_id(node_id)
-        model_type = registry.get_type_for_model(cls._meta.model)
 
         # This mutation accepts either model IDs or translatable content IDs. Below we
         # check if provided ID refers to a translatable content which matches with the
         # expected model_type. If so, we transform the translatable content ID to model
         # ID.
         tc_model_type = TRANSLATABLE_CONTENT_TO_MODEL.get(node_type)
-        if tc_model_type and tc_model_type == str(model_type):
+        if tc_model_type and tc_model_type == str(cls._meta.object_type):
             node_id = graphene.Node.to_global_id(tc_model_type, node_pk)
 
-        return node_id, model_type
+        return node_id, cls._meta.object_type
 
     @classmethod
     def perform_mutation(cls, _root, info, **data):
@@ -140,6 +137,7 @@ class CategoryTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a category."
         model = product_models.Category
+        object_type = Category
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -159,6 +157,7 @@ class ProductTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a product."
         model = product_models.Product
+        object_type = Product
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -199,6 +198,7 @@ class CollectionTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a collection."
         model = product_models.Collection
+        object_type = Collection
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -224,6 +224,7 @@ class ProductVariantTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a product variant."
         model = product_models.ProductVariant
+        object_type = ProductVariant
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -268,6 +269,7 @@ class AttributeTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for an attribute."
         model = attribute_models.Attribute
+        object_type = Attribute
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -287,6 +289,7 @@ class AttributeValueTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for an attribute value."
         model = attribute_models.AttributeValue
+        object_type = AttributeValue
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -305,6 +308,7 @@ class SaleTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a sale."
         model = discount_models.Sale
+        object_type = Sale
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -329,6 +333,7 @@ class VoucherTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a voucher."
         model = discount_models.Voucher
+        object_type = Voucher
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -385,7 +390,7 @@ class MenuItemTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a menu item."
         model = menu_models.MenuItem
-        object_type = shipping_types.ShippingMethod
+        object_type = MenuItem
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)
@@ -415,6 +420,7 @@ class PageTranslate(BaseTranslateMutation):
     class Meta:
         description = "Creates/updates translations for a page."
         model = page_models.Page
+        object_type = Page
         error_type_class = TranslationError
         error_type_field = "translation_errors"
         permissions = (SitePermissions.MANAGE_TRANSLATIONS,)

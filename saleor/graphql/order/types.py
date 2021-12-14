@@ -694,6 +694,7 @@ class Order(CountableDjangoObjectType):
         description="The difference between the paid and the order total amount.",
         required=True,
     )
+    user = graphene.Field(User)
     user_email = graphene.String(
         required=False, description="Email address of the customer."
     )
@@ -764,7 +765,6 @@ class Order(CountableDjangoObjectType):
             "token",
             "tracking_client_id",
             "translated_discount_name",
-            "user",
             "voucher",
             "weight",
             "redirect_url",
