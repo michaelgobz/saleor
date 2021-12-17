@@ -40,7 +40,14 @@ from ..mutations.products import (
     ProductVariantInput,
     StockInput,
 )
-from ..types import Product, ProductType, ProductVariant
+from ..types import (
+    Category,
+    Collection,
+    Product,
+    ProductMedia,
+    ProductType,
+    ProductVariant,
+)
 from ..utils import (
     clean_variant_sku,
     create_stocks,
@@ -58,6 +65,7 @@ class CategoryBulkDelete(ModelBulkDeleteMutation):
     class Meta:
         description = "Deletes categories."
         model = models.Category
+        object_type = Category
         permissions = (ProductPermissions.MANAGE_PRODUCTS,)
         error_type_class = ProductError
         error_type_field = "product_errors"
@@ -76,6 +84,7 @@ class CollectionBulkDelete(ModelBulkDeleteMutation):
     class Meta:
         description = "Deletes collections."
         model = models.Collection
+        object_type = Collection
         permissions = (ProductPermissions.MANAGE_PRODUCTS,)
         error_type_class = CollectionError
         error_type_field = "collection_errors"
@@ -102,6 +111,7 @@ class ProductBulkDelete(ModelBulkDeleteMutation):
     class Meta:
         description = "Deletes products."
         model = models.Product
+        object_type = Product
         permissions = (ProductPermissions.MANAGE_PRODUCTS,)
         error_type_class = ProductError
         error_type_field = "product_errors"
@@ -554,6 +564,7 @@ class ProductVariantBulkDelete(ModelBulkDeleteMutation):
     class Meta:
         description = "Deletes product variants."
         model = models.ProductVariant
+        object_type = ProductVariant
         permissions = (ProductPermissions.MANAGE_PRODUCTS,)
         error_type_class = ProductError
         error_type_field = "product_errors"
@@ -826,6 +837,7 @@ class ProductTypeBulkDelete(ModelBulkDeleteMutation):
     class Meta:
         description = "Deletes product types."
         model = models.ProductType
+        object_type = ProductType
         permissions = (ProductTypePermissions.MANAGE_PRODUCT_TYPES_AND_ATTRIBUTES,)
         error_type_class = ProductError
         error_type_field = "product_errors"
@@ -862,6 +874,7 @@ class ProductMediaBulkDelete(ModelBulkDeleteMutation):
     class Meta:
         description = "Deletes product media."
         model = models.ProductMedia
+        object_type = ProductMedia
         permissions = (ProductPermissions.MANAGE_PRODUCTS,)
         error_type_class = ProductError
         error_type_field = "product_errors"
