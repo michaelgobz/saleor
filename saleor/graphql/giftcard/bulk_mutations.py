@@ -6,6 +6,7 @@ from ...giftcard import events, models
 from ..core.descriptions import ADDED_IN_31
 from ..core.mutations import BaseBulkMutation, ModelBulkDeleteMutation
 from ..core.types.common import GiftCardError
+from .types import GiftCard
 
 
 class GiftCardBulkDelete(ModelBulkDeleteMutation):
@@ -17,6 +18,7 @@ class GiftCardBulkDelete(ModelBulkDeleteMutation):
     class Meta:
         description = f"{ADDED_IN_31} Delete gift cards."
         model = models.GiftCard
+        object_type = GiftCard
         permissions = (GiftcardPermissions.MANAGE_GIFT_CARD,)
         error_type_class = GiftCardError
 
@@ -30,6 +32,7 @@ class GiftCardBulkActivate(BaseBulkMutation):
     class Meta:
         description = f"{ADDED_IN_31} Activate gift cards."
         model = models.GiftCard
+        object_type = GiftCard
         permissions = (GiftcardPermissions.MANAGE_GIFT_CARD,)
         error_type_class = GiftCardError
 
@@ -55,6 +58,7 @@ class GiftCardBulkDeactivate(BaseBulkMutation):
     class Meta:
         description = f"{ADDED_IN_31} Deactivate gift cards."
         model = models.GiftCard
+        object_type = GiftCard
         permissions = (GiftcardPermissions.MANAGE_GIFT_CARD,)
         error_type_class = GiftCardError
 
