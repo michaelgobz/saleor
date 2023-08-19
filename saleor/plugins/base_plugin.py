@@ -29,8 +29,10 @@ from ..payment.interface import (
     CustomerSource,
     GatewayResponse,
     InitializedPaymentResponse,
+    ListStoredPaymentMethodsRequestData,
     PaymentData,
     PaymentGateway,
+    PaymentMethodData,
     TransactionActionData,
     TransactionSessionResult,
 )
@@ -170,6 +172,24 @@ class BasePlugin:
     # Overwrite this method if you need to trigger specific logic after an account
     # change email is requested.
     account_change_email_requested: Callable[["User", str, str, str, str, None], None]
+
+    # Trigger when account set password is requested.
+    #
+    # Overwrite this method if you need to trigger specific logic after an account
+    # set password is requested.
+    account_set_password_requested: Callable[["User", str, str, str, None], None]
+
+    # Trigger when account delete is confirmed.
+    #
+    # Overwrite this method if you need to trigger specific logic after an account
+    # delete is confirmed.
+    account_deleted: Callable[["User", None], None]
+
+    # Trigger when account email is changed.
+    #
+    # Overwrite this method if you need to trigger specific logic after an account
+    # email is changed.
+    account_email_changed: Callable[["User", None], None]
 
     # Trigger when account delete is requested.
     #
@@ -663,6 +683,11 @@ class BasePlugin:
 
     list_payment_sources: Callable[[str, Any], List["CustomerSource"]]
 
+    list_stored_payment_methods: Callable[
+        ["ListStoredPaymentMethodsRequestData", list["PaymentMethodData"]],
+        list["PaymentMethodData"],
+    ]
+
     # Trigger when menu is created.
     #
     # Overwrite this method if you need to trigger specific logic after a menu is
@@ -1027,6 +1052,12 @@ class BasePlugin:
     # Overwrite this method if you need to trigger specific logic after a staff user is
     # deleted.
     staff_deleted: Callable[["User", Any], Any]
+
+    # Trigger when setting a password for staff is requested.
+    #
+    # Overwrite this method if you need to trigger specific logic after set
+    # password for staff is requested.
+    staff_set_password_requested: Callable[["User", str, str, str, None], None]
 
     # Trigger when thumbnail is updated.
     thumbnail_created: Callable[["Thumbnail", Any], Any]

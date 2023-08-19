@@ -13,7 +13,11 @@ from ...graphql.shop.types import Shop
 from ...menu.models import MenuItemTranslation
 from ...order.utils import get_all_shipping_methods_for_order
 from ...page.models import PageTranslation
-from ...payment.interface import TransactionActionData, TransactionSessionData
+from ...payment.interface import (
+    ListStoredPaymentMethodsRequestData,
+    TransactionActionData,
+    TransactionSessionData,
+)
 from ...product.models import (
     CategoryTranslation,
     CollectionTranslation,
@@ -177,7 +181,7 @@ class AccountOperationBase(AbstractType):
 
 class AccountConfirmed(SubscriptionObjectType, AccountOperationBase):
     class Meta:
-        root_type = "User"
+        root_type = None
         enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when account is confirmed." + ADDED_IN_315
@@ -214,12 +218,42 @@ class AccountChangeEmailRequested(SubscriptionObjectType, AccountOperationBase):
         return data["new_email"]
 
 
+class AccountEmailChanged(SubscriptionObjectType, AccountOperationBase):
+    new_email = graphene.String(
+        description="The new email address.",
+    )
+
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
+        description = "Event sent when account email is changed." + ADDED_IN_315
+
+
+class AccountSetPasswordRequested(SubscriptionObjectType, AccountOperationBase):
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
+        description = (
+            "Event sent when setting a new password is requested." + ADDED_IN_315
+        )
+
+
 class AccountDeleteRequested(SubscriptionObjectType, AccountOperationBase):
     class Meta:
         root_type = "User"
         enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when account delete is requested." + ADDED_IN_315
+
+
+class AccountDeleted(SubscriptionObjectType, AccountOperationBase):
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
+        description = "Event sent when account is deleted." + ADDED_IN_315
 
 
 class AddressBase(AbstractType):
@@ -1521,6 +1555,17 @@ class StaffDeleted(SubscriptionObjectType, UserBase):
         description = "Event sent when staff user is deleted." + ADDED_IN_35
 
 
+class StaffSetPasswordRequested(SubscriptionObjectType, AccountOperationBase):
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
+        description = (
+            "Event sent when setting a new password for staff is requested."
+            + ADDED_IN_315
+        )
+
+
 class TransactionAction(SubscriptionObjectType, AbstractType):
     action_type = graphene.Field(
         TransactionActionEnum,
@@ -1752,6 +1797,48 @@ class TransactionProcessSession(TransactionSessionBase):
             + PREVIEW_FEATURE
         )
         doc_category = DOC_CATEGORY_PAYMENTS
+
+
+class ListStoredPaymentMethods(SubscriptionObjectType):
+    user = graphene.Field(
+        UserType,
+        description=(
+            "The user for which the app should return a list of payment methods."
+        ),
+        required=True,
+    )
+    channel = graphene.Field(
+        "saleor.graphql.channel.types.Channel",
+        description=(
+            "Channel in context which was used to fetch the list of payment methods."
+        ),
+        required=True,
+    )
+
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
+        description = (
+            "List payment methods stored for the user by payment gateway."
+            + ADDED_IN_315
+            + PREVIEW_FEATURE
+        )
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+    @classmethod
+    def resolve_user(
+        cls, root: tuple[str, ListStoredPaymentMethodsRequestData], _info: ResolveInfo
+    ):
+        _, payment_method_data = root
+        return payment_method_data.user
+
+    @classmethod
+    def resolve_channel(
+        cls, root: tuple[str, ListStoredPaymentMethodsRequestData], _info: ResolveInfo
+    ):
+        _, payment_method_data = root
+        return payment_method_data.channel
 
 
 class TransactionItemMetadataUpdated(SubscriptionObjectType):
@@ -2141,8 +2228,11 @@ class ThumbnailCreated(SubscriptionObjectType):
 WEBHOOK_TYPES_MAP = {
     WebhookEventAsyncType.ACCOUNT_CONFIRMATION_REQUESTED: AccountConfirmationRequested,
     WebhookEventAsyncType.ACCOUNT_CHANGE_EMAIL_REQUESTED: AccountChangeEmailRequested,
+    WebhookEventAsyncType.ACCOUNT_EMAIL_CHANGED: AccountEmailChanged,
+    WebhookEventAsyncType.ACCOUNT_SET_PASSWORD_REQUESTED: AccountSetPasswordRequested,
     WebhookEventAsyncType.ACCOUNT_CONFIRMED: AccountConfirmed,
     WebhookEventAsyncType.ACCOUNT_DELETE_REQUESTED: AccountDeleteRequested,
+    WebhookEventAsyncType.ACCOUNT_DELETED: AccountDeleted,
     WebhookEventAsyncType.ADDRESS_CREATED: AddressCreated,
     WebhookEventAsyncType.ADDRESS_UPDATED: AddressUpdated,
     WebhookEventAsyncType.ADDRESS_DELETED: AddressDeleted,
@@ -2248,6 +2338,7 @@ WEBHOOK_TYPES_MAP = {
     WebhookEventAsyncType.STAFF_CREATED: StaffCreated,
     WebhookEventAsyncType.STAFF_UPDATED: StaffUpdated,
     WebhookEventAsyncType.STAFF_DELETED: StaffDeleted,
+    WebhookEventAsyncType.STAFF_SET_PASSWORD_REQUESTED: StaffSetPasswordRequested,
     WebhookEventAsyncType.TRANSACTION_ITEM_METADATA_UPDATED: (
         TransactionItemMetadataUpdated
     ),
@@ -2289,4 +2380,5 @@ WEBHOOK_TYPES_MAP = {
     WebhookEventSyncType.TRANSACTION_INITIALIZE_SESSION: TransactionInitializeSession,
     WebhookEventSyncType.TRANSACTION_PROCESS_SESSION: TransactionProcessSession,
     WebhookEventAsyncType.SHOP_METADATA_UPDATED: ShopMetadataUpdated,
+    WebhookEventSyncType.LIST_STORED_PAYMENT_METHODS: ListStoredPaymentMethods,
 }

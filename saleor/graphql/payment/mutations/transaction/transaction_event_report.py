@@ -113,6 +113,7 @@ class TransactionEventReport(ModelMutation):
     def update_transaction(
         cls,
         transaction: payment_models.TransactionItem,
+        transaction_event: payment_models.TransactionEvent,
         available_actions: Optional[list[str]] = None,
         app: Optional["App"] = None,
     ):
@@ -126,6 +127,20 @@ class TransactionEventReport(ModelMutation):
             "refund_pending_value",
             "cancel_pending_value",
         ]
+
+        if (
+            transaction_event.type
+            in [
+                TransactionEventType.AUTHORIZATION_REQUEST,
+                TransactionEventType.AUTHORIZATION_SUCCESS,
+                TransactionEventType.CHARGE_REQUEST,
+                TransactionEventType.CHARGE_SUCCESS,
+            ]
+            and not transaction.psp_reference
+        ):
+            transaction.psp_reference = transaction_event.psp_reference
+            fields_to_update.append("psp_reference")
+
         if available_actions is not None:
             transaction.available_actions = available_actions
             fields_to_update.append("available_actions")
@@ -196,6 +211,10 @@ class TransactionEventReport(ModelMutation):
         )
 
         cls.clean_instance(info, transaction_event)
+
+        if available_actions is not None:
+            available_actions = list(set(available_actions))
+
         already_processed = False
         error_code = None
         error_msg = None
@@ -239,6 +258,7 @@ class TransactionEventReport(ModelMutation):
             previous_refunded_value = transaction.refunded_value
             cls.update_transaction(
                 transaction,
+                transaction_event,
                 available_actions=available_actions,
                 app=app,
             )
@@ -270,6 +290,11 @@ class TransactionEventReport(ModelMutation):
             if transaction.checkout_id:
                 manager = get_plugin_manager_promise(info.context).get()
                 transaction_amounts_for_checkout_updated(transaction, manager)
+        elif available_actions is not None and set(
+            transaction.available_actions
+        ) != set(available_actions):
+            transaction.available_actions = available_actions
+            transaction.save(update_fields=["available_actions"])
 
         return cls(
             already_processed=already_processed,

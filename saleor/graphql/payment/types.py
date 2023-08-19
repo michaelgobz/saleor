@@ -7,6 +7,7 @@ from graphene import relay
 
 from ...core.exceptions import PermissionDenied
 from ...payment import models
+from ...payment.interface import PaymentMethodData
 from ...permission.enums import OrderPermissions
 from ..account.dataloaders import UserByUserIdLoader
 from ..app.dataloaders import AppByIdLoader, AppsByAppIdentifierLoader
@@ -18,10 +19,12 @@ from ..core.descriptions import (
     ADDED_IN_34,
     ADDED_IN_36,
     ADDED_IN_313,
+    ADDED_IN_315,
     PREVIEW_FEATURE,
 )
 from ..core.doc_category import DOC_CATEGORY_PAYMENTS
 from ..core.fields import JSONString, PermissionsField
+from ..core.scalars import JSON
 from ..core.tracing import traced_resolver
 from ..core.types import BaseObjectType, ModelObjectType, Money, NonNullList
 from ..meta.permissions import public_payment_permissions
@@ -36,6 +39,7 @@ from .dataloaders import (
 from .enums import (
     OrderAction,
     PaymentChargeStatusEnum,
+    TokenizedPaymentFlowEnum,
     TransactionActionEnum,
     TransactionEventTypeEnum,
     TransactionKindEnum,
@@ -43,14 +47,28 @@ from .enums import (
 
 
 class Transaction(ModelObjectType[models.Transaction]):
-    id = graphene.GlobalID(required=True)
-    created = graphene.DateTime(required=True)
-    payment = graphene.Field(lambda: Payment, required=True)
-    token = graphene.String(required=True)
-    kind = TransactionKindEnum(required=True)
-    is_success = graphene.Boolean(required=True)
-    error = graphene.String()
-    gateway_response = JSONString(required=True)
+    id = graphene.GlobalID(required=True, description="ID of the transaction.")
+    created = graphene.DateTime(
+        required=True, description="Date and time which transaction was created."
+    )
+    payment = graphene.Field(
+        lambda: Payment,
+        required=True,
+        description="Determines the payment associated with a transaction.",
+    )
+    token = graphene.String(
+        required=True, description="Unique token associated with a transaction."
+    )
+    kind = TransactionKindEnum(
+        required=True, description="Determines the type of transaction."
+    )
+    is_success = graphene.Boolean(
+        required=True, description="Determines if the transaction was successful."
+    )
+    error = graphene.String(description="Error associated with transaction, if any.")
+    gateway_response = JSONString(
+        required=True, description="Response returned by payment gateway."
+    )
     amount = graphene.Field(Money, description="Total amount of the transaction.")
 
     class Meta:
@@ -113,15 +131,33 @@ class PaymentSource(BaseObjectType):
 
 
 class Payment(ModelObjectType[models.Payment]):
-    id = graphene.GlobalID(required=True)
-    gateway = graphene.String(required=True)
-    is_active = graphene.Boolean(required=True)
-    created = graphene.DateTime(required=True)
-    modified = graphene.DateTime(required=True)
-    token = graphene.String(required=True)
-    checkout = graphene.Field("saleor.graphql.checkout.types.Checkout")
-    order = graphene.Field("saleor.graphql.order.types.Order")
-    payment_method_type = graphene.String(required=True)
+    id = graphene.GlobalID(required=True, description="ID of the payment.")
+    gateway = graphene.String(
+        required=True, description="Payment gateway used for payment."
+    )
+    is_active = graphene.Boolean(
+        required=True, description="Determines if the payment is active or not."
+    )
+    created = graphene.DateTime(
+        required=True, description="Date and time at which payment was created."
+    )
+    modified = graphene.DateTime(
+        required=True, description="Date and time at which payment was modified."
+    )
+    token = graphene.String(
+        required=True, description="Unique token associated with a payment."
+    )
+    checkout = graphene.Field(
+        "saleor.graphql.checkout.types.Checkout",
+        description="Checkout associated with a payment.",
+    )
+    order = graphene.Field(
+        "saleor.graphql.order.types.Order",
+        description="Order associated with a payment.",
+    )
+    payment_method_type = graphene.String(
+        required=True, description="Type of method used for payment."
+    )
     customer_ip_address = PermissionsField(
         graphene.String,
         description="IP address of the user who created the payment.",
@@ -266,7 +302,10 @@ class PaymentInitialized(BaseObjectType):
 
 
 class TransactionEvent(ModelObjectType[models.TransactionEvent]):
-    created_at = graphene.DateTime(required=True)
+    created_at = graphene.DateTime(
+        required=True,
+        description="Date and time at which a transaction event was created.",
+    )
     psp_reference = graphene.String(
         description="PSP reference of transaction." + ADDED_IN_313, required=True
     )
@@ -343,8 +382,14 @@ class TransactionEvent(ModelObjectType[models.TransactionEvent]):
 
 
 class TransactionItem(ModelObjectType[models.TransactionItem]):
-    created_at = graphene.DateTime(required=True)
-    modified_at = graphene.DateTime(required=True)
+    created_at = graphene.DateTime(
+        required=True,
+        description="Date and time at which payment transaction was created.",
+    )
+    modified_at = graphene.DateTime(
+        required=True,
+        description="Date and time at which payment transaction was modified.",
+    )
     actions = NonNullList(
         TransactionActionEnum,
         description=(
@@ -547,3 +592,87 @@ class TransactionItem(ModelObjectType[models.TransactionItem]):
             return model.objects.get(lookup)
         except model.DoesNotExist:
             return None
+
+
+class GatewayConfigLine(BaseObjectType):
+    field = graphene.String(required=True, description="Gateway config key.")
+    value = graphene.String(description="Gateway config value for key.")
+
+    class Meta:
+        description = "Payment gateway client configuration key and value pair."
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+
+class PaymentGateway(BaseObjectType):
+    name = graphene.String(required=True, description="Payment gateway name.")
+    id = graphene.ID(required=True, description="Payment gateway ID.")
+    config = NonNullList(
+        GatewayConfigLine,
+        required=True,
+        description="Payment gateway client configuration.",
+    )
+    currencies = NonNullList(
+        graphene.String,
+        required=True,
+        description="Payment gateway supported currencies.",
+    )
+
+    class Meta:
+        description = (
+            "Available payment gateway backend with configuration "
+            "necessary to setup client."
+        )
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+
+class StoredPaymentMethod(BaseObjectType):
+    id = graphene.ID(required=True, description="Stored payment method ID.")
+
+    gateway = graphene.Field(
+        PaymentGateway,
+        required=True,
+        description="Payment gateway that stores this payment method.",
+    )
+    payment_method_id = graphene.String(
+        description=(
+            "ID of stored payment method used to make payment actions. "
+            "Note: method ID is unique only within the payment gateway."
+        ),
+        required=True,
+    )
+
+    credit_card_info = graphene.Field(
+        CreditCard,
+        required=False,
+        description="Stored credit card details if available.",
+    )
+
+    supported_payment_flows = graphene.Field(NonNullList(TokenizedPaymentFlowEnum))
+
+    type = graphene.String(
+        required=True,
+        description="Type of the payment method. Example: credit card, wallet, etc.",
+    )
+    name = graphene.String(
+        description=(
+            "Payment method name. Example: last 4 digits of credit card, obfuscated "
+            "email, etc."
+        )
+    )
+    data = graphene.Field(
+        JSON,
+        description=(
+            "JSON data returned by Payment Provider app for this payment method."
+        ),
+    )
+
+    class Meta:
+        description = (
+            "Represents a payment method stored for user (tokenized) in payment "
+            "gateway." + ADDED_IN_315 + PREVIEW_FEATURE
+        )
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+    @staticmethod
+    def resolve_payment_method_id(root: PaymentMethodData, _info: ResolveInfo):
+        return root.external_id
