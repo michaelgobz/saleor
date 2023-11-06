@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
+from functools import partial
 from unittest import mock
+from unittest.mock import ANY
 
 import graphene
 import pytest
@@ -11,12 +13,15 @@ from django.utils.text import slugify
 from freezegun import freeze_time
 
 from .....attribute.models import AttributeValue
+from .....attribute.tests.model_helpers import (
+    get_page_attribute_values,
+    get_page_attributes,
+)
 from .....attribute.utils import associate_attribute_values_to_instance
 from .....page.error_codes import PageErrorCode
 from .....page.models import Page
 from .....tests.utils import dummy_editorjs
 from .....webhook.event_types import WebhookEventAsyncType
-from .....webhook.payloads import generate_page_payload
 from ....tests.utils import get_graphql_content
 
 UPDATE_PAGE_MUTATION = """
@@ -96,7 +101,6 @@ def test_update_page(staff_api_client, permission_manage_pages, page):
     assert data["page"]["slug"] == new_slug
 
     expected_attributes = []
-    page_attr = page.attributes.all()
     for attr in page_type.page_attributes.all():
         if attr.slug != tag_attr.slug:
             values = [
@@ -107,9 +111,9 @@ def test_update_page(staff_api_client, permission_manage_pages, page):
                     "reference": None,
                     "plainText": None,
                 }
-                for slug, name in page_attr.filter(
-                    assignment__attribute=attr
-                ).values_list("values__slug", "values__name")
+                for slug, name in get_page_attribute_values(page, attr).values_list(
+                    "slug", "name"
+                )
             ]
         else:
             values = [
@@ -177,13 +181,16 @@ def test_update_page_trigger_webhook(
     assert data["page"]["title"] == page_title
     assert data["page"]["slug"] == new_slug
     page.published_at = timezone.now()
-    expected_data = generate_page_payload(page, staff_api_client.user)
     mocked_webhook_trigger.assert_called_once_with(
-        expected_data,
+        None,
         WebhookEventAsyncType.PAGE_UPDATED,
         [any_webhook],
         page,
         SimpleLazyObject(lambda: staff_api_client.user),
+        legacy_data_generator=ANY,
+    )
+    assert isinstance(
+        mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
     )
 
 
@@ -221,7 +228,6 @@ def test_update_page_only_title(staff_api_client, permission_manage_pages, page)
     assert data["page"]["slug"] == new_slug
 
     expected_attributes = []
-    page_attr = page.attributes.all()
     for attr in page_type.page_attributes.all():
         values = [
             {
@@ -231,8 +237,8 @@ def test_update_page_only_title(staff_api_client, permission_manage_pages, page)
                 "reference": None,
                 "plainText": None,
             }
-            for slug, name in page_attr.filter(assignment__attribute=attr).values_list(
-                "values__slug", "values__name"
+            for slug, name in get_page_attribute_values(page, attr).values_list(
+                "slug", "name"
             )
         ]
         attr_data = {
@@ -353,8 +359,10 @@ def test_update_page_clear_values(staff_api_client, permission_manage_pages, pag
     # given
     query = UPDATE_PAGE_MUTATION
 
-    page_attr = page.attributes.first()
-    attribute = page_attr.assignment.attribute
+    page_attr = get_page_attributes(page).first()
+    assert page_attr is not None
+
+    attribute = page_attr
     attribute.value_required = False
     attribute.save(update_fields=["value_required"])
 
@@ -380,8 +388,7 @@ def test_update_page_clear_values(staff_api_client, permission_manage_pages, pag
     assert data["page"]
     assert not data["page"]["attributes"][0]["values"]
 
-    with pytest.raises(page_attr._meta.model.DoesNotExist):
-        page_attr.refresh_from_db()
+    assert not get_page_attribute_values(page, page_attr).exists()
 
 
 def test_update_page_with_page_reference_attribute_new_value(
@@ -1088,8 +1095,10 @@ def test_update_page_change_attribute_values_ordering(
         attr_value_1,
     )
 
+    attribute = get_page_attributes(page).first()
+    assert attribute is not None
     assert list(
-        page.attributes.first().pagevalueassignment.values_list("value_id", flat=True)
+        get_page_attribute_values(page, attribute).values_list("id", flat=True)
     ) == [attr_value_3.pk, attr_value_2.pk, attr_value_1.pk]
 
     new_ref_order = [product_list[1], product_list[0], product_list[2]]
@@ -1129,9 +1138,9 @@ def test_update_page_change_attribute_values_ordering(
         graphene.Node.to_global_id("AttributeValue", val.pk)
         for val in [attr_value_2, attr_value_1, attr_value_3]
     ]
-    page.refresh_from_db()
+
     assert list(
-        page.attributes.first().pagevalueassignment.values_list("value_id", flat=True)
+        get_page_attribute_values(page, attribute).values_list("id", flat=True)
     ) == [attr_value_2.pk, attr_value_1.pk, attr_value_3.pk]
 
 

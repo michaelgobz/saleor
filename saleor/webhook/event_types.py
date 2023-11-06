@@ -63,6 +63,7 @@ class WebhookEventAsyncType:
     GIFT_CARD_SENT = "gift_card_sent"
     GIFT_CARD_STATUS_CHANGED = "gift_card_status_changed"
     GIFT_CARD_METADATA_UPDATED = "gift_card_metadata_updated"
+    GIFT_CARD_EXPORT_COMPLETED = "gift_card_export_completed"
 
     MENU_CREATED = "menu_created"
     MENU_UPDATED = "menu_updated"
@@ -88,6 +89,7 @@ class WebhookEventAsyncType:
     FULFILLMENT_CANCELED = "fulfillment_canceled"
     FULFILLMENT_APPROVED = "fulfillment_approved"
     FULFILLMENT_METADATA_UPDATED = "fulfillment_metadata_updated"
+    FULFILLMENT_TRACKING_NUMBER_UPDATED = "fulfillment_tracking_number_updated"
 
     DRAFT_ORDER_CREATED = "draft_order_created"
     DRAFT_ORDER_UPDATED = "draft_order_updated"
@@ -97,6 +99,16 @@ class WebhookEventAsyncType:
     SALE_UPDATED = "sale_updated"
     SALE_DELETED = "sale_deleted"
     SALE_TOGGLE = "sale_toggle"
+
+    PROMOTION_CREATED = "promotion_created"
+    PROMOTION_UPDATED = "promotion_updated"
+    PROMOTION_DELETED = "promotion_deleted"
+    PROMOTION_STARTED = "promotion_started"
+    PROMOTION_ENDED = "promotion_ended"
+
+    PROMOTION_RULE_CREATED = "promotion_rule_created"
+    PROMOTION_RULE_UPDATED = "promotion_rule_updated"
+    PROMOTION_RULE_DELETED = "promotion_rule_deleted"
 
     INVOICE_REQUESTED = "invoice_requested"
     INVOICE_DELETED = "invoice_deleted"
@@ -116,6 +128,7 @@ class WebhookEventAsyncType:
     PRODUCT_UPDATED = "product_updated"
     PRODUCT_DELETED = "product_deleted"
     PRODUCT_METADATA_UPDATED = "product_metadata_updated"
+    PRODUCT_EXPORT_COMPLETED = "product_export_completed"
 
     PRODUCT_MEDIA_CREATED = "product_media_created"
     PRODUCT_MEDIA_UPDATED = "product_media_updated"
@@ -135,7 +148,7 @@ class WebhookEventAsyncType:
     CHECKOUT_FULLY_PAID = "checkout_fully_paid"
     CHECKOUT_METADATA_UPDATED = "checkout_metadata_updated"
 
-    NOTIFY_USER = "notify_user"
+    NOTIFY_USER = "notify_user"  # deprecated
 
     PAGE_CREATED = "page_created"
     PAGE_UPDATED = "page_updated"
@@ -177,6 +190,7 @@ class WebhookEventAsyncType:
     VOUCHER_UPDATED = "voucher_updated"
     VOUCHER_DELETED = "voucher_deleted"
     VOUCHER_METADATA_UPDATED = "voucher_metadata_updated"
+    VOUCHER_CODE_EXPORT_COMPLETED = "voucher_code_export_completed"
 
     OBSERVABILITY = "observability"
 
@@ -321,6 +335,10 @@ class WebhookEventAsyncType:
             "name": "Gift card metadata updated",
             "permission": GiftcardPermissions.MANAGE_GIFT_CARD,
         },
+        GIFT_CARD_EXPORT_COMPLETED: {
+            "name": "Gift card export completed",
+            "permission": GiftcardPermissions.MANAGE_GIFT_CARD,
+        },
         MENU_CREATED: {
             "name": "Menu created",
             "permission": MenuPermissions.MANAGE_MENUS,
@@ -409,6 +427,10 @@ class WebhookEventAsyncType:
             "name": "Fulfillment metadata updated",
             "permission": OrderPermissions.MANAGE_ORDERS,
         },
+        FULFILLMENT_TRACKING_NUMBER_UPDATED: {
+            "name": "Fulfillment tracking number updated.",
+            "permission": OrderPermissions.MANAGE_ORDERS,
+        },
         DRAFT_ORDER_CREATED: {
             "name": "Draft order created",
             "permission": OrderPermissions.MANAGE_ORDERS,
@@ -435,6 +457,38 @@ class WebhookEventAsyncType:
         },
         SALE_TOGGLE: {
             "name": "Sale toggle",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
+        PROMOTION_CREATED: {
+            "name": "Promotion created",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
+        PROMOTION_UPDATED: {
+            "name": "Promotion updated",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
+        PROMOTION_DELETED: {
+            "name": "Promotion deleted",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
+        PROMOTION_STARTED: {
+            "name": "Promotion started",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
+        PROMOTION_ENDED: {
+            "name": "Promotion ended",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
+        PROMOTION_RULE_CREATED: {
+            "name": "Promotion rule created",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
+        PROMOTION_RULE_UPDATED: {
+            "name": "Promotion rule updated",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
+        PROMOTION_RULE_DELETED: {
+            "name": "Promotion rule deleted",
             "permission": DiscountPermissions.MANAGE_DISCOUNTS,
         },
         INVOICE_REQUESTED: {
@@ -495,6 +549,10 @@ class WebhookEventAsyncType:
         },
         PRODUCT_METADATA_UPDATED: {
             "name": "Product metadata updated",
+            "permission": ProductPermissions.MANAGE_PRODUCTS,
+        },
+        PRODUCT_EXPORT_COMPLETED: {
+            "name": "Product export completed",
             "permission": ProductPermissions.MANAGE_PRODUCTS,
         },
         PRODUCT_MEDIA_CREATED: {
@@ -681,6 +739,10 @@ class WebhookEventAsyncType:
             "name": "Voucher metadata updated",
             "permission": DiscountPermissions.MANAGE_DISCOUNTS,
         },
+        VOUCHER_CODE_EXPORT_COMPLETED: {
+            "name": "Voucher code export completed",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
         OBSERVABILITY: {
             "name": "Observability",
             "permission": AppPermission.MANAGE_OBSERVABILITY,
@@ -733,6 +795,17 @@ class WebhookEventSyncType:
     TRANSACTION_PROCESS_SESSION = "transaction_process_session"
 
     LIST_STORED_PAYMENT_METHODS = "list_stored_payment_methods"
+    STORED_PAYMENT_METHOD_DELETE_REQUESTED = "stored_payment_method_delete_requested"
+
+    PAYMENT_GATEWAY_INITIALIZE_TOKENIZATION_SESSION = (
+        "payment_gateway_initialize_tokenization_session"
+    )
+    PAYMENT_METHOD_INITIALIZE_TOKENIZATION_SESSION = (
+        "payment_method_initialize_tokenization_session"
+    )
+    PAYMENT_METHOD_PROCESS_TOKENIZATION_SESSION = (
+        "payment_method_process_tokenization_session"
+    )
 
     EVENT_MAP: dict[str, dict[str, Any]] = {
         PAYMENT_LIST_GATEWAYS: {
@@ -809,6 +882,22 @@ class WebhookEventSyncType:
         },
         LIST_STORED_PAYMENT_METHODS: {
             "name": "List tokenized payment methods that can be used by the customer.",
+            "permission": PaymentPermissions.HANDLE_PAYMENTS,
+        },
+        STORED_PAYMENT_METHOD_DELETE_REQUESTED: {
+            "name": "Request deletion of a tokenized payment method.",
+            "permission": PaymentPermissions.HANDLE_PAYMENTS,
+        },
+        PAYMENT_GATEWAY_INITIALIZE_TOKENIZATION_SESSION: {
+            "name": "Initialize payment gateway tokenization session.",
+            "permission": PaymentPermissions.HANDLE_PAYMENTS,
+        },
+        PAYMENT_METHOD_INITIALIZE_TOKENIZATION_SESSION: {
+            "name": "Initialize payment method tokenization session.",
+            "permission": PaymentPermissions.HANDLE_PAYMENTS,
+        },
+        PAYMENT_METHOD_PROCESS_TOKENIZATION_SESSION: {
+            "name": "Process payment method tokenization.",
             "permission": PaymentPermissions.HANDLE_PAYMENTS,
         },
     }

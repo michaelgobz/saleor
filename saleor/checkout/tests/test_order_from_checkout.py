@@ -46,7 +46,7 @@ def test_create_order_insufficient_stock(
         )
 
 
-@pytest.mark.parametrize("is_anonymous_user", (True, False))
+@pytest.mark.parametrize("is_anonymous_user", [True, False])
 def test_create_order_with_gift_card(
     checkout_with_gift_card, customer_user, shipping_method, is_anonymous_user, app
 ):
@@ -148,6 +148,74 @@ def test_create_order_with_gift_card_partial_use(
     )
 
 
+def test_create_order_with_many_gift_cards_worth_more_than_total(
+    checkout_with_items_and_shipping,
+    gift_card_created_by_staff,
+    gift_card,
+    customer_user,
+    shipping_method,
+    app,
+):
+    # given
+    gift_card_1 = gift_card_created_by_staff
+    gift_card_2 = gift_card
+    checkout = checkout_with_items_and_shipping
+    checkout.user = customer_user
+    checkout.save()
+
+    manager = get_plugins_manager()
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    price_without_gift_card = calculations.checkout_total(
+        manager=manager,
+        checkout_info=checkout_info,
+        lines=lines,
+        address=checkout.shipping_address,
+    )
+    gift_card_2_old_balance = gift_card_2.current_balance.amount
+    gift_card_2_balance_halved = gift_card_2_old_balance / 2
+    gift_card_2_new_balance = (
+        price_without_gift_card.gross.amount - gift_card_2_balance_halved
+    )
+
+    gift_card_2.current_balance_amount = gift_card_2_new_balance
+    gift_card_2.initial_balance_amount = gift_card_2_new_balance
+    gift_card_2.save()
+    gift_cards_balance_before_order = (
+        gift_card_1.current_balance.amount + gift_card_2.current_balance.amount
+    )
+    checkout.gift_cards.add(gift_card_2, gift_card_1)
+    checkout.save()
+    checkout_lines, unavailable_variant_pks = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, checkout_lines, manager)
+
+    # when
+    order = create_order_from_checkout(
+        checkout_info=checkout_info,
+        manager=manager,
+        user=None,
+        app=app,
+    )
+    gift_card_1.refresh_from_db()
+    gift_card_2.refresh_from_db()
+    zero_price = zero_money(gift_card.currency)
+
+    # then
+    assert order.gift_cards.count() == 2
+    assert gift_card_1.current_balance == zero_price
+    assert gift_card_2.current_balance.amount == gift_card_2_balance_halved
+    assert price_without_gift_card.gross.amount == (
+        gift_cards_balance_before_order - gift_card_2_balance_halved
+    )
+    assert GiftCardEvent.objects.filter(
+        gift_card=gift_card_created_by_staff, type=GiftCardEvents.USED_IN_ORDER
+    )
+    assert GiftCardEvent.objects.filter(
+        gift_card=gift_card, type=GiftCardEvents.USED_IN_ORDER
+    )
+
+
 def test_create_order_with_many_gift_cards(
     checkout_with_item,
     gift_card_created_by_staff,
@@ -212,7 +280,7 @@ def test_create_order_with_many_gift_cards(
 
 
 @mock.patch("saleor.giftcard.utils.send_gift_card_notification")
-@pytest.mark.parametrize("is_anonymous_user", (True, False))
+@pytest.mark.parametrize("is_anonymous_user", [True, False])
 def test_create_order_gift_card_bought(
     send_notification_mock,
     checkout_with_gift_card_items,
@@ -292,7 +360,7 @@ def test_create_order_gift_card_bought(
 
 
 @mock.patch("saleor.giftcard.utils.send_gift_card_notification")
-@pytest.mark.parametrize("is_anonymous_user", (True, False))
+@pytest.mark.parametrize("is_anonymous_user", [True, False])
 def test_create_order_gift_card_bought_only_shippable_gift_card(
     send_notification_mock,
     checkout,
@@ -345,7 +413,7 @@ def test_create_order_gift_card_bought_only_shippable_gift_card(
     send_notification_mock.assert_not_called()
 
 
-@pytest.mark.parametrize("is_anonymous_user", (True, False))
+@pytest.mark.parametrize("is_anonymous_user", [True, False])
 def test_create_order_gift_card_bought_do_not_fulfill_gift_cards_automatically(
     site_settings,
     checkout_with_gift_card_items,
@@ -676,7 +744,7 @@ def test_note_in_created_order_checkout_line_deleted_in_the_meantime(
 
     # when
     with before_after.after(
-        "saleor.checkout.complete_checkout._increase_voucher_usage",
+        "saleor.checkout.complete_checkout._increase_voucher_code_usage",
         delete_checkout_line,
     ):
         order = create_order_from_checkout(
@@ -711,7 +779,7 @@ def test_note_in_created_order_checkout_deleted_in_the_meantime(
 
     # when
     with before_after.after(
-        "saleor.checkout.complete_checkout._increase_voucher_usage",
+        "saleor.checkout.complete_checkout._increase_voucher_code_usage",
         delete_checkout,
     ):
         order = create_order_from_checkout(
@@ -723,3 +791,47 @@ def test_note_in_created_order_checkout_deleted_in_the_meantime(
 
     # then
     assert order is None
+
+
+def test_create_order_product_on_promotion(
+    checkout_with_item_on_promotion,
+    customer_user,
+    shipping_method,
+    app,
+    promotion_without_rules,
+):
+    # given
+    checkout = checkout_with_item_on_promotion
+    checkout.user = customer_user
+    checkout.billing_address = customer_user.default_billing_address
+    checkout.shipping_address = customer_user.default_billing_address
+    checkout.shipping_method = shipping_method
+    checkout.tracking_code = "tracking_code"
+    checkout.redirect_url = "https://www.example.com"
+    checkout.save()
+
+    manager = get_plugins_manager()
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    # when
+    order = create_order_from_checkout(
+        checkout_info=checkout_info,
+        manager=manager,
+        user=None,
+        app=app,
+    )
+
+    # then
+    assert order.lines.count() == 1
+    line = order.lines.first()
+    assert line.discounts.count() == 1
+    assert line.sale_id
+    assert line.unit_discount_amount
+    assert line.unit_discount_reason
+    assert line.discounts.count() == 1
+    discount = line.discounts.first()
+    assert discount.promotion_rule
+    assert (
+        discount.amount_value == (order.undiscounted_total - order.total).gross.amount
+    )

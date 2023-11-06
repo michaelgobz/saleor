@@ -51,7 +51,11 @@ class RequestEmailChange(BaseMutation):
             WebhookEventInfo(
                 type=WebhookEventAsyncType.NOTIFY_USER,
                 description="A notification for account email change.",
-            )
+            ),
+            WebhookEventInfo(
+                type=WebhookEventAsyncType.ACCOUNT_CHANGE_EMAIL_REQUESTED,
+                description="An account email change was requested.",
+            ),
         ]
 
     @classmethod
@@ -64,7 +68,7 @@ class RequestEmailChange(BaseMutation):
         channel=None,
         new_email,
         password,
-        redirect_url
+        redirect_url,
     ):
         user = info.context.user
         user = cast(models.User, user)

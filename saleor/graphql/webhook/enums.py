@@ -8,6 +8,8 @@ from ..core.descriptions import (
     ADDED_IN_313,
     ADDED_IN_314,
     ADDED_IN_315,
+    ADDED_IN_316,
+    ADDED_IN_318,
     DEPRECATED_IN_3X_ENUM_VALUE,
     PREVIEW_FEATURE,
 )
@@ -96,6 +98,9 @@ WEBHOOK_EVENT_DESCRIPTION = {
     WebhookEventAsyncType.GIFT_CARD_METADATA_UPDATED: (
         "A gift card metadata is updated." + ADDED_IN_38
     ),
+    WebhookEventAsyncType.GIFT_CARD_EXPORT_COMPLETED: (
+        "A gift card export is completed." + ADDED_IN_316
+    ),
     WebhookEventAsyncType.INVOICE_REQUESTED: "An invoice for order requested.",
     WebhookEventAsyncType.INVOICE_DELETED: "An invoice is deleted.",
     WebhookEventAsyncType.INVOICE_SENT: "Invoice has been sent.",
@@ -105,7 +110,13 @@ WEBHOOK_EVENT_DESCRIPTION = {
     WebhookEventAsyncType.MENU_ITEM_CREATED: "A new menu item created.",
     WebhookEventAsyncType.MENU_ITEM_UPDATED: "A menu item is updated.",
     WebhookEventAsyncType.MENU_ITEM_DELETED: "A menu item is deleted.",
-    WebhookEventAsyncType.NOTIFY_USER: "User notification triggered.",
+    WebhookEventAsyncType.NOTIFY_USER: (
+        "User notification triggered."
+        + DEPRECATED_IN_3X_ENUM_VALUE
+        + " See the docs for more details about migrating from NOTIFY_USER to other "
+        "events: "
+        + "https://docs.saleor.io/docs/next/upgrade-guides/notify-user-deprecation"
+    ),
     WebhookEventAsyncType.ORDER_CREATED: "A new order is placed.",
     WebhookEventAsyncType.ORDER_CONFIRMED: order_confirmed_event_enum_description,
     WebhookEventAsyncType.ORDER_PAID: (
@@ -139,6 +150,14 @@ WEBHOOK_EVENT_DESCRIPTION = {
     WebhookEventAsyncType.SALE_UPDATED: "A sale is updated.",
     WebhookEventAsyncType.SALE_DELETED: "A sale is deleted.",
     WebhookEventAsyncType.SALE_TOGGLE: "A sale is activated or deactivated.",
+    WebhookEventAsyncType.PROMOTION_CREATED: "A promotion is created.",
+    WebhookEventAsyncType.PROMOTION_UPDATED: "A promotion is updated.",
+    WebhookEventAsyncType.PROMOTION_DELETED: "A promotion is deleted.",
+    WebhookEventAsyncType.PROMOTION_STARTED: "A promotion is activated.",
+    WebhookEventAsyncType.PROMOTION_ENDED: "A promotion is deactivated.",
+    WebhookEventAsyncType.PROMOTION_RULE_CREATED: "A promotion rule is created.",
+    WebhookEventAsyncType.PROMOTION_RULE_UPDATED: "A promotion rule is updated.",
+    WebhookEventAsyncType.PROMOTION_RULE_DELETED: "A promotion rule is deleted.",
     WebhookEventAsyncType.FULFILLMENT_CREATED: "A new fulfillment is created.",
     WebhookEventAsyncType.FULFILLMENT_CANCELED: "A fulfillment is cancelled.",
     WebhookEventAsyncType.FULFILLMENT_APPROVED: "A fulfillment is approved.",
@@ -183,6 +202,9 @@ WEBHOOK_EVENT_DESCRIPTION = {
     WebhookEventAsyncType.PRODUCT_VARIANT_STOCK_UPDATED: (
         "A product variant stock is updated"
     ),
+    WebhookEventAsyncType.PRODUCT_EXPORT_COMPLETED: (
+        "A product export is completed." + ADDED_IN_316
+    ),
     WebhookEventAsyncType.SHIPPING_PRICE_CREATED: "A new shipping price is created.",
     WebhookEventAsyncType.SHIPPING_PRICE_UPDATED: "A shipping price is updated.",
     WebhookEventAsyncType.SHIPPING_PRICE_DELETED: "A shipping price is deleted.",
@@ -214,6 +236,9 @@ WEBHOOK_EVENT_DESCRIPTION = {
     WebhookEventAsyncType.VOUCHER_DELETED: "A voucher is deleted.",
     WebhookEventAsyncType.VOUCHER_METADATA_UPDATED: (
         "A voucher metadata is updated." + ADDED_IN_38
+    ),
+    WebhookEventAsyncType.VOUCHER_CODE_EXPORT_COMPLETED: (
+        "A voucher code export is completed." + ADDED_IN_318
     ),
     WebhookEventAsyncType.ANY: "All the events." + DEPRECATED_IN_3X_ENUM_VALUE,
     WebhookEventAsyncType.OBSERVABILITY: "An observability event is created.",

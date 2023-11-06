@@ -459,6 +459,21 @@ GIFT_CARD_METADATA_UPDATED = (
 """
 )
 
+GIFT_CARD_EXPORT_COMPLETED = (
+    fragments.GIFT_CARD_EXPORT_DETAILS
+    + """
+    subscription{
+      event{
+        ...on GiftCardExportCompleted{
+          export{
+            ...GiftCardExportDetails
+          }
+        }
+      }
+    }
+"""
+)
+
 VOUCHER_CREATED = (
     fragments.VOUCHER_DETAILS
     + """
@@ -547,6 +562,22 @@ VOUCHER_METADATA_UPDATED = (
         ...on VoucherMetadataUpdated{
           voucher{
             ...VoucherDetails
+          }
+        }
+      }
+    }
+"""
+)
+
+
+VOUCHER_CODE_EXPORT_COMPLETED = (
+    fragments.VOUCHER_CODE_EXPORT_DETAILS
+    + """
+    subscription{
+      event{
+        ...on VoucherCodeExportCompleted{
+          export{
+            ...VoucherCodeExportDetails
           }
         }
       }
@@ -904,6 +935,21 @@ PRODUCT_METADATA_UPDATED = """
       }
     }
 """
+
+PRODUCT_EXPORT_COMPLETED = (
+    fragments.PRODUCT_EXPORT_DETAILS
+    + """
+    subscription{
+      event{
+        ...on ProductExportCompleted{
+          export{
+            ...ProductExportDetails
+          }
+        }
+      }
+    }
+"""
+)
 
 PRODUCT_MEDIA_CREATED = """
     subscription{
@@ -1278,6 +1324,131 @@ SALE_TOGGLE = (
 """
 )
 
+
+PROMOTION_CREATED = (
+    fragments.PROMOTION_DETAILS
+    + """
+    subscription{
+      event{
+        ...on PromotionCreated{
+          promotion{
+            ...PromotionDetails
+          }
+        }
+      }
+    }
+"""
+)
+
+PROMOTION_UPDATED = (
+    fragments.PROMOTION_DETAILS
+    + """
+    subscription{
+      event{
+        ...on PromotionUpdated{
+          promotion{
+            ...PromotionDetails
+          }
+        }
+      }
+    }
+"""
+)
+
+PROMOTION_DELETED = (
+    fragments.PROMOTION_DETAILS
+    + """
+    subscription{
+      event{
+        ...on PromotionDeleted{
+          promotion{
+            ...PromotionDetails
+          }
+        }
+      }
+    }
+"""
+)
+
+
+PROMOTION_STARTED = (
+    fragments.PROMOTION_DETAILS
+    + """
+    subscription{
+      event{
+        ...on PromotionStarted{
+          promotion{
+            ...PromotionDetails
+          }
+        }
+      }
+    }
+"""
+)
+
+
+PROMOTION_ENDED = (
+    fragments.PROMOTION_DETAILS
+    + """
+    subscription{
+      event{
+        ...on PromotionEnded{
+          promotion{
+            ...PromotionDetails
+          }
+        }
+      }
+    }
+"""
+)
+
+
+PROMOTION_RULE_CREATED = (
+    fragments.PROMOTION_RULE_DETAILS
+    + """
+    subscription{
+      event{
+        ...on PromotionRuleCreated{
+          promotionRule{
+            ...PromotionRuleDetails
+          }
+        }
+      }
+    }
+"""
+)
+
+PROMOTION_RULE_UPDATED = (
+    fragments.PROMOTION_RULE_DETAILS
+    + """
+    subscription{
+      event{
+        ...on PromotionRuleUpdated{
+          promotionRule{
+            ...PromotionRuleDetails
+          }
+        }
+      }
+    }
+"""
+)
+
+PROMOTION_RULE_DELETED = (
+    fragments.PROMOTION_RULE_DETAILS
+    + """
+    subscription{
+      event{
+        ...on PromotionRuleDeleted{
+          promotionRule{
+            ...PromotionRuleDetails
+          }
+        }
+      }
+    }
+"""
+)
+
+
 INVOICE_REQUESTED = (
     fragments.INVOICE_DETAILS
     + fragments.INVOICE_ORDER_DETAILS
@@ -1341,6 +1512,7 @@ FULFILLMENT_CREATED = (
     subscription{
       event{
         ...on FulfillmentCreated{
+          notifyCustomer
           fulfillment{
             ...FulfillmentDetails
           }
@@ -1371,12 +1543,14 @@ FULFILLMENT_CANCELED = (
 """
 )
 
+
 FULFILLMENT_APPROVED = (
     fragments.FULFILLMENT_DETAILS
     + """
     subscription{
       event{
         ...on FulfillmentApproved{
+          notifyCustomer
           fulfillment{
             ...FulfillmentDetails
           }
@@ -1396,6 +1570,24 @@ FULFILLMENT_METADATA_UPDATED = (
     subscription{
       event{
         ...on FulfillmentMetadataUpdated{
+          fulfillment{
+            ...FulfillmentDetails
+          }
+          order{
+            id
+          }
+        }
+      }
+    }
+"""
+)
+
+FULFILLMENT_TRACKING_NUMBER_UPDATED = (
+    fragments.FULFILLMENT_DETAILS
+    + """
+    subscription{
+      event{
+        ...on FulfillmentTrackingNumberUpdated{
           fulfillment{
             ...FulfillmentDetails
           }
@@ -1786,6 +1978,7 @@ subscription {
         }
         ... on SaleTranslation {
           id
+          __typename
         }
         ... on VoucherTranslation {
           id
@@ -1794,6 +1987,13 @@ subscription {
           id
         }
         ... on AttributeValueTranslation {
+          id
+        }
+        ... on PromotionTranslation {
+          id
+          __typename
+        }
+        ... on PromotionRuleTranslation {
           id
         }
       }
@@ -1830,6 +2030,7 @@ subscription {
         }
         ... on SaleTranslation {
           id
+          __typename
         }
         ... on VoucherTranslation {
           id
@@ -1838,6 +2039,13 @@ subscription {
           id
         }
         ... on AttributeValueTranslation {
+          id
+        }
+        ... on PromotionTranslation {
+          id
+          __typename
+        }
+        ... on PromotionRuleTranslation {
           id
         }
       }

@@ -6,6 +6,7 @@ DOC_CATEGORY_CHECKOUT = "Checkout"
 DOC_CATEGORY_DISCOUNTS = "Discounts"
 DOC_CATEGORY_GIFT_CARDS = "Gift cards"
 DOC_CATEGORY_MENU = "Menu"
+DOC_CATEGORY_MISC = "Miscellaneous"
 DOC_CATEGORY_ORDERS = "Orders"
 DOC_CATEGORY_PAGES = "Pages"
 DOC_CATEGORY_PAYMENTS = "Payments"
@@ -38,6 +39,10 @@ DOC_CATEGORY_MAP = {
     "discount.Sale": DOC_CATEGORY_DISCOUNTS,
     "discount.SaleTranslation": DOC_CATEGORY_DISCOUNTS,
     "discount.SaleChannelListing": DOC_CATEGORY_DISCOUNTS,
+    "discount.Promotion": DOC_CATEGORY_DISCOUNTS,
+    "discount.PromotionRule": DOC_CATEGORY_DISCOUNTS,
+    "discount.PromotionTranslation": DOC_CATEGORY_DISCOUNTS,
+    "discount.PromotionRuleTranslation": DOC_CATEGORY_DISCOUNTS,
     "discount.VoucherChannelListing": DOC_CATEGORY_DISCOUNTS,
     "discount.Voucher": DOC_CATEGORY_DISCOUNTS,
     "discount.VoucherTranslation": DOC_CATEGORY_DISCOUNTS,

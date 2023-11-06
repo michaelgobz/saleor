@@ -1,5 +1,6 @@
 import json
-from typing import List, Optional
+from collections.abc import Iterable
+from typing import Optional
 from urllib.parse import urlencode, urljoin
 
 import opentracing
@@ -11,7 +12,7 @@ from django.http import HttpResponse, HttpResponseNotFound
 from django.urls import reverse
 from requests.exceptions import SSLError
 
-from ....checkout.models import Checkout
+from ....checkout.fetch import CheckoutInfo, CheckoutLineInfo
 from ....core.utils import build_absolute_uri
 from ....core.utils.url import prepare_url
 from ....order.events import external_notification_event
@@ -299,8 +300,12 @@ class AdyenGatewayPlugin(BasePlugin):
         return previous_value
 
     def get_payment_gateways(
-        self, currency: Optional[str], checkout: Optional["Checkout"], previous_value
-    ) -> List["PaymentGateway"]:
+        self,
+        currency: Optional[str],
+        checkout_info: Optional["CheckoutInfo"],
+        checkout_lines: Optional[Iterable["CheckoutLineInfo"]],
+        previous_value,
+    ) -> list["PaymentGateway"]:
         """Fetch current configuration for given checkout.
 
         It calls an Adyen API to fetch all available payment methods for given checkout.
@@ -321,11 +326,13 @@ class AdyenGatewayPlugin(BasePlugin):
             }
         ]
 
-        if checkout:
+        if checkout_info:
             # If checkout is available, fetch available payment methods from Adyen API
             # and append them to the config object returned for the gateway.
             request = request_data_for_gateway_config(
-                checkout, local_config.connection_params["merchant_account"]
+                checkout_info,
+                checkout_lines,
+                local_config.connection_params["merchant_account"],
             )
             with opentracing.global_tracer().start_active_span(
                 "adyen.checkout.payment_methods"
@@ -479,7 +486,7 @@ class AdyenGatewayPlugin(BasePlugin):
 
     @classmethod
     def _update_config_items(
-        cls, configuration_to_update: List[dict], current_config: List[dict]
+        cls, configuration_to_update: list[dict], current_config: list[dict]
     ):
         for item in configuration_to_update:
             if item.get("name") == "notification-password" and item["value"]:

@@ -1,6 +1,6 @@
 import collections
 import itertools
-from typing import TYPE_CHECKING, Dict, List, Type, TypeVar, Union, cast
+from typing import TYPE_CHECKING, TypeVar, Union, cast
 
 import graphene
 from django.db.models import Model
@@ -16,6 +16,7 @@ from ...permission.enums import (
     ChannelPermissions,
     CheckoutPermissions,
     OrderPermissions,
+    PaymentPermissions,
 )
 from ..account.enums import CountryCodeEnum
 from ..core import ResolveInfo
@@ -28,12 +29,15 @@ from ..core.descriptions import (
     ADDED_IN_313,
     ADDED_IN_314,
     ADDED_IN_315,
+    ADDED_IN_316,
     DEPRECATED_IN_3X_FIELD,
+    DEPRECATED_PREVIEW_IN_316_FIELD,
     PREVIEW_FEATURE,
 )
 from ..core.doc_category import (
     DOC_CATEGORY_CHECKOUT,
     DOC_CATEGORY_ORDERS,
+    DOC_CATEGORY_PAYMENTS,
     DOC_CATEGORY_PRODUCTS,
 )
 from ..core.fields import PermissionsField
@@ -100,7 +104,7 @@ class ChannelContextType(ChannelContextTypeForObjectType[T]):
         if cls._meta.model._meta.proxy:
             model = root._meta.model
         else:
-            model = cast(Type[Model], root._meta.model._meta.concrete_model)
+            model = cast(type[Model], root._meta.model._meta.concrete_model)
 
         return model == cls._meta.model
 
@@ -246,7 +250,11 @@ class OrderSettings(ObjectType):
         description=(
             "Determine the transaction flow strategy to be used. "
             "Include the selected option in the payload sent to the payment app, as a "
-            "requested action for the transaction." + ADDED_IN_313 + PREVIEW_FEATURE
+            "requested action for the transaction."
+            + ADDED_IN_313
+            + PREVIEW_FEATURE
+            + DEPRECATED_PREVIEW_IN_316_FIELD
+            + " Use `PaymentSettings.defaultTransactionFlowStrategy` instead."
         ),
     )
     delete_expired_orders_after = Day(
@@ -268,6 +276,21 @@ class OrderSettings(ObjectType):
     class Meta:
         description = "Represents the channel-specific order settings."
         doc_category = DOC_CATEGORY_ORDERS
+
+
+class PaymentSettings(ObjectType):
+    default_transaction_flow_strategy = TransactionFlowStrategyEnum(
+        required=True,
+        description=(
+            "Determine the transaction flow strategy to be used. "
+            "Include the selected option in the payload sent to the payment app, as a "
+            "requested action for the transaction." + ADDED_IN_316 + PREVIEW_FEATURE
+        ),
+    )
+
+    class Meta:
+        description = "Represents the channel-specific payment settings."
+        doc_category = DOC_CATEGORY_PAYMENTS
 
 
 class Channel(ModelObjectType):
@@ -375,6 +398,17 @@ class Channel(ModelObjectType):
             CheckoutPermissions.MANAGE_CHECKOUTS,
         ],
     )
+    payment_settings = PermissionsField(
+        PaymentSettings,
+        description="Channel-specific payment settings."
+        + ADDED_IN_316
+        + PREVIEW_FEATURE,
+        required=True,
+        permissions=[
+            ChannelPermissions.MANAGE_CHANNELS,
+            PaymentPermissions.HANDLE_PAYMENTS,
+        ],
+    )
 
     class Meta:
         description = "Represents channel."
@@ -435,7 +469,7 @@ class Channel(ModelObjectType):
         shipping_zones_loader = ShippingZonesByChannelIdLoader(info.context).load(
             root.id
         )
-        shipping_zone_countries: Dict[int, List[Country]] = collections.defaultdict(
+        shipping_zone_countries: dict[int, list[Country]] = collections.defaultdict(
             list
         )
         requested_countries = data.get("countries", [])
@@ -493,7 +527,7 @@ class Channel(ModelObjectType):
                 _group_shipping_methods_by_country
             )
 
-        def get_shipping_methods(shipping_zones: List["ShippingZone"]):
+        def get_shipping_methods(shipping_zones: list["ShippingZone"]):
             shipping_zones_keys = [shipping_zone.id for shipping_zone in shipping_zones]
             for shipping_zone in shipping_zones:
                 shipping_zone_countries[shipping_zone.id] = shipping_zone.countries
@@ -530,4 +564,10 @@ class Channel(ModelObjectType):
     def resolve_checkout_settings(root: models.Channel, _info):
         return CheckoutSettings(
             use_legacy_error_flow=root.use_legacy_error_flow_for_checkout
+        )
+
+    @staticmethod
+    def resolve_payment_settings(root: models.Channel, _info):
+        return PaymentSettings(
+            default_transaction_flow_strategy=root.default_transaction_flow_strategy,
         )

@@ -1,8 +1,9 @@
+from django.contrib.postgres.indexes import BTreeIndex
 from django.db import models
 
 from ...core.models import SortableModel
 from ...product.models import Product, ProductType
-from .base import AssociatedAttributeManager, BaseAssignedAttribute
+from .base import AssociatedAttributeManager, AttributeValue, BaseAssignedAttribute
 
 
 class AssignedProductAttributeValue(SortableModel):
@@ -17,9 +18,21 @@ class AssignedProductAttributeValue(SortableModel):
         related_name="productvalueassignment",
     )
 
+    product = models.ForeignKey(
+        Product,
+        related_name="attributevalues",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        db_index=False,
+    )
+
     class Meta:
         unique_together = (("value", "assignment"),)
         ordering = ("sort_order", "pk")
+        indexes = [
+            BTreeIndex(fields=["product"], name="assignedprodattrval_product_idx")
+        ]
 
     def get_ordering_queryset(self):
         return self.assignment.productvalueassignment.all()
@@ -35,7 +48,7 @@ class AssignedProductAttribute(BaseAssignedAttribute):
         "AttributeProduct", on_delete=models.CASCADE, related_name="productassignments"
     )
     values = models.ManyToManyField(
-        "AttributeValue",
+        AttributeValue,
         blank=True,
         related_name="productassignments",
         through=AssignedProductAttributeValue,

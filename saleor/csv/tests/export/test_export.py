@@ -12,6 +12,7 @@ from django.core.files import File
 from freezegun import freeze_time
 
 from ....core import JobStatus
+from ....discount.models import VoucherCode
 from ....giftcard.models import GiftCard
 from ....graphql.csv.enums import ProductFieldEnum
 from ....graphql.product.filters import ProductFilter
@@ -24,6 +25,8 @@ from ...utils.export import (
     export_gift_cards_in_batches,
     export_products,
     export_products_in_batches,
+    export_voucher_codes,
+    export_voucher_codes_in_batches,
     get_filename,
     get_queryset,
     parse_input,
@@ -293,6 +296,23 @@ def test_export_products_by_app(
     save_file_mock.assert_called_once_with(app_export_file, mock_file, ANY)
 
 
+@patch("saleor.plugins.manager.PluginsManager.product_export_completed")
+def test_export_products_webhook(
+    mocked_product_export_completed,
+    product_list,
+    user_export_file,
+    media_root,
+):
+    # given
+    product_list[0].variants.update(sku=None)
+
+    # when
+    export_products(user_export_file, {"all": ""}, {}, FileTypes.CSV)
+
+    # then
+    mocked_product_export_completed.assert_called_once_with(user_export_file)
+
+
 @patch("saleor.csv.utils.export.create_file_with_headers")
 @patch("saleor.csv.utils.export.export_gift_cards_in_batches")
 @patch("saleor.csv.utils.export.send_export_download_link_notification")
@@ -307,6 +327,7 @@ def test_export_gift_cards(
     gift_card_expiry_date,
     gift_card_used,
 ):
+    # given
     file_type = FileTypes.CSV
 
     mock_file = MagicMock(spec=File)
@@ -475,6 +496,25 @@ def test_export_gift_cards_with_filter(
     save_file_mock.assert_called_once_with(user_export_file, mock_file, ANY)
 
 
+@patch("saleor.plugins.manager.PluginsManager.gift_card_export_completed")
+def test_export_gift_cards_webhook(
+    mocked_gift_card_export_completed,
+    user_export_file,
+    gift_card,
+    gift_card_expiry_date,
+    gift_card_used,
+    media_root,
+):
+    # given
+    file_type = FileTypes.CSV
+
+    # when
+    export_gift_cards(user_export_file, {"all": ""}, file_type)
+
+    # then
+    mocked_gift_card_export_completed.assert_called_once_with(user_export_file)
+
+
 def test_get_filename_csv():
     with freeze_time("2000-02-09 03:21:34"):
         file_name = get_filename("test", FileTypes.CSV)
@@ -580,7 +620,7 @@ def test_append_to_file_for_csv(user_export_file, tmpdir, media_root):
     headers = ["id", "name", "collections"]
     delimiter = ","
 
-    table = etl.fromdicts([{"id": "1", "name": "A"}], header=headers, missing=" ")
+    table = etl.fromdicts([{"id": "1", "name": "A"}], header=headers, missing="")
 
     temp_file = NamedTemporaryFile()
     etl.tocsv(table, temp_file.name, delimiter=delimiter)
@@ -594,7 +634,7 @@ def test_append_to_file_for_csv(user_export_file, tmpdir, media_root):
     file_content = temp_file.read().decode().split("\r\n")
     assert ",".join(headers) in file_content
     assert ",".join(export_data[0].values()) in file_content
-    assert (",".join(export_data[1].values()) + ", ") in file_content
+    assert (",".join(export_data[1].values()) + ",") in file_content
 
     temp_file.close()
     shutil.rmtree(tmpdir)
@@ -607,41 +647,32 @@ def test_append_to_file_for_xlsx(user_export_file, tmpdir, media_root):
         {"id": "345", "name": "test2"},
     ]
     expected_headers = ["id", "name", "collections"]
-    delimiter = ","
 
     table = etl.fromdicts(
-        [{"id": "1", "name": "A"}], header=expected_headers, missing=" "
+        [{"id": "1", "name": "A"}], header=expected_headers, missing=""
     )
 
     temp_file = NamedTemporaryFile(suffix=".xlsx")
     etl.io.xlsx.toxlsx(table, temp_file.name)
 
     # when
-    append_to_file(export_data, expected_headers, temp_file, FileTypes.XLSX, delimiter)
+    append_to_file(export_data, expected_headers, temp_file, FileTypes.XLSX, ",")
 
     # then
     user_export_file.refresh_from_db()
 
-    wb_obj = openpyxl.load_workbook(temp_file)
+    workbook = openpyxl.load_workbook(temp_file)
 
-    sheet_obj = wb_obj.active
-    max_col = sheet_obj.max_column
-    max_row = sheet_obj.max_row
-    expected_headers = expected_headers
-    headers = [sheet_obj.cell(row=1, column=i).value for i in range(1, max_col + 1)]
-    data = []
-    for i in range(2, max_row + 1):
-        row = []
-        for j in range(1, max_col + 1):
-            row.append(sheet_obj.cell(row=i, column=j).value)
-        data.append(row)
-
-    assert headers == expected_headers
-    assert list(export_data[0].values()) in data
-    row2 = list(export_data[1].values())
-    # add string with space for collections column
-    row2.append(" ")
-    assert row2 in data
+    sheet = workbook.worksheets[0]
+    assert sheet.cell(1, 1).value == expected_headers[0]
+    assert sheet.cell(1, 2).value == expected_headers[1]
+    assert sheet.cell(1, 3).value == expected_headers[2]
+    assert sheet.cell(3, 1).value == export_data[0]["id"]
+    assert sheet.cell(3, 2).value == export_data[0]["name"]
+    assert sheet.cell(3, 3).value == export_data[0]["collections"]
+    assert sheet.cell(4, 1).value == export_data[1]["id"]
+    assert sheet.cell(4, 2).value == export_data[1]["name"]
+    assert sheet.cell(4, 3).value is None
 
     temp_file.close()
     shutil.rmtree(tmpdir)
@@ -904,3 +935,218 @@ def test_parse_input():
     parsed_data = parse_input(data)
 
     assert data == parsed_data
+
+
+@patch("saleor.csv.utils.export.create_file_with_headers")
+@patch("saleor.csv.utils.export.export_voucher_codes_in_batches")
+@patch("saleor.csv.utils.export.send_export_download_link_notification")
+@patch("saleor.csv.utils.export.save_csv_file_in_export_file")
+def test_export_voucher_codes_by_voucher_id(
+    save_file_mock,
+    send_email_mock,
+    export_in_batches_mock,
+    create_file_with_headers_mock,
+    user_export_file,
+    voucher_with_many_codes,
+    voucher_percentage,
+):
+    mock_file = MagicMock(spec=File)
+    create_file_with_headers_mock.return_value = mock_file
+    file_type = FileTypes.CSV
+    voucher = voucher_with_many_codes
+
+    # when
+    export_voucher_codes(user_export_file, file_type, voucher_id=voucher.id)
+
+    # then
+    create_file_with_headers_mock.assert_called_once_with(["code"], ",", file_type)
+
+    assert export_in_batches_mock.call_count == 1
+    args, kwargs = export_in_batches_mock.call_args
+    assert set(args[0].values_list("pk", flat=True)) == set(
+        VoucherCode.objects.filter(voucher_id=voucher.id).values_list("pk", flat=True)
+    )
+    assert args[1:] == (
+        ["code"],
+        ",",
+        mock_file,
+        file_type,
+    )
+
+    send_email_mock.assert_called_once_with(user_export_file, "voucher codes")
+
+    save_file_mock.assert_called_once_with(user_export_file, mock_file, ANY)
+
+
+@patch("saleor.csv.utils.export.create_file_with_headers")
+@patch("saleor.csv.utils.export.export_voucher_codes_in_batches")
+@patch("saleor.csv.utils.export.send_export_download_link_notification")
+@patch("saleor.csv.utils.export.save_csv_file_in_export_file")
+def test_export_voucher_codes_by_ids(
+    save_file_mock,
+    send_email_mock,
+    export_in_batches_mock,
+    create_file_with_headers_mock,
+    user_export_file,
+    voucher_with_many_codes,
+    voucher_percentage,
+):
+    mock_file = MagicMock(spec=File)
+    create_file_with_headers_mock.return_value = mock_file
+    file_type = FileTypes.CSV
+    voucher = voucher_with_many_codes
+    code_ids = [code.id for code in voucher.codes.all()]
+
+    # when
+    export_voucher_codes(user_export_file, file_type, ids=code_ids)
+
+    # then
+    create_file_with_headers_mock.assert_called_once_with(["code"], ",", file_type)
+
+    assert export_in_batches_mock.call_count == 1
+    args, kwargs = export_in_batches_mock.call_args
+    assert set(args[0].values_list("pk", flat=True)) == set(
+        VoucherCode.objects.filter(id__in=code_ids).values_list("pk", flat=True)
+    )
+    assert args[1:] == (
+        ["code"],
+        ",",
+        mock_file,
+        file_type,
+    )
+
+    send_email_mock.assert_called_once_with(user_export_file, "voucher codes")
+
+    save_file_mock.assert_called_once_with(user_export_file, mock_file, ANY)
+
+
+@patch("saleor.csv.utils.export.create_file_with_headers")
+@patch("saleor.csv.utils.export.export_voucher_codes_in_batches")
+@patch("saleor.csv.utils.export.send_export_download_link_notification")
+@patch("saleor.csv.utils.export.save_csv_file_in_export_file")
+def test_export_voucher_codes_by_app(
+    save_file_mock,
+    send_email_mock,
+    export_in_batches_mock,
+    create_file_with_headers_mock,
+    app_export_file,
+    voucher_with_many_codes,
+):
+    mock_file = MagicMock(spec=File)
+    create_file_with_headers_mock.return_value = mock_file
+    file_type = FileTypes.CSV
+    voucher = voucher_with_many_codes
+
+    # when
+    export_voucher_codes(app_export_file, file_type, voucher_id=voucher.id)
+
+    # then
+    create_file_with_headers_mock.assert_called_once_with(["code"], ",", file_type)
+
+    assert export_in_batches_mock.call_count == 1
+    args, kwargs = export_in_batches_mock.call_args
+    assert set(args[0].values_list("pk", flat=True)) == set(
+        VoucherCode.objects.filter(voucher_id=voucher.id).values_list("pk", flat=True)
+    )
+    assert args[1:] == (
+        ["code"],
+        ",",
+        mock_file,
+        file_type,
+    )
+
+    send_email_mock.assert_called_once_with(app_export_file, "voucher codes")
+
+    save_file_mock.assert_called_once_with(app_export_file, mock_file, ANY)
+
+
+@patch("saleor.plugins.manager.PluginsManager.voucher_code_export_completed")
+def test_export_voucher_codes_webhooks(
+    mocked_voucher_code_export_completed,
+    user_export_file,
+    voucher_with_many_codes,
+    media_root,
+):
+    file_type = FileTypes.CSV
+    voucher = voucher_with_many_codes
+
+    # when
+    export_voucher_codes(user_export_file, file_type, voucher_id=voucher.id)
+
+    # then
+    mocked_voucher_code_export_completed.assert_called_once()
+
+
+@patch("saleor.csv.utils.export.BATCH_SIZE", 1)
+def test_export_voucher_codes_in_batches_to_csv(
+    voucher_with_many_codes,
+    tmpdir,
+):
+    # given
+    voucher_codes = voucher_with_many_codes.codes.all()
+
+    table = etl.wrap([["code"]])
+    temp_file = NamedTemporaryFile()
+    etl.tocsv(table, temp_file.name, delimiter=",")
+
+    # when
+    export_voucher_codes_in_batches(
+        voucher_codes,
+        ["code"],
+        ",",
+        temp_file,
+        "csv",
+    )
+
+    # then
+    file_content = temp_file.read().decode().split("\r\n")
+
+    # ensure headers are in the file
+    assert "code" in file_content
+
+    for voucher_code in voucher_codes:
+        assert voucher_code.code in file_content
+
+    shutil.rmtree(tmpdir)
+
+
+@patch("saleor.csv.utils.export.BATCH_SIZE", 1)
+def test_export_voucher_codes_in_batches_to_xlsx(
+    voucher_with_many_codes,
+    tmpdir,
+):
+    # given
+    voucher_codes = voucher_with_many_codes.codes.all()
+
+    table = etl.wrap([["code"]])
+    temp_file = NamedTemporaryFile(suffix=".xlsx")
+    etl.io.xlsx.toxlsx(table, temp_file.name)
+
+    # when
+    export_voucher_codes_in_batches(
+        voucher_codes,
+        ["code"],
+        ",",
+        temp_file,
+        "xlsx",
+    )
+
+    # then
+    wb_obj = openpyxl.load_workbook(temp_file)
+
+    sheet_obj = wb_obj.active
+    max_col = sheet_obj.max_column
+    max_row = sheet_obj.max_row
+    headers = [sheet_obj.cell(row=1, column=i).value for i in range(1, max_col + 1)]
+    data = []
+    for i in range(2, max_row + 1):
+        row = []
+        for j in range(1, max_col + 1):
+            row.append(sheet_obj.cell(row=i, column=j).value)
+        data.append(row)
+
+    assert headers == ["code"]
+    for voucher_code in voucher_codes:
+        assert [voucher_code.code] in data
+
+    shutil.rmtree(tmpdir)

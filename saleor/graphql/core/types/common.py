@@ -30,6 +30,7 @@ from ..descriptions import (
     ADDED_IN_36,
     ADDED_IN_312,
     ADDED_IN_314,
+    ADDED_IN_318,
     DEPRECATED_IN_3X_FIELD,
     PREVIEW_FEATURE,
 )
@@ -63,6 +64,9 @@ from ..enums import (
     PaymentErrorCode,
     PaymentGatewayConfigErrorCode,
     PaymentGatewayInitializeErrorCode,
+    PaymentGatewayInitializeTokenizationErrorCode,
+    PaymentMethodInitializeTokenizationErrorCode,
+    PaymentMethodProcessTokenizationErrorCode,
     PermissionEnum,
     PermissionGroupErrorCode,
     PluginErrorCode,
@@ -76,6 +80,7 @@ from ..enums import (
     ShopErrorCode,
     StockBulkUpdateErrorCode,
     StockErrorCode,
+    StoredPaymentMethodRequestDeleteErrorCode,
     ThumbnailFormatEnum,
     TimePeriodTypeEnum,
     TransactionCreateErrorCode,
@@ -87,6 +92,7 @@ from ..enums import (
     TransactionUpdateErrorCode,
     TranslationErrorCode,
     UploadErrorCode,
+    VoucherCodeBulkDeleteErrorCode,
     WarehouseErrorCode,
     WebhookDryRunErrorCode,
     WebhookErrorCode,
@@ -112,7 +118,7 @@ class NonNullList(graphene.List):
 
     def __init__(self, of_type, *args, **kwargs):
         of_type = graphene.NonNull(of_type)
-        super(NonNullList, self).__init__(of_type, *args, **kwargs)
+        super().__init__(of_type, *args, **kwargs)
 
 
 class CountryDisplay(graphene.ObjectType):
@@ -291,6 +297,23 @@ class DiscountError(ProductWithoutVariantError):
     channels = NonNullList(
         graphene.ID,
         description="List of channels IDs which causes the error.",
+        required=False,
+    )
+    voucher_codes = NonNullList(
+        graphene.String,
+        description="List of voucher codes which causes the error." + ADDED_IN_318,
+        required=False,
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_DISCOUNTS
+
+
+class VoucherCodeBulkDeleteError(BulkError):
+    code = VoucherCodeBulkDeleteErrorCode(description="The error code.", required=True)
+    voucher_codes = NonNullList(
+        graphene.ID,
+        description="List of voucher codes which causes the error.",
         required=False,
     )
 
@@ -673,6 +696,42 @@ class PaymentGatewayConfigError(Error):
 
 class PaymentGatewayInitializeError(Error):
     code = PaymentGatewayInitializeErrorCode(
+        description="The error code.", required=True
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+
+class PaymentMethodRequestDeleteError(Error):
+    code = StoredPaymentMethodRequestDeleteErrorCode(
+        description="The error code.", required=True
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+
+class PaymentGatewayInitializeTokenizationError(Error):
+    code = PaymentGatewayInitializeTokenizationErrorCode(
+        description="The error code.", required=True
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+
+class PaymentMethodInitializeTokenizationError(Error):
+    code = PaymentMethodInitializeTokenizationErrorCode(
+        description="The error code.", required=True
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+
+class PaymentMethodProcessTokenizationError(Error):
+    code = PaymentMethodProcessTokenizationErrorCode(
         description="The error code.", required=True
     )
 

@@ -11,6 +11,8 @@ mutation CheckoutComplete($checkoutId: ID!) {
     order {
       id
       status
+      paymentStatus
+      isPaid
       user {
         email
       }
@@ -19,19 +21,74 @@ mutation CheckoutComplete($checkoutId: ID!) {
         gross {
           amount
         }
+        net {
+          amount
+        }
+        tax {
+          amount
+        }
       }
       paymentStatus
       statusDisplay
       status
       isPaid
+      subtotal {
+        gross {
+          amount
+        }
+      }
       checkoutId
       deliveryMethod {
         ... on ShippingMethod {
           id
+          price {
+            amount
+          }
         }
         ... on Warehouse {
           id
         }
+      }
+      shippingPrice {
+        gross {
+          amount
+        }
+        net {
+          amount
+        }
+        tax {
+          amount
+        }
+      }
+      lines {
+        id
+        unitPrice {
+          gross {
+            amount
+          }
+        }
+        unitDiscount {
+          amount
+        }
+        unitDiscountType
+        unitDiscountReason
+        unitDiscountValue
+        undiscountedUnitPrice {
+          gross {
+            amount
+          }
+        }
+      }
+      discounts {
+        type
+        value
+      }
+      voucher {
+        code
+      }
+      giftCards {
+        id
+        last4CodeChars
       }
     }
   }

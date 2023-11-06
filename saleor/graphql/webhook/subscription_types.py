@@ -8,13 +8,21 @@ from ...account.models import User
 from ...attribute.models import AttributeTranslation, AttributeValueTranslation
 from ...channel.models import Channel
 from ...core.prices import quantize_price
-from ...discount.models import SaleTranslation, VoucherTranslation
+from ...discount.models import (
+    PromotionRuleTranslation,
+    PromotionTranslation,
+    VoucherTranslation,
+)
 from ...graphql.shop.types import Shop
 from ...menu.models import MenuItemTranslation
 from ...order.utils import get_all_shipping_methods_for_order
 from ...page.models import PageTranslation
 from ...payment.interface import (
     ListStoredPaymentMethodsRequestData,
+    PaymentMethodInitializeTokenizationRequestData,
+    PaymentMethodProcessTokenizationRequestData,
+    PaymentMethodTokenizationBaseRequestData,
+    StoredPaymentMethodRequestDeleteData,
     TransactionActionData,
     TransactionSessionData,
 )
@@ -46,23 +54,30 @@ from ..core.descriptions import (
     ADDED_IN_313,
     ADDED_IN_314,
     ADDED_IN_315,
+    ADDED_IN_316,
+    ADDED_IN_317,
+    ADDED_IN_318,
+    DEPRECATED_IN_3X_EVENT,
     PREVIEW_FEATURE,
 )
 from ..core.doc_category import (
     DOC_CATEGORY_CHECKOUT,
+    DOC_CATEGORY_DISCOUNTS,
     DOC_CATEGORY_GIFT_CARDS,
+    DOC_CATEGORY_MISC,
     DOC_CATEGORY_ORDERS,
     DOC_CATEGORY_PAYMENTS,
     DOC_CATEGORY_PRODUCTS,
     DOC_CATEGORY_SHIPPING,
     DOC_CATEGORY_TAXES,
+    DOC_CATEGORY_USERS,
 )
 from ..core.scalars import JSON, PositiveDecimal
 from ..core.types import NonNullList, SubscriptionObjectType
 from ..core.types.order_or_checkout import OrderOrCheckout
 from ..order.dataloaders import OrderByIdLoader
 from ..order.types import Order, OrderGrantedRefund
-from ..payment.enums import TransactionActionEnum
+from ..payment.enums import TokenizedPaymentFlowEnum, TransactionActionEnum
 from ..payment.types import TransactionItem
 from ..plugins.dataloaders import plugin_manager_promise_callback
 from ..product.dataloaders import ProductVariantByIdLoader
@@ -81,9 +96,10 @@ TRANSLATIONS_TYPES_MAP = {
     ProductVariantTranslation: translation_types.ProductVariantTranslation,
     PageTranslation: translation_types.PageTranslation,
     ShippingMethodTranslation: translation_types.ShippingMethodTranslation,
-    SaleTranslation: translation_types.SaleTranslation,
     VoucherTranslation: translation_types.VoucherTranslation,
     MenuItemTranslation: translation_types.MenuItemTranslation,
+    PromotionTranslation: translation_types.PromotionTranslation,
+    PromotionRuleTranslation: translation_types.PromotionRuleTranslation,
 }
 
 
@@ -185,11 +201,12 @@ class AccountConfirmed(SubscriptionObjectType, AccountOperationBase):
         enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when account is confirmed." + ADDED_IN_315
+        doc_category = DOC_CATEGORY_USERS
 
 
 class AccountConfirmationRequested(SubscriptionObjectType, AccountOperationBase):
     class Meta:
-        root_type = "User"
+        root_type = None
         enable_dry_run = False
         interfaces = (Event,)
         description = (
@@ -197,6 +214,7 @@ class AccountConfirmationRequested(SubscriptionObjectType, AccountOperationBase)
             " enableAccountConfirmationByEmail flag set to True is not required."
             + ADDED_IN_315
         )
+        doc_category = DOC_CATEGORY_USERS
 
 
 class AccountChangeEmailRequested(SubscriptionObjectType, AccountOperationBase):
@@ -205,12 +223,13 @@ class AccountChangeEmailRequested(SubscriptionObjectType, AccountOperationBase):
     )
 
     class Meta:
-        root_type = "User"
+        root_type = None
         enable_dry_run = False
         interfaces = (Event,)
         description = (
             "Event sent when account change email is requested." + ADDED_IN_315
         )
+        doc_category = DOC_CATEGORY_USERS
 
     @staticmethod
     def resolve_new_email(root, _info: ResolveInfo):
@@ -228,6 +247,7 @@ class AccountEmailChanged(SubscriptionObjectType, AccountOperationBase):
         enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when account email is changed." + ADDED_IN_315
+        doc_category = DOC_CATEGORY_USERS
 
 
 class AccountSetPasswordRequested(SubscriptionObjectType, AccountOperationBase):
@@ -238,14 +258,16 @@ class AccountSetPasswordRequested(SubscriptionObjectType, AccountOperationBase):
         description = (
             "Event sent when setting a new password is requested." + ADDED_IN_315
         )
+        doc_category = DOC_CATEGORY_USERS
 
 
 class AccountDeleteRequested(SubscriptionObjectType, AccountOperationBase):
     class Meta:
-        root_type = "User"
+        root_type = None
         enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when account delete is requested." + ADDED_IN_315
+        doc_category = DOC_CATEGORY_USERS
 
 
 class AccountDeleted(SubscriptionObjectType, AccountOperationBase):
@@ -254,6 +276,7 @@ class AccountDeleted(SubscriptionObjectType, AccountOperationBase):
         enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when account is deleted." + ADDED_IN_315
+        doc_category = DOC_CATEGORY_USERS
 
 
 class AddressBase(AbstractType):
@@ -624,6 +647,7 @@ class OrderBulkCreated(SubscriptionObjectType):
         description = (
             "Event sent when orders are imported." + ADDED_IN_314 + PREVIEW_FEATURE
         )
+        doc_category = DOC_CATEGORY_ORDERS
 
 
 class DraftOrderCreated(SubscriptionObjectType, OrderBase):
@@ -733,6 +757,25 @@ class GiftCardMetadataUpdated(SubscriptionObjectType, GiftCardBase):
         enable_dry_run = True
         interfaces = (Event,)
         description = "Event sent when gift card metadata is updated." + ADDED_IN_38
+
+
+class GiftCardExportCompleted(SubscriptionObjectType):
+    export = graphene.Field(
+        "saleor.graphql.csv.types.ExportFile",
+        description="The export file for gift cards.",
+    )
+
+    class Meta:
+        root_type = "ExportFile"
+        enable_dry_run = True
+        interfaces = (Event,)
+        description = "Event sent when gift card export is completed." + ADDED_IN_316
+        doc_category = DOC_CATEGORY_GIFT_CARDS
+
+    @staticmethod
+    def resolve_export(root, info: ResolveInfo):
+        _, export_file = root
+        return export_file
 
 
 class MenuBase(AbstractType):
@@ -1031,6 +1074,25 @@ class ProductVariantStockUpdated(SubscriptionObjectType, ProductVariantBase):
         return WarehouseByIdLoader(info.context).load(stock.warehouse_id)
 
 
+class ProductExportCompleted(SubscriptionObjectType):
+    export = graphene.Field(
+        "saleor.graphql.csv.types.ExportFile",
+        description="The export file for products.",
+    )
+
+    class Meta:
+        root_type = "ExportFile"
+        enable_dry_run = True
+        interfaces = (Event,)
+        description = "Event sent when product export is completed." + ADDED_IN_316
+        doc_category = DOC_CATEGORY_PRODUCTS
+
+    @staticmethod
+    def resolve_export(root, info: ResolveInfo):
+        _, export_file = root
+        return export_file
+
+
 class SaleBase(AbstractType):
     sale = graphene.Field(
         "saleor.graphql.discount.types.Sale",
@@ -1051,7 +1113,12 @@ class SaleCreated(SubscriptionObjectType, SaleBase):
         root_type = "Sale"
         enable_dry_run = True
         interfaces = (Event,)
-        description = "Event sent when new sale is created." + ADDED_IN_32
+        description = (
+            "Event sent when new sale is created."
+            + ADDED_IN_32
+            + DEPRECATED_IN_3X_EVENT
+            + " Use `PromotionCreated` event instead."
+        )
 
 
 class SaleUpdated(SubscriptionObjectType, SaleBase):
@@ -1059,7 +1126,12 @@ class SaleUpdated(SubscriptionObjectType, SaleBase):
         root_type = "Sale"
         enable_dry_run = True
         interfaces = (Event,)
-        description = "Event sent when sale is updated." + ADDED_IN_32
+        description = (
+            "Event sent when sale is updated."
+            + ADDED_IN_32
+            + DEPRECATED_IN_3X_EVENT
+            + " Use `PromotionUpdated` event instead."
+        )
 
 
 class SaleDeleted(SubscriptionObjectType, SaleBase):
@@ -1067,7 +1139,12 @@ class SaleDeleted(SubscriptionObjectType, SaleBase):
         root_type = "Sale"
         enable_dry_run = True
         interfaces = (Event,)
-        description = "Event sent when sale is deleted." + ADDED_IN_32
+        description = (
+            "Event sent when sale is deleted."
+            + ADDED_IN_32
+            + DEPRECATED_IN_3X_EVENT
+            + " Use `PromotionDeleted` event instead."
+        )
 
 
 class SaleToggle(SubscriptionObjectType, SaleBase):
@@ -1083,9 +1160,126 @@ class SaleToggle(SubscriptionObjectType, SaleBase):
         root_type = "Sale"
         enable_dry_run = True
         description = (
-            "The event informs about the start or end of the sale." + ADDED_IN_35
+            "The event informs about the start or end of the sale."
+            + ADDED_IN_35
+            + DEPRECATED_IN_3X_EVENT
+            + " Use `PromotionStarted` and `PromotionEnded` events instead."
         )
         interfaces = (Event,)
+
+
+class PromotionBase(AbstractType):
+    promotion = graphene.Field(
+        "saleor.graphql.discount.types.Promotion",
+        description="The promotion the event relates to.",
+    )
+
+    @staticmethod
+    def resolve_promotion(root, info: ResolveInfo, channel=None):
+        _, promotion = root
+        return promotion
+
+
+class PromotionCreated(SubscriptionObjectType, PromotionBase):
+    class Meta:
+        root_type = "Promotion"
+        enable_dry_run = True
+        interfaces = (Event,)
+        description = (
+            "Event sent when new promotion is created." + ADDED_IN_317 + PREVIEW_FEATURE
+        )
+
+
+class PromotionUpdated(SubscriptionObjectType, PromotionBase):
+    class Meta:
+        root_type = "Promotion"
+        enable_dry_run = True
+        interfaces = (Event,)
+        description = (
+            "Event sent when promotion is updated." + ADDED_IN_317 + PREVIEW_FEATURE
+        )
+
+
+class PromotionDeleted(SubscriptionObjectType, PromotionBase):
+    class Meta:
+        root_type = "Promotion"
+        enable_dry_run = True
+        interfaces = (Event,)
+        description = (
+            "Event sent when promotion is deleted." + ADDED_IN_317 + PREVIEW_FEATURE
+        )
+
+
+class PromotionStarted(SubscriptionObjectType, PromotionBase):
+    class Meta:
+        root_type = "Promotion"
+        enable_dry_run = True
+        description = (
+            "The event informs about the start of the promotion."
+            + ADDED_IN_317
+            + PREVIEW_FEATURE
+        )
+        interfaces = (Event,)
+
+
+class PromotionEnded(SubscriptionObjectType, PromotionBase):
+    class Meta:
+        root_type = "Promotion"
+        enable_dry_run = True
+        description = (
+            "The event informs about the end of the promotion."
+            + ADDED_IN_317
+            + PREVIEW_FEATURE
+        )
+        interfaces = (Event,)
+
+
+class PromotionRuleBase(AbstractType):
+    promotion_rule = graphene.Field(
+        "saleor.graphql.discount.types.PromotionRule",
+        description="The promotion rule the event relates to.",
+    )
+
+    @staticmethod
+    def resolve_promotion_rule(root, _info: ResolveInfo):
+        _, promotion_rule = root
+        return promotion_rule
+
+
+class PromotionRuleCreated(SubscriptionObjectType, PromotionRuleBase):
+    class Meta:
+        root_type = "PromotionRule"
+        enable_dry_run = True
+        interfaces = (Event,)
+        description = (
+            "Event sent when new promotion rule is created."
+            + ADDED_IN_317
+            + PREVIEW_FEATURE
+        )
+
+
+class PromotionRuleUpdated(SubscriptionObjectType, PromotionRuleBase):
+    class Meta:
+        root_type = "PromotionRule"
+        enable_dry_run = True
+        interfaces = (Event,)
+        description = (
+            "Event sent when new promotion rule is updated."
+            + ADDED_IN_317
+            + PREVIEW_FEATURE
+        )
+
+
+class PromotionRuleDeleted(SubscriptionObjectType, PromotionRuleBase):
+    class Meta:
+        root_type = "PromotionRule"
+        enable_dry_run = True
+        interfaces = (Event,)
+        description = (
+            "Event sent when new promotion rule is deleted."
+            + ADDED_IN_317
+            + PREVIEW_FEATURE
+        )
 
 
 class InvoiceBase(AbstractType):
@@ -1160,12 +1354,45 @@ class FulfillmentBase(AbstractType):
         return fulfillment.order
 
 
-class FulfillmentCreated(SubscriptionObjectType, FulfillmentBase):
+class FulfillmentTrackingNumberUpdated(SubscriptionObjectType, FulfillmentBase):
     class Meta:
         root_type = "Fulfillment"
         enable_dry_run = True
         interfaces = (Event,)
+        description = "Event sent when the tracking number is updated." + ADDED_IN_316
+        doc_category = DOC_CATEGORY_ORDERS
+
+
+class FulfillmentCreated(SubscriptionObjectType, FulfillmentBase):
+    notify_customer = graphene.Boolean(
+        description=(
+            "If true, the app should send a notification to the customer."
+            + ADDED_IN_316
+        ),
+        required=True,
+    )
+
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
         description = "Event sent when new fulfillment is created." + ADDED_IN_34
+        doc_category = DOC_CATEGORY_ORDERS
+
+    @staticmethod
+    def resolve_fulfillment(root, info: ResolveInfo):
+        _, data = root
+        return data["fulfillment"]
+
+    @staticmethod
+    def resolve_order(root, info: ResolveInfo):
+        _, data = root
+        return data["fulfillment"].order
+
+    @staticmethod
+    def resolve_notify_customer(root, _info: ResolveInfo):
+        _, data = root
+        return data["notify_customer"]
 
 
 class FulfillmentCanceled(SubscriptionObjectType, FulfillmentBase):
@@ -1177,11 +1404,32 @@ class FulfillmentCanceled(SubscriptionObjectType, FulfillmentBase):
 
 
 class FulfillmentApproved(SubscriptionObjectType, FulfillmentBase):
+    notify_customer = graphene.Boolean(
+        description="If true, send a notification to the customer." + ADDED_IN_316,
+        required=True,
+    )
+
     class Meta:
-        root_type = "Fulfillment"
-        enable_dry_run = True
+        root_type = None
+        enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when fulfillment is approved." + ADDED_IN_37
+        doc_category = DOC_CATEGORY_ORDERS
+
+    @staticmethod
+    def resolve_fulfillment(root, info: ResolveInfo):
+        _, data = root
+        return data["fulfillment"]
+
+    @staticmethod
+    def resolve_order(root, info: ResolveInfo):
+        _, data = root
+        return data["fulfillment"].order
+
+    @staticmethod
+    def resolve_notify_customer(root, _info: ResolveInfo):
+        _, data = root
+        return data["notify_customer"]
 
 
 class FulfillmentMetadataUpdated(SubscriptionObjectType, FulfillmentBase):
@@ -1564,6 +1812,7 @@ class StaffSetPasswordRequested(SubscriptionObjectType, AccountOperationBase):
             "Event sent when setting a new password for staff is requested."
             + ADDED_IN_315
         )
+        doc_category = DOC_CATEGORY_USERS
 
 
 class TransactionAction(SubscriptionObjectType, AbstractType):
@@ -1575,15 +1824,23 @@ class TransactionAction(SubscriptionObjectType, AbstractType):
     amount = PositiveDecimal(
         description="Transaction request amount. Null when action type is VOID.",
     )
+    currency = graphene.String(
+        description="Currency code." + ADDED_IN_316,
+        required=True,
+    )
 
     class Meta:
         doc_category = DOC_CATEGORY_PAYMENTS
 
     @staticmethod
     def resolve_amount(root: TransactionActionData, _info: ResolveInfo):
-        if root.action_value:
+        if root.action_value is not None:
             return quantize_price(root.action_value, root.transaction.currency)
         return None
+
+    @staticmethod
+    def resolve_currency(root: TransactionActionData, _info: ResolveInfo):
+        return root.transaction.currency
 
 
 class TransactionActionBase(AbstractType):
@@ -1668,7 +1925,7 @@ class PaymentGatewayInitializeSession(SubscriptionObjectType):
     )
     data = graphene.Field(
         JSON,
-        description="Payment gateway data in JSON format, recieved from storefront.",
+        description="Payment gateway data in JSON format, received from storefront.",
     )
     amount = graphene.Field(
         PositiveDecimal,
@@ -1725,10 +1982,17 @@ class TransactionSessionBase(SubscriptionObjectType, AbstractType):
     )
     data = graphene.Field(
         JSON,
-        description="Payment gateway data in JSON format, recieved from storefront.",
+        description="Payment gateway data in JSON format, received from storefront.",
     )
     merchant_reference = graphene.String(
         description="Merchant reference assigned to this payment.", required=True
+    )
+    customer_ip_address = graphene.String(
+        description=(
+            "The customer's IP address. If not provided as a parameter in the "
+            "mutation, Saleor will try to determine the customer's IP address on its "
+            "own." + ADDED_IN_316
+        ),
     )
     action = graphene.Field(
         TransactionProcessAction,
@@ -1771,6 +2035,13 @@ class TransactionSessionBase(SubscriptionObjectType, AbstractType):
     ):
         _, transaction_session_data = root
         return transaction_session_data.action
+
+    @classmethod
+    def resolve_customer_ip_address(
+        cls, root: tuple[str, TransactionSessionData], _info: ResolveInfo
+    ):
+        _, transaction_session_data = root
+        return transaction_session_data.customer_ip_address
 
 
 class TransactionInitializeSession(TransactionSessionBase):
@@ -1862,17 +2133,199 @@ class TransactionItemMetadataUpdated(SubscriptionObjectType):
         return transaction_item
 
 
+class StoredPaymentMethodDeleteRequested(SubscriptionObjectType):
+    user = graphene.Field(
+        UserType,
+        description=(
+            "The user for which the app should proceed with payment method delete "
+            "request."
+        ),
+        required=True,
+    )
+    payment_method_id = graphene.Field(
+        graphene.String,
+        description=(
+            "The ID of the payment method that should be deleted by the payment "
+            "gateway."
+        ),
+        required=True,
+    )
+
+    channel = graphene.Field(
+        "saleor.graphql.channel.types.Channel",
+        description="Channel related to the requested delete action.",
+        required=True,
+    )
+
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
+        description = (
+            "Event sent when user requests to delete a payment method."
+            + ADDED_IN_316
+            + PREVIEW_FEATURE
+        )
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+    @classmethod
+    def resolve_user(
+        cls, root: tuple[str, StoredPaymentMethodRequestDeleteData], _info: ResolveInfo
+    ):
+        _, payment_method_data = root
+        return payment_method_data.user
+
+    @classmethod
+    def resolve_payment_method_id(
+        cls, root: tuple[str, StoredPaymentMethodRequestDeleteData], _info: ResolveInfo
+    ):
+        _, payment_method_data = root
+        return payment_method_data.payment_method_id
+
+    @classmethod
+    def resolve_channel(
+        cls, root: tuple[str, StoredPaymentMethodRequestDeleteData], _info: ResolveInfo
+    ):
+        _, payment_method_data = root
+        return payment_method_data.channel
+
+
+class PaymentMethodTokenizationBase(AbstractType):
+    user = graphene.Field(
+        UserType,
+        description="The user related to the requested action.",
+        required=True,
+    )
+    channel = graphene.Field(
+        "saleor.graphql.channel.types.Channel",
+        description="Channel related to the requested action.",
+        required=True,
+    )
+    data = graphene.Field(
+        JSON,
+        description="Payment gateway data in JSON format, received from storefront.",
+    )
+
+    @classmethod
+    def resolve_channel(
+        cls,
+        root: tuple[str, PaymentMethodTokenizationBaseRequestData],
+        _info: ResolveInfo,
+    ):
+        _, payment_method_data = root
+        return payment_method_data.channel
+
+    @classmethod
+    def resolve_user(
+        cls,
+        root: tuple[str, PaymentMethodTokenizationBaseRequestData],
+        _info: ResolveInfo,
+    ):
+        _, payment_method_data = root
+        return payment_method_data.user
+
+    @classmethod
+    def resolve_data(
+        cls,
+        root: tuple[str, PaymentMethodTokenizationBaseRequestData],
+        _info: ResolveInfo,
+    ):
+        _, payment_method_data = root
+        return payment_method_data.data
+
+
+class PaymentGatewayInitializeTokenizationSession(
+    SubscriptionObjectType, PaymentMethodTokenizationBase
+):
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
+        description = (
+            "Event sent to initialize a new session in payment gateway to store the "
+            "payment method. " + ADDED_IN_316 + PREVIEW_FEATURE
+        )
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+
+class PaymentMethodInitializeTokenizationSession(
+    SubscriptionObjectType, PaymentMethodTokenizationBase
+):
+    payment_flow_to_support = TokenizedPaymentFlowEnum(
+        description=(
+            "The payment flow that the tokenized payment method should support."
+        ),
+        required=True,
+    )
+
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
+        description = (
+            "Event sent when user requests a tokenization of payment method."
+            + ADDED_IN_316
+            + PREVIEW_FEATURE
+        )
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+    @classmethod
+    def resolve_payment_flow_to_support(
+        cls,
+        root: tuple[str, PaymentMethodInitializeTokenizationRequestData],
+        _info: ResolveInfo,
+    ):
+        _, payment_method_data = root
+        return payment_method_data.payment_flow_to_support
+
+
+class PaymentMethodProcessTokenizationSession(
+    SubscriptionObjectType, PaymentMethodTokenizationBase
+):
+    id = graphene.String(
+        description=(
+            "The ID returned by app from "
+            "`PAYMENT_METHOD_INITIALIZE_TOKENIZATION_SESSION` webhook."
+        ),
+        required=True,
+    )
+
+    class Meta:
+        root_type = None
+        enable_dry_run = False
+        interfaces = (Event,)
+        description = (
+            "Event sent when user continues a tokenization of payment method."
+            + ADDED_IN_316
+            + PREVIEW_FEATURE
+        )
+        doc_category = DOC_CATEGORY_PAYMENTS
+
+    @classmethod
+    def resolve_id(
+        cls,
+        root: tuple[str, PaymentMethodProcessTokenizationRequestData],
+        _info: ResolveInfo,
+    ):
+        _, payment_method_data = root
+        return payment_method_data.id
+
+
 class TranslationTypes(Union):
     class Meta:
-        types = tuple(TRANSLATIONS_TYPES_MAP.values())
+        types = tuple(TRANSLATIONS_TYPES_MAP.values()) + (
+            translation_types.SaleTranslation,
+        )
 
     @classmethod
     def resolve_type(cls, instance, info: ResolveInfo):
         instance_type = type(instance)
+        if instance_type == PromotionTranslation and instance.promotion.old_sale_id:
+            return translation_types.SaleTranslation
         if instance_type in TRANSLATIONS_TYPES_MAP:
             return TRANSLATIONS_TYPES_MAP[instance_type]
 
-        return super(TranslationTypes, cls).resolve_type(instance, info)
+        return super().resolve_type(instance, info)
 
 
 class TranslationBase(AbstractType):
@@ -1892,6 +2345,7 @@ class TranslationCreated(SubscriptionObjectType, TranslationBase):
         enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when new translation is created." + ADDED_IN_32
+        doc_category = DOC_CATEGORY_MISC
 
 
 class TranslationUpdated(SubscriptionObjectType, TranslationBase):
@@ -1900,6 +2354,7 @@ class TranslationUpdated(SubscriptionObjectType, TranslationBase):
         enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when translation is updated." + ADDED_IN_32
+        doc_category = DOC_CATEGORY_MISC
 
 
 class VoucherBase(AbstractType):
@@ -1947,6 +2402,25 @@ class VoucherMetadataUpdated(SubscriptionObjectType, VoucherBase):
         enable_dry_run = True
         interfaces = (Event,)
         description = "Event sent when voucher metadata is updated." + ADDED_IN_38
+
+
+class VoucherCodeExportCompleted(SubscriptionObjectType):
+    export = graphene.Field(
+        "saleor.graphql.csv.types.ExportFile",
+        description="The export file for voucher codes.",
+    )
+
+    class Meta:
+        root_type = "ExportFile"
+        enable_dry_run = True
+        interfaces = (Event,)
+        description = "Event sent when voucher code export is completed." + ADDED_IN_318
+        doc_category = DOC_CATEGORY_DISCOUNTS
+
+    @staticmethod
+    def resolve_export(root, _info: ResolveInfo):
+        _, export_file = root
+        return export_file
 
 
 class ShopMetadataUpdated(SubscriptionObjectType, AbstractType):
@@ -2181,6 +2655,9 @@ class Subscription(SubscriptionObjectType):
         description="Look up subscription event." + ADDED_IN_32,
     )
 
+    class Meta:
+        doc_category = DOC_CATEGORY_MISC
+
     @staticmethod
     def resolve_event(root, info: ResolveInfo):
         return Observable.from_([root])
@@ -2199,6 +2676,7 @@ class ThumbnailCreated(SubscriptionObjectType):
         enable_dry_run = False
         interfaces = (Event,)
         description = "Event sent when thumbnail is created." + ADDED_IN_312
+        doc_category = DOC_CATEGORY_MISC
 
     @staticmethod
     def resolve_id(root, info: ResolveInfo):
@@ -2260,6 +2738,7 @@ WEBHOOK_TYPES_MAP = {
     WebhookEventAsyncType.GIFT_CARD_SENT: GiftCardSent,
     WebhookEventAsyncType.GIFT_CARD_STATUS_CHANGED: GiftCardStatusChanged,
     WebhookEventAsyncType.GIFT_CARD_METADATA_UPDATED: GiftCardMetadataUpdated,
+    WebhookEventAsyncType.GIFT_CARD_EXPORT_COMPLETED: GiftCardExportCompleted,
     WebhookEventAsyncType.MENU_CREATED: MenuCreated,
     WebhookEventAsyncType.MENU_UPDATED: MenuUpdated,
     WebhookEventAsyncType.MENU_DELETED: MenuDeleted,
@@ -2285,6 +2764,7 @@ WEBHOOK_TYPES_MAP = {
     WebhookEventAsyncType.PRODUCT_UPDATED: ProductUpdated,
     WebhookEventAsyncType.PRODUCT_DELETED: ProductDeleted,
     WebhookEventAsyncType.PRODUCT_METADATA_UPDATED: ProductMetadataUpdated,
+    WebhookEventAsyncType.PRODUCT_EXPORT_COMPLETED: ProductExportCompleted,
     WebhookEventAsyncType.PRODUCT_MEDIA_CREATED: ProductMediaCreated,
     WebhookEventAsyncType.PRODUCT_MEDIA_UPDATED: ProductMediaUpdated,
     WebhookEventAsyncType.PRODUCT_MEDIA_DELETED: ProductMediaDeleted,
@@ -2301,10 +2781,19 @@ WEBHOOK_TYPES_MAP = {
     WebhookEventAsyncType.SALE_UPDATED: SaleUpdated,
     WebhookEventAsyncType.SALE_DELETED: SaleDeleted,
     WebhookEventAsyncType.SALE_TOGGLE: SaleToggle,
+    WebhookEventAsyncType.PROMOTION_CREATED: PromotionCreated,
+    WebhookEventAsyncType.PROMOTION_UPDATED: PromotionUpdated,
+    WebhookEventAsyncType.PROMOTION_DELETED: PromotionDeleted,
+    WebhookEventAsyncType.PROMOTION_STARTED: PromotionStarted,
+    WebhookEventAsyncType.PROMOTION_ENDED: PromotionEnded,
+    WebhookEventAsyncType.PROMOTION_RULE_CREATED: PromotionRuleCreated,
+    WebhookEventAsyncType.PROMOTION_RULE_UPDATED: PromotionRuleUpdated,
+    WebhookEventAsyncType.PROMOTION_RULE_DELETED: PromotionRuleDeleted,
     WebhookEventAsyncType.INVOICE_REQUESTED: InvoiceRequested,
     WebhookEventAsyncType.INVOICE_DELETED: InvoiceDeleted,
     WebhookEventAsyncType.INVOICE_SENT: InvoiceSent,
     WebhookEventAsyncType.FULFILLMENT_CREATED: FulfillmentCreated,
+    WebhookEventAsyncType.FULFILLMENT_TRACKING_NUMBER_UPDATED: FulfillmentTrackingNumberUpdated,  # noqa: E501
     WebhookEventAsyncType.FULFILLMENT_CANCELED: FulfillmentCanceled,
     WebhookEventAsyncType.FULFILLMENT_APPROVED: FulfillmentApproved,
     WebhookEventAsyncType.FULFILLMENT_METADATA_UPDATED: FulfillmentMetadataUpdated,
@@ -2348,6 +2837,7 @@ WEBHOOK_TYPES_MAP = {
     WebhookEventAsyncType.VOUCHER_UPDATED: VoucherUpdated,
     WebhookEventAsyncType.VOUCHER_DELETED: VoucherDeleted,
     WebhookEventAsyncType.VOUCHER_METADATA_UPDATED: VoucherMetadataUpdated,
+    WebhookEventAsyncType.VOUCHER_CODE_EXPORT_COMPLETED: VoucherCodeExportCompleted,
     WebhookEventAsyncType.WAREHOUSE_CREATED: WarehouseCreated,
     WebhookEventAsyncType.WAREHOUSE_UPDATED: WarehouseUpdated,
     WebhookEventAsyncType.WAREHOUSE_DELETED: WarehouseDeleted,
@@ -2365,7 +2855,7 @@ WEBHOOK_TYPES_MAP = {
     ),
     WebhookEventSyncType.TRANSACTION_CHARGE_REQUESTED: TransactionChargeRequested,
     WebhookEventSyncType.TRANSACTION_REFUND_REQUESTED: TransactionRefundRequested,
-    WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS: (OrderFilterShippingMethods),
+    WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS: OrderFilterShippingMethods,
     WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS: (
         CheckoutFilterShippingMethods
     ),
@@ -2381,4 +2871,16 @@ WEBHOOK_TYPES_MAP = {
     WebhookEventSyncType.TRANSACTION_PROCESS_SESSION: TransactionProcessSession,
     WebhookEventAsyncType.SHOP_METADATA_UPDATED: ShopMetadataUpdated,
     WebhookEventSyncType.LIST_STORED_PAYMENT_METHODS: ListStoredPaymentMethods,
+    WebhookEventSyncType.STORED_PAYMENT_METHOD_DELETE_REQUESTED: (
+        StoredPaymentMethodDeleteRequested
+    ),
+    WebhookEventSyncType.PAYMENT_GATEWAY_INITIALIZE_TOKENIZATION_SESSION: (
+        PaymentGatewayInitializeTokenizationSession
+    ),
+    WebhookEventSyncType.PAYMENT_METHOD_INITIALIZE_TOKENIZATION_SESSION: (
+        PaymentMethodInitializeTokenizationSession
+    ),
+    WebhookEventSyncType.PAYMENT_METHOD_PROCESS_TOKENIZATION_SESSION: (
+        PaymentMethodProcessTokenizationSession
+    ),
 }
