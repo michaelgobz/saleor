@@ -31,8 +31,7 @@ class RefundEvents(BaseEvent):
 
 
 @dataclass
-class CancelEvents(BaseEvent):
-    ...
+class CancelEvents(BaseEvent): ...
 
 
 PSPReference = str
@@ -395,5 +394,6 @@ def recalculate_transaction_amounts(transaction: TransactionItem, save: bool = T
                 "charge_pending_value",
                 "refund_pending_value",
                 "cancel_pending_value",
+                "modified_at",
             ]
         )

@@ -10,11 +10,13 @@ from .types import Plugin
 
 
 def filter_plugin_status_in_channels(
-    plugins: list[Plugin], status_in_channels: dict
+    plugins: list[Plugin], status_in_channels: dict, database_connection_name: str
 ) -> list[Plugin]:
     is_active = status_in_channels["active"]
     channels_id = status_in_channels["channels"]
-    channels = get_nodes(channels_id, Channel)
+    channels = get_nodes(
+        channels_id, Channel, database_connection_name=database_connection_name
+    )
 
     filtered_plugins = []
     for plugin in plugins:
@@ -24,10 +26,8 @@ def filter_plugin_status_in_channels(
         else:
             for channel in channels:
                 if any(
-                    [
-                        (config.channel.id == channel.id and config.active is is_active)
-                        for config in plugin.channel_configurations
-                    ]
+                    (config.channel.id == channel.id and config.active is is_active)
+                    for config in plugin.channel_configurations
                 ):
                     filtered_plugins.append(plugin)
                     break
@@ -49,10 +49,8 @@ def filter_plugin_search(plugins: list[Plugin], value: Optional[str]) -> list[Pl
             plugin
             for plugin in plugins
             if any(
-                [
-                    value.lower() in getattr(plugin, field).lower()
-                    for field in plugin_fields
-                ]
+                value.lower() in getattr(plugin, field).lower()
+                for field in plugin_fields
             )
         ]
     return plugins

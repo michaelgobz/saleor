@@ -4,6 +4,10 @@ import graphene
 import pytest
 from graphene import Node
 
+from .....attribute.tests.model_helpers import (
+    get_product_attribute_values,
+    get_product_attributes,
+)
 from .....attribute.utils import associate_attribute_values_to_instance
 from .....core.taxes import TaxType
 from .....plugins.manager import PluginsManager
@@ -465,6 +469,9 @@ def test_update_product(
     non_default_category,
     collection_list,
     product_with_variant_with_two_attributes,
+    color_attribute,
+    size_attribute,
+    boolean_attribute,
     other_description_json,
     permission_manage_products,
     monkeypatch,
@@ -529,6 +536,24 @@ def test_update_product(
     product_slug = "updated-product"
     product_charge_taxes = True
     product_tax_rate = "STANDARD"
+    product.product_type.product_attributes.add(size_attribute)
+    product.product_type.product_attributes.add(color_attribute)
+    product.product_type.product_attributes.add(boolean_attribute)
+
+    attributes = [
+        {
+            "id": graphene.Node.to_global_id("Attribute", color_attribute.pk),
+            "values": ["newValue"],
+        },
+        {
+            "id": graphene.Node.to_global_id("Attribute", size_attribute.pk),
+            "values": ["newValue"],
+        },
+        {
+            "id": graphene.Node.to_global_id("Attribute", boolean_attribute.pk),
+            "values": ["False"],
+        },
+    ]
 
     # Mock tax interface with fake response from tax gateway
     monkeypatch.setattr(
@@ -546,6 +571,7 @@ def test_update_product(
             "description": other_description_json,
             "chargeTaxes": product_charge_taxes,
             "taxCode": product_tax_rate,
+            "attributes": attributes,
         },
     }
 
@@ -580,14 +606,12 @@ def test_filter_products_by_attributes(
     api_client, product_list, channel_USD, count_queries
 ):
     product = product_list[0]
-    attr_assignment = product.attributes.first()
-    attr = attr_assignment.attribute
+    attr = get_product_attributes(product).first()
+    first_assigned_value = get_product_attribute_values(product, attr).first()
     variables = {
         "channel": channel_USD.slug,
         "filter": {
-            "attributes": [
-                {"slug": attr.slug, "values": [attr_assignment.values.first().slug]}
-            ]
+            "attributes": [{"slug": attr.slug, "values": [first_assigned_value.slug]}]
         },
     }
     get_graphql_content(api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables))
@@ -601,7 +625,7 @@ def test_filter_products_by_numeric_attributes(
     product = product_list[0]
     product.product_type.product_attributes.add(numeric_attribute)
     associate_attribute_values_to_instance(
-        product, numeric_attribute, *numeric_attribute.values.all()
+        product, {numeric_attribute.id: list(numeric_attribute.values.all())}
     )
     variables = {
         "channel": channel_USD.slug,
@@ -628,7 +652,7 @@ def test_filter_products_by_boolean_attributes(
     product = product_list[0]
     product.product_type.product_attributes.add(boolean_attribute)
     associate_attribute_values_to_instance(
-        product, boolean_attribute, *boolean_attribute.values.all()
+        product, {boolean_attribute.id: list(boolean_attribute.values.all())}
     )
     variables = {
         "channel": channel_USD.slug,

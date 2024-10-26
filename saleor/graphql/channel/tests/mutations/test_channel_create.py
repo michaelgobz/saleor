@@ -1,5 +1,5 @@
+import datetime
 import json
-from datetime import timedelta
 from unittest import mock
 
 import graphene
@@ -44,12 +44,13 @@ CHANNEL_CREATE_MUTATION = """
                     automaticallyFulfillNonShippableGiftCard
                     expireOrdersAfter
                     markAsPaidStrategy
-                    defaultTransactionFlowStrategy
                     deleteExpiredOrdersAfter
                     allowUnpaidOrders
+                    includeDraftOrderInVoucherUsage
                 }
                 checkoutSettings {
                     useLegacyErrorFlow
+                    automaticallyCompleteFullyPaidCheckouts
                 }
                 paymentSettings {
                     defaultTransactionFlowStrategy
@@ -86,6 +87,7 @@ def test_channel_create_mutation_as_staff_user(
                 "automaticallyConfirmAllNewOrders": False,
                 "automaticallyFulfillNonShippableGiftCard": False,
                 "expireOrdersAfter": 10,
+                "includeDraftOrderInVoucherUsage": True,
             },
             "checkoutSettings": {"useLegacyErrorFlow": False},
         }
@@ -119,7 +121,12 @@ def test_channel_create_mutation_as_staff_user(
         is False
     )
     assert channel_data["orderSettings"]["expireOrdersAfter"] == 10
+    assert channel_data["orderSettings"]["includeDraftOrderInVoucherUsage"] is True
     assert channel_data["checkoutSettings"]["useLegacyErrorFlow"] is False
+    assert (
+        channel_data["checkoutSettings"]["automaticallyCompleteFullyPaidCheckouts"]
+        is False
+    )
 
 
 def test_channel_create_mutation_as_app(
@@ -137,7 +144,10 @@ def test_channel_create_mutation_as_app(
             "slug": slug,
             "currencyCode": currency_code,
             "defaultCountry": default_country,
-            "checkoutSettings": {"useLegacyErrorFlow": False},
+            "checkoutSettings": {
+                "useLegacyErrorFlow": False,
+                "automaticallyCompleteFullyPaidCheckouts": True,
+            },
         }
     }
 
@@ -172,7 +182,12 @@ def test_channel_create_mutation_as_app(
         is True
     )
     assert channel_data["orderSettings"]["expireOrdersAfter"] is None
+    assert channel_data["orderSettings"]["includeDraftOrderInVoucherUsage"] is False
     assert channel_data["checkoutSettings"]["useLegacyErrorFlow"] is False
+    assert (
+        channel_data["checkoutSettings"]["automaticallyCompleteFullyPaidCheckouts"]
+        is True
+    )
 
 
 def test_channel_create_mutation_as_customer(user_api_client):
@@ -532,6 +547,7 @@ def test_channel_create_mutation_trigger_webhook(
         [any_webhook],
         channel,
         SimpleLazyObject(lambda: staff_api_client.user),
+        allow_replica=False,
     )
 
 
@@ -602,52 +618,6 @@ def test_channel_create_set_order_mark_as_paid(
     assert (
         channel.order_mark_as_paid_strategy
         == MarkAsPaidStrategyEnum.TRANSACTION_FLOW.value
-    )
-
-
-def test_channel_create_set_default_transaction_flow_strategy_via_order_settings(
-    permission_manage_channels,
-    staff_api_client,
-):
-    # given
-    name = "testName"
-    slug = "test_slug"
-    currency_code = "USD"
-    default_country = "US"
-    variables = {
-        "input": {
-            "name": name,
-            "slug": slug,
-            "currencyCode": currency_code,
-            "defaultCountry": default_country,
-            "orderSettings": {
-                "defaultTransactionFlowStrategy": (
-                    TransactionFlowStrategyEnum.AUTHORIZATION.name
-                )
-            },
-        }
-    }
-
-    # when
-    response = staff_api_client.post_graphql(
-        CHANNEL_CREATE_MUTATION,
-        variables=variables,
-        permissions=(permission_manage_channels,),
-    )
-    content = get_graphql_content(response)
-
-    # then
-    data = content["data"]["channelCreate"]
-    assert not data["errors"]
-    channel_data = data["channel"]
-    channel = Channel.objects.get()
-    assert (
-        channel_data["orderSettings"]["defaultTransactionFlowStrategy"]
-        == TransactionFlowStrategyEnum.AUTHORIZATION.name
-    )
-    assert (
-        channel.default_transaction_flow_strategy
-        == TransactionFlowStrategyEnum.AUTHORIZATION.value
     )
 
 
@@ -734,7 +704,9 @@ def test_channel_create_set_delete_expired_orders_after(
         channel_data["orderSettings"]["deleteExpiredOrdersAfter"]
         == delete_expired_after
     )
-    assert channel.delete_expired_orders_after == timedelta(days=delete_expired_after)
+    assert channel.delete_expired_orders_after == datetime.timedelta(
+        days=delete_expired_after
+    )
 
 
 @pytest.mark.parametrize("delete_expired_after", [-1, 0, 121, 300])
@@ -804,6 +776,45 @@ def test_channel_create_set_checkout_use_legacy_error_flow(
     channel = Channel.objects.get()
     assert channel_data["checkoutSettings"]["useLegacyErrorFlow"] is False
     assert channel.use_legacy_error_flow_for_checkout is False
+
+
+def test_channel_create_set_automatically_complete_fully_paid_checkouts(
+    permission_manage_channels,
+    staff_api_client,
+):
+    # given
+    name = "testName"
+    slug = "test_slug"
+    currency_code = "USD"
+    default_country = "US"
+    variables = {
+        "input": {
+            "name": name,
+            "slug": slug,
+            "currencyCode": currency_code,
+            "defaultCountry": default_country,
+            "checkoutSettings": {"automaticallyCompleteFullyPaidCheckouts": True},
+        }
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        CHANNEL_CREATE_MUTATION,
+        variables=variables,
+        permissions=(permission_manage_channels,),
+    )
+    content = get_graphql_content(response)
+
+    # then
+    data = content["data"]["channelCreate"]
+    assert not data["errors"]
+    channel_data = data["channel"]
+    channel = Channel.objects.get()
+    assert (
+        channel_data["checkoutSettings"]["automaticallyCompleteFullyPaidCheckouts"]
+        is True
+    )
+    assert channel.automatically_complete_fully_paid_checkouts is True
 
 
 @pytest.mark.parametrize("allowUnpaid", [True, False])

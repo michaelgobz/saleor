@@ -1,39 +1,50 @@
+import datetime
 import decimal
 import json
 import logging
-from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional, Union, cast, overload
 
 import graphene
-from aniso8601 import parse_datetime
 from babel.numbers import get_currency_precision
+from django.conf import settings
 from django.core.serializers.json import DjangoJSONEncoder
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
 from ..account.models import User
 from ..app.models import App
 from ..channel import TransactionFlowStrategy
-from ..checkout.actions import transaction_amounts_for_checkout_updated
+from ..checkout.actions import (
+    transaction_amounts_for_checkout_updated,
+    update_last_transaction_modified_at_for_checkout,
+)
 from ..checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from ..checkout.models import Checkout
+from ..checkout.payment_utils import update_refundable_for_checkout
+from ..core.db.connection import allow_writer
 from ..core.prices import quantize_price
 from ..core.tracing import traced_atomic_transaction
 from ..graphql.core.utils import str_to_enum
 from ..order.fetch import fetch_order_info
-from ..order.models import Order
+from ..order.models import Order, OrderGrantedRefund
 from ..order.search import update_order_search_vector
-from ..order.utils import update_order_authorize_data, updates_amounts_for_order
+from ..order.utils import (
+    calculate_order_granted_refund_status,
+    update_order_authorize_data,
+    updates_amounts_for_order,
+)
 from ..plugins.manager import PluginsManager, get_plugins_manager
 from . import (
+    OPTIONAL_PSP_REFERENCE_EVENTS,
     ChargeStatus,
     GatewayError,
     PaymentError,
     StorePaymentMethod,
     TransactionAction,
     TransactionEventType,
+    TransactionItemIdempotencyUniqueError,
     TransactionKind,
 )
 from .error_codes import PaymentErrorCode
@@ -62,6 +73,68 @@ GENERIC_TRANSACTION_ERROR = "Transaction was unsuccessful"
 ALLOWED_GATEWAY_KINDS = {choices[0] for choices in TransactionKind.CHOICES}
 
 
+def _recalculate_last_refund_success_for_transaction(
+    transaction_item: TransactionItem,
+    request_event: TransactionEvent,
+    response_event: Optional[TransactionEvent] = None,
+) -> bool:
+    """Recalculate last_refund_success for transaction.
+
+    Based on the request and response events, we can determine if the last refund was
+    successful or not.
+    If response event is none, the request event can store the details updated based
+    on the response from the gateway (in case of async flow).
+    If the request event doesn't have these details, we can assume that the last
+    refund failed.
+    As a response we return the boolean flag which determines if the transaction's last
+    refund success was changed.
+    """
+    last_refund_success_changed = False
+    last_refund_success = transaction_item.last_refund_success
+    if response_event:
+        if response_event.type in [
+            TransactionEventType.REFUND_SUCCESS,
+            TransactionEventType.CANCEL_SUCCESS,
+        ]:
+            last_refund_success_changed = last_refund_success is not True
+            transaction_item.last_refund_success = True
+
+        if response_event.type in [
+            TransactionEventType.REFUND_FAILURE,
+            TransactionEventType.CANCEL_FAILURE,
+        ]:
+            last_refund_success_changed = last_refund_success is not False
+            transaction_item.last_refund_success = False
+    elif request_event.type in [
+        TransactionEventType.REFUND_REQUEST,
+        TransactionEventType.CANCEL_REQUEST,
+    ]:
+        if request_event.include_in_calculations:
+            last_refund_success_changed = last_refund_success is not True
+            transaction_item.last_refund_success = True
+        else:
+            last_refund_success_changed = last_refund_success is not False
+            transaction_item.last_refund_success = False
+    return last_refund_success_changed
+
+
+def recalculate_refundable_for_checkout(
+    transaction_item: TransactionItem,
+    request_event: TransactionEvent,
+    response_event: Optional[TransactionEvent] = None,
+):
+    last_refund_success_changed = _recalculate_last_refund_success_for_transaction(
+        transaction_item,
+        request_event,
+        response_event,
+    )
+    if last_refund_success_changed:
+        transaction_item.save(update_fields=["last_refund_success"])
+
+    if transaction_item.checkout_id:
+        update_refundable_for_checkout(transaction_item.checkout_id)
+
+
 def create_payment_lines_information(
     payment: Payment,
     manager: PluginsManager,
@@ -71,7 +144,7 @@ def create_payment_lines_information(
 
     if checkout:
         return create_checkout_payment_lines_information(checkout, manager)
-    elif order:
+    if order:
         return create_order_payment_lines_information(order)
 
     return PaymentLinesData(
@@ -248,7 +321,7 @@ def create_payment_information(
         refund_data=refund_data,
         transactions=generate_transactions_data(payment),
         _resolve_lines_data=lambda: create_payment_lines_information(
-            payment, manager or get_plugins_manager()
+            payment, manager or get_plugins_manager(allow_replica=False)
         ),
     )
 
@@ -320,7 +393,8 @@ def create_payment(
         "metadata": {} if metadata is None else metadata,
     }
 
-    payment, _ = Payment.objects.get_or_create(defaults=defaults, **data)
+    with allow_writer():
+        payment, _ = Payment.objects.get_or_create(defaults=defaults, **data)
     return payment
 
 
@@ -348,8 +422,7 @@ def create_transaction(
     gateway_response: Optional[GatewayResponse] = None,
     error_msg=None,
     is_success=False,
-) -> Transaction:
-    ...
+) -> Transaction: ...
 
 
 @overload
@@ -362,8 +435,7 @@ def create_transaction(
     gateway_response: GatewayResponse,
     error_msg=None,
     is_success=False,
-) -> Transaction:
-    ...
+) -> Transaction: ...
 
 
 def create_transaction(
@@ -459,8 +531,8 @@ def validate_gateway_response(response: GatewayResponse):
 
     try:
         json.dumps(response.raw_response, cls=DjangoJSONEncoder)
-    except (TypeError, ValueError):
-        raise GatewayError("Gateway response needs to be json serializable")
+    except (TypeError, ValueError) as e:
+        raise GatewayError("Gateway response needs to be json serializable") from e
 
 
 @traced_atomic_transaction()
@@ -614,7 +686,7 @@ def get_payment_token(payment: Payment):
 def is_currency_supported(currency: str, gateway_id: str, manager: "PluginsManager"):
     """Return true if the given gateway supports given currency."""
     available_gateways = manager.list_payment_gateways(currency=currency)
-    return any([gateway.id == gateway_id for gateway in available_gateways])
+    return any(gateway.id == gateway_id for gateway in available_gateways)
 
 
 def price_from_minor_unit(value: str, currency: str):
@@ -681,13 +753,17 @@ def try_void_or_refund_inactive_payment(
         )
 
 
-def payment_owned_by_user(payment_pk: int, user) -> bool:
+def payment_owned_by_user(
+    payment_pk: int,
+    user,
+    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
+) -> bool:
     if not user:
         return False
     return (
-        Payment.objects.filter(
-            (Q(order__user=user) | Q(checkout__user=user)) & Q(pk=payment_pk)
-        ).first()
+        Payment.objects.using(database_connection_name)
+        .filter((Q(order__user=user) | Q(checkout__user=user)) & Q(pk=payment_pk))
+        .first()
         is not None
     )
 
@@ -729,6 +805,33 @@ def get_correct_event_types_based_on_request_type(request_type: str) -> list[str
         ],
     }
     return type_map.get(request_type, [])
+
+
+def parse_transaction_event_amount(
+    amount_data: Union[str, int, float, None],
+    parsed_event_data: dict,
+    error_field_msg: list[str],
+    invalid_msg: str,
+    missing_msg: str,
+):
+    if amount_data is not None:
+        amount_valid = True
+        try:
+            amount = decimal.Decimal(amount_data).quantize(
+                decimal.Decimal(10) ** (-settings.DEFAULT_DECIMAL_PLACES)
+            )
+            parsed_event_data["amount"] = amount
+            if not amount.is_finite():
+                amount_valid = False
+        except decimal.DecimalException:
+            amount_valid = False
+
+        if not amount_valid:
+            logger.warning(invalid_msg, "amount", amount_data)
+            error_field_msg.append(invalid_msg % ("amount", amount_data))
+    else:
+        logger.warning(missing_msg, "amount")
+        error_field_msg.append(missing_msg % "amount")
 
 
 def parse_transaction_event_data(
@@ -777,33 +880,26 @@ def parse_transaction_event_data(
         error_field_msg.append(missing_msg % "result")
 
     amount_data = event_data.get("amount")
-    if amount_data is not None:
-        try:
-            parsed_event_data["amount"] = decimal.Decimal(amount_data)
-        except decimal.DecimalException:
-            logger.warning(invalid_msg, "amount", amount_data)
-            error_field_msg.append(invalid_msg % ("amount", amount_data))
-    else:
-        logger.warning(missing_msg, "amount")
-        error_field_msg.append(missing_msg % "amount")
+    parse_transaction_event_amount(
+        amount_data,
+        parsed_event_data=parsed_event_data,
+        error_field_msg=error_field_msg,
+        invalid_msg=invalid_msg,
+        missing_msg=missing_msg,
+    )
 
     if event_time_data := event_data.get("time"):
         try:
             parsed_event_data["time"] = (
-                datetime.fromisoformat(event_time_data) if event_time_data else None
+                datetime.datetime.fromisoformat(event_time_data).replace(
+                    tzinfo=datetime.UTC
+                )
+                if event_time_data
+                else None
             )
         except ValueError:
-            try:
-                # datetime.fromisoformat supports only formats of the objects that were
-                # created by date.isoformat() or datetime.isoformat(). It is fixed in
-                # 3.11
-                # This try except block can be removed after moving to python 3.11
-                # ref: https://docs.python.org/3/library/datetime.html#datetime.
-                # datetime.fromisoformat
-                parsed_event_data["time"] = parse_datetime(event_time_data)
-            except ValueError:
-                logger.warning(invalid_msg, "time", event_time_data)
-                error_field_msg.append(invalid_msg % ("time", event_time_data))
+            logger.warning(invalid_msg, "time", event_time_data)
+            error_field_msg.append(invalid_msg % ("time", event_time_data))
     else:
         parsed_event_data["time"] = timezone.now()
 
@@ -818,7 +914,6 @@ def parse_transaction_action_data(
     response_data: Any,
     request_type: str,
     event_is_optional: bool = True,
-    psp_reference_is_optional: bool = False,
 ) -> tuple[Optional["TransactionRequestResponse"], Optional[error_msg]]:
     """Parse response from transaction action webhook.
 
@@ -827,11 +922,6 @@ def parse_transaction_action_data(
     If unable to parse, None will be returned.
     """
     psp_reference: str = response_data.get("pspReference")
-    if not psp_reference and not psp_reference_is_optional:
-        msg: str = "Missing `pspReference` field in the response."
-        logger.error(msg)
-        return None, msg
-
     available_actions = response_data.get("actions", None)
     if available_actions is not None:
         possible_actions = {
@@ -863,6 +953,12 @@ def parse_transaction_action_data(
             msg = msg[:509] + "..."
         return None, msg
 
+    request_event_type = parsed_event_data.get("type", request_type)
+    if not psp_reference and request_event_type not in OPTIONAL_PSP_REFERENCE_EVENTS:
+        msg = f"Providing `pspReference` is required for {request_event_type.upper()}."
+        logger.error(msg)
+        return None, msg
+
     return (
         TransactionRequestResponse(
             psp_reference=psp_reference,
@@ -880,11 +976,11 @@ def get_failed_transaction_event_type_for_request_event(
 ):
     if request_event.type == TransactionEventType.AUTHORIZATION_REQUEST:
         return TransactionEventType.AUTHORIZATION_FAILURE
-    elif request_event.type == TransactionEventType.CHARGE_REQUEST:
+    if request_event.type == TransactionEventType.CHARGE_REQUEST:
         return TransactionEventType.CHARGE_FAILURE
-    elif request_event.type == TransactionEventType.REFUND_REQUEST:
+    if request_event.type == TransactionEventType.REFUND_REQUEST:
         return TransactionEventType.REFUND_FAILURE
-    elif request_event.type == TransactionEventType.CANCEL_REQUEST:
+    if request_event.type == TransactionEventType.CANCEL_REQUEST:
         return TransactionEventType.CANCEL_FAILURE
     return None
 
@@ -898,21 +994,22 @@ def get_failed_type_based_on_event(event: TransactionEvent):
         TransactionEventType.AUTHORIZATION_ADJUSTMENT,
     ]:
         return TransactionEventType.AUTHORIZATION_FAILURE
-    elif event.type in [
+    if event.type in [
         TransactionEventType.CHARGE_BACK,
         TransactionEventType.CHARGE_SUCCESS,
     ]:
         return TransactionEventType.CHARGE_FAILURE
-    elif event.type in [
+    if event.type in [
         TransactionEventType.REFUND_REVERSE,
         TransactionEventType.REFUND_SUCCESS,
     ]:
         return TransactionEventType.REFUND_FAILURE
-    elif event.type == TransactionEventType.CANCEL_SUCCESS:
+    if event.type == TransactionEventType.CANCEL_SUCCESS:
         return TransactionEventType.CANCEL_FAILURE
     return event.type
 
 
+@allow_writer()
 def create_failed_transaction_event(
     event: TransactionEvent,
     cause: str,
@@ -925,6 +1022,7 @@ def create_failed_transaction_event(
         message=cause,
         include_in_calculations=False,
         psp_reference=event.psp_reference,
+        related_granted_refund_id=event.related_granted_refund_id,
     )
 
 
@@ -1010,6 +1108,7 @@ def _create_event_from_response(
     app: App,
     transaction_id: int,
     currency: str,
+    related_granted_refund_id: Optional[int] = None,
 ) -> tuple[Optional[TransactionEvent], Optional[error_msg]]:
     app_identifier = None
     if app and app.identifier:
@@ -1026,6 +1125,7 @@ def _create_event_from_response(
         app_identifier=app_identifier,
         app=app,
         include_in_calculations=True,
+        related_granted_refund_id=related_granted_refund_id,
     )
     with transaction.atomic():
         event, error_msg = deduplicate_event(event, app)
@@ -1040,7 +1140,6 @@ def _get_parsed_transaction_action_data(
     transaction_webhook_response: Optional[dict[str, Any]],
     event_type: str,
     event_is_optional: bool = True,
-    psp_reference_is_optional: bool = False,
 ) -> tuple[Optional["TransactionRequestResponse"], Optional[error_msg]]:
     if transaction_webhook_response is None:
         return None, "Failed to delivery request."
@@ -1049,7 +1148,6 @@ def _get_parsed_transaction_action_data(
         transaction_webhook_response,
         event_type,
         event_is_optional=event_is_optional,
-        psp_reference_is_optional=psp_reference_is_optional,
     )
     if not transaction_request_response:
         return None, error_msg or ""
@@ -1085,7 +1183,6 @@ def create_transaction_event_for_transaction_session(
         transaction_webhook_response=transaction_webhook_response,
         event_type=request_event_type,
         event_is_optional=False,
-        psp_reference_is_optional=True,
     )
     if not transaction_request_response or not transaction_request_response.event:
         return create_failed_transaction_event(request_event, cause=error_msg or "")
@@ -1093,18 +1190,7 @@ def create_transaction_event_for_transaction_session(
     event = None
     request_event_update_fields = []
     response_event = transaction_request_response.event
-    if not response_event.psp_reference and response_event.type not in [
-        TransactionEventType.AUTHORIZATION_ACTION_REQUIRED,
-        TransactionEventType.CHARGE_ACTION_REQUIRED,
-    ]:
-        return create_failed_transaction_event(
-            request_event,
-            cause=(
-                f"Providing `pspReference` is required for "
-                f"{response_event.type.upper()}"
-            ),
-        )
-    elif response_event.type in [
+    if response_event.type in [
         TransactionEventType.AUTHORIZATION_REQUEST,
         TransactionEventType.CHARGE_REQUEST,
     ]:
@@ -1139,13 +1225,13 @@ def create_transaction_event_for_transaction_session(
     if request_event_update_fields:
         request_event.save(update_fields=request_event_update_fields)
 
+    transaction_item = event.transaction
     if event.type in [
         TransactionEventType.AUTHORIZATION_REQUEST,
         TransactionEventType.AUTHORIZATION_SUCCESS,
         TransactionEventType.CHARGE_REQUEST,
         TransactionEventType.CHARGE_SUCCESS,
     ]:
-        transaction_item = event.transaction
         previous_authorized_value = transaction_item.authorized_value
         previous_charged_value = transaction_item.charged_value
         previous_refunded_value = transaction_item.refunded_value
@@ -1168,6 +1254,7 @@ def create_transaction_event_for_transaction_session(
                 "cancel_pending_value",
                 "psp_reference",
                 "available_actions",
+                "modified_at",
             ]
         )
         if transaction_item.order_id:
@@ -1188,8 +1275,23 @@ def create_transaction_event_for_transaction_session(
                 previous_refunded_value=previous_refunded_value,
             )
         elif transaction_item.checkout_id:
-            transaction_amounts_for_checkout_updated(transaction_item, manager)
+            transaction_amounts_for_checkout_updated(
+                transaction_item, manager, app=app, user=None
+            )
+    elif event.psp_reference and transaction_item.psp_reference != event.psp_reference:
+        transaction_item.psp_reference = event.psp_reference
+        transaction_item.save(update_fields=["psp_reference", "modified_at"])
+        if transaction_item.checkout_id:
+            checkout = cast(Checkout, transaction_item.checkout)
+            update_last_transaction_modified_at_for_checkout(checkout, transaction_item)
+
     return event
+
+
+def update_order_granted_status_if_needed(request_event: TransactionEvent):
+    if request_event.related_granted_refund_id:
+        granted_refund = cast(OrderGrantedRefund, request_event.related_granted_refund)
+        calculate_order_granted_refund_status(granted_refund)
 
 
 def create_transaction_event_from_request_and_webhook_response(
@@ -1201,8 +1303,14 @@ def create_transaction_event_from_request_and_webhook_response(
         transaction_webhook_response=transaction_webhook_response,
         event_type=request_event.type,
     )
+    transaction_item = request_event.transaction
     if not transaction_request_response:
-        return create_failed_transaction_event(request_event, cause=error_msg or "")
+        recalculate_refundable_for_checkout(transaction_item, request_event)
+        failure_event = create_failed_transaction_event(
+            request_event, cause=error_msg or ""
+        )
+        update_order_granted_status_if_needed(request_event)
+        return failure_event
 
     psp_reference = transaction_request_response.psp_reference
     request_event.psp_reference = psp_reference
@@ -1215,9 +1323,15 @@ def create_transaction_event_from_request_and_webhook_response(
             app=app,
             transaction_id=request_event.transaction_id,
             currency=request_event.currency,
+            related_granted_refund_id=request_event.related_granted_refund_id,
         )
         if error_msg:
-            return create_failed_transaction_event(request_event, cause=error_msg)
+            recalculate_refundable_for_checkout(transaction_item, request_event)
+            failure_event = create_failed_transaction_event(
+                request_event, cause=error_msg
+            )
+            update_order_granted_status_if_needed(request_event)
+            return failure_event
 
     transaction_item = request_event.transaction
     previous_authorized_value = transaction_item.authorized_value
@@ -1239,6 +1353,7 @@ def create_transaction_event_from_request_and_webhook_response(
             "charge_pending_value",
             "refund_pending_value",
             "cancel_pending_value",
+            "modified_at",
         ]
     )
 
@@ -1246,7 +1361,7 @@ def create_transaction_event_from_request_and_webhook_response(
         # circular import
         from ..order.actions import order_transaction_updated
 
-        manager = get_plugins_manager()
+        manager = get_plugins_manager(allow_replica=False)
         order = cast(Order, transaction_item.order)
         order_info = fetch_order_info(order)
         update_order_with_transaction_details(transaction_item)
@@ -1260,9 +1375,18 @@ def create_transaction_event_from_request_and_webhook_response(
             previous_charged_value=previous_charged_value,
             previous_refunded_value=previous_refunded_value,
         )
+        if request_event.related_granted_refund_id:
+            granted_refund = cast(
+                OrderGrantedRefund, request_event.related_granted_refund
+            )
+            calculate_order_granted_refund_status(granted_refund)
+
     elif transaction_item.checkout_id:
-        manager = get_plugins_manager()
-        transaction_amounts_for_checkout_updated(transaction_item, manager)
+        manager = get_plugins_manager(allow_replica=True)
+        recalculate_refundable_for_checkout(transaction_item, request_event, event)
+        transaction_amounts_for_checkout_updated(
+            transaction_item, manager, app=app, user=None
+        )
     return event
 
 
@@ -1377,11 +1501,12 @@ def create_manual_adjustment_events(
         user=user,
     )
     if events_to_create:
-        return TransactionEvent.objects.bulk_create(events_to_create)
+        with allow_writer():
+            return TransactionEvent.objects.bulk_create(events_to_create)
     return []
 
 
-def create_transaction_item(
+def get_transaction_item_params(
     source_object: Union[Checkout, Order],
     user: Optional[User],
     app: Optional[App],
@@ -1389,19 +1514,22 @@ def create_transaction_item(
     available_actions: Optional[list[str]] = None,
     name: str = "",
 ):
-    return TransactionItem.objects.create(
-        name=name,
-        checkout_id=source_object.pk if isinstance(source_object, Checkout) else None,
-        order_id=source_object.pk if isinstance(source_object, Order) else None,
-        currency=source_object.currency,
-        app=app,
-        app_identifier=app.identifier if app else None,
-        user=user,
-        psp_reference=psp_reference,
-        available_actions=available_actions if available_actions else [],
-    )
+    return {
+        "name": name,
+        "checkout_id": source_object.pk
+        if isinstance(source_object, Checkout)
+        else None,
+        "order_id": source_object.pk if isinstance(source_object, Order) else None,
+        "currency": source_object.currency,
+        "app": app,
+        "app_identifier": app.identifier if app else None,
+        "user": user,
+        "psp_reference": psp_reference,
+        "available_actions": available_actions if available_actions else [],
+    }
 
 
+@allow_writer()
 def create_transaction_for_order(
     order: "Order",
     user: Optional["User"],
@@ -1411,7 +1539,7 @@ def create_transaction_for_order(
     available_actions: Optional[list[str]] = None,
     name: str = "",
 ) -> TransactionItem:
-    transaction = create_transaction_item(
+    transaction_defaults = get_transaction_item_params(
         source_object=order,
         user=user,
         app=app,
@@ -1419,16 +1547,18 @@ def create_transaction_for_order(
         available_actions=available_actions,
         name=name,
     )
+    transaction_item = TransactionItem.objects.create(**transaction_defaults)
     create_manual_adjustment_events(
-        transaction=transaction,
+        transaction=transaction_item,
         money_data={"charged_value": charged_value},
         user=user,
         app=app,
     )
-    recalculate_transaction_amounts(transaction=transaction)
-    return transaction
+    recalculate_transaction_amounts(transaction=transaction_item)
+    return transaction_item
 
 
+@allow_writer()
 def handle_transaction_initialize_session(
     source_object: Union[Checkout, Order],
     payment_gateway_data: PaymentGatewayData,
@@ -1437,10 +1567,44 @@ def handle_transaction_initialize_session(
     customer_ip_address: Optional[str],
     app: App,
     manager: PluginsManager,
+    idempotency_key: str,
 ):
-    transaction_item = create_transaction_item(
+    transaction_item_defaults = get_transaction_item_params(
         source_object=source_object, user=None, app=app, psp_reference=None
     )
+
+    try:
+        transaction_item, _ = TransactionItem.objects.get_or_create(
+            idempotency_key=idempotency_key,
+            order_id=transaction_item_defaults["order_id"],
+            checkout_id=transaction_item_defaults["checkout_id"],
+            defaults=transaction_item_defaults,
+        )
+
+        if action == TransactionFlowStrategy.CHARGE:
+            event_type = TransactionEventType.CHARGE_REQUEST
+        else:
+            event_type = TransactionEventType.AUTHORIZATION_REQUEST
+
+        request_event, _ = TransactionEvent.objects.get_or_create(
+            idempotency_key=idempotency_key,
+            transaction=transaction_item,
+            type=event_type,
+            currency=transaction_item.currency,
+            amount_value=amount,
+            defaults={
+                "include_in_calculations": False,
+                "type": TransactionEventType.CHARGE_REQUEST
+                if action == TransactionFlowStrategy.CHARGE
+                else TransactionEventType.AUTHORIZATION_REQUEST,
+                "currency": transaction_item.currency,
+                "amount_value": amount,
+                "idempotency_key": idempotency_key,
+            },
+        )
+    except IntegrityError as e:
+        raise TransactionItemIdempotencyUniqueError() from e
+
     session_data = TransactionSessionData(
         transaction=transaction_item,
         source_object=source_object,
@@ -1449,16 +1613,9 @@ def handle_transaction_initialize_session(
             action_type=action, currency=source_object.currency, amount=amount
         ),
         customer_ip_address=customer_ip_address,
+        idempotency_key=idempotency_key,
     )
 
-    request_event = transaction_item.events.create(
-        include_in_calculations=False,
-        type=TransactionEventType.CHARGE_REQUEST
-        if action == TransactionFlowStrategy.CHARGE
-        else TransactionEventType.AUTHORIZATION_REQUEST,
-        currency=transaction_item.currency,
-        amount_value=amount,
-    )
     result = manager.transaction_initialize_session(session_data)
 
     response_data = result.response if result else None
@@ -1507,3 +1664,60 @@ def handle_transaction_process_session(
     )
     data_to_return = response_data.get("data") if response_data else None
     return created_event, data_to_return
+
+
+def get_transaction_event_amount(event_type: str, psp_reference: str):
+    """Deduce the transaction event amount if possible.
+
+    - In case of missing amount for event INFO, use 0
+    - In case of missing amount for *_FAILURE the amount is taken from *_SUCCESS or
+    *_REQUEST event with the same pspReference.
+    - In case of REFUND_REVERSE, the amount is taken from REFUND_SUCCESS with the same
+    pspReference.
+    - In case of CHARGEBACK the amount is taken from CHARGE_SUCCESS with the same
+    pspReference.
+    - If the specific event for the pspReference doesn't exist, the exception is raised.
+    """
+    if event_type == TransactionEventType.INFO:
+        return Decimal(0)
+
+    event_type_map = {
+        TransactionEventType.CHARGE_FAILURE: [
+            TransactionEventType.CHARGE_SUCCESS,
+            TransactionEventType.CHARGE_REQUEST,
+            TransactionEventType.AUTHORIZATION_SUCCESS,
+            TransactionEventType.AUTHORIZATION_REQUEST,
+            TransactionEventType.AUTHORIZATION_FAILURE,
+        ],
+        TransactionEventType.REFUND_FAILURE: [
+            TransactionEventType.REFUND_SUCCESS,
+            TransactionEventType.REFUND_REQUEST,
+            TransactionEventType.CHARGE_SUCCESS,
+            TransactionEventType.CHARGE_REQUEST,
+            TransactionEventType.CHARGE_FAILURE,
+        ],
+        TransactionEventType.CANCEL_FAILURE: [
+            TransactionEventType.CANCEL_SUCCESS,
+            TransactionEventType.CANCEL_REQUEST,
+            TransactionEventType.AUTHORIZATION_SUCCESS,
+            TransactionEventType.AUTHORIZATION_REQUEST,
+            TransactionEventType.AUTHORIZATION_FAILURE,
+        ],
+        TransactionEventType.AUTHORIZATION_FAILURE: [
+            TransactionEventType.AUTHORIZATION_SUCCESS,
+            TransactionEventType.AUTHORIZATION_REQUEST,
+        ],
+        TransactionEventType.REFUND_REVERSE: [TransactionEventType.REFUND_SUCCESS],
+        TransactionEventType.CHARGE_BACK: [TransactionEventType.CHARGE_SUCCESS],
+    }
+    allowed_event_types = event_type_map.get(event_type, [])
+    matched_event = (
+        TransactionEvent.objects.filter(
+            psp_reference=psp_reference, type__in=allowed_event_types
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if matched_event is None:
+        raise ValueError(f"Unable to deduce the amount for {event_type} event.")
+    return matched_event.amount_value

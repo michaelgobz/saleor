@@ -1,4 +1,4 @@
-from datetime import timedelta
+import datetime
 from decimal import Decimal
 from unittest import mock
 
@@ -12,8 +12,9 @@ from prices import TaxedMoney
 from ...account import CustomerEvents
 from ...account.models import CustomerEvent
 from ...channel import MarkAsPaidStrategy
+from ...checkout import CheckoutAuthorizeStatus
 from ...core.exceptions import InsufficientStock
-from ...core.notify_events import NotifyEventType
+from ...core.notify import NotifyEventType
 from ...core.taxes import zero_money, zero_taxed_money
 from ...core.tests.utils import get_site_context_payload
 from ...discount.models import VoucherCustomer
@@ -27,12 +28,14 @@ from ...payment.interface import GatewayResponse
 from ...payment.models import Payment
 from ...plugins.manager import get_plugins_manager
 from ...product.models import ProductTranslation, ProductVariantTranslation
-from ...tests.utils import flush_post_commit_hooks
 from .. import calculations
 from ..complete_checkout import (
+    _complete_checkout_fail_handler,
     _create_order,
+    _increase_checkout_voucher_usage,
     _prepare_order_data,
     _process_shipping_data_for_order,
+    _release_checkout_voucher_usage,
     complete_checkout,
 )
 from ..fetch import fetch_checkout_info, fetch_checkout_lines
@@ -50,6 +53,7 @@ def test_create_order_captured_payment_creates_expected_events(
     payment_txn_captured,
     channel_USD,
     site_settings,
+    django_capture_on_commit_callbacks,
 ):
     checkout = checkout_with_item
     checkout_user = customer_user
@@ -69,23 +73,23 @@ def test_create_order_captured_payment_creates_expected_events(
     checkout.save()
 
     # Place checkout
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    order = _create_order(
-        checkout_info=checkout_info,
-        checkout_lines=lines,
-        order_data=_prepare_order_data(
-            manager=manager,
+    with django_capture_on_commit_callbacks(execute=True):
+        order = _create_order(
             checkout_info=checkout_info,
-            lines=lines,
-            prices_entered_with_tax=True,
-        ),
-        user=customer_user,
-        app=None,
-        manager=manager,
-    )
-    flush_post_commit_hooks()
+            checkout_lines=lines,
+            order_data=_prepare_order_data(
+                manager=manager,
+                checkout_info=checkout_info,
+                lines=lines,
+                prices_entered_with_tax=True,
+            ),
+            user=customer_user,
+            app=None,
+            manager=manager,
+        )
 
     (
         order_placed_event,
@@ -115,7 +119,7 @@ def test_create_order_captured_payment_creates_expected_events(
     assert payment_captured_event.order is order
     # ensure a date was set
     assert payment_captured_event.date
-    # should not have any additional parameters
+    # should have additional parameters
     assert "amount" in payment_captured_event.parameters.keys()
     assert "payment_id" in payment_captured_event.parameters.keys()
     assert "payment_gateway" in payment_captured_event.parameters.keys()
@@ -129,8 +133,8 @@ def test_create_order_captured_payment_creates_expected_events(
     assert order_fully_paid_event.order is order
     # ensure a date was set
     assert order_fully_paid_event.date
-    # should not have any additional parameters
-    assert not order_fully_paid_event.parameters
+    # should have payment_gateway in additional parameters
+    assert "payment_gateway" in order_fully_paid_event.parameters
 
     expected_order_payload = {
         "order": get_default_order_payload(order, checkout.redirect_url),
@@ -163,21 +167,36 @@ def test_create_order_captured_payment_creates_expected_events(
     # ensure the event parameters are empty
     assert order_confirmed_event.parameters == {}
 
-    mock_notify.assert_has_calls(
-        [
-            mock.call(
-                NotifyEventType.ORDER_CONFIRMATION,
-                expected_order_payload,
-                channel_slug=channel_USD.slug,
-            ),
-            mock.call(
-                NotifyEventType.ORDER_PAYMENT_CONFIRMATION,
-                expected_payment_payload,
-                channel_slug=channel_USD.slug,
-            ),
-        ],
-        any_order=True,
+    assert mock_notify.call_count == 2
+
+    order_confirmation_call = [
+        call
+        for call in mock_notify.call_args_list
+        if call.args[0] == NotifyEventType.ORDER_CONFIRMATION
+    ][0]
+    order_confirmation_called_args = order_confirmation_call.args
+    order_confirmation_called_kwargs = order_confirmation_call.kwargs
+    assert order_confirmation_called_args[0] == NotifyEventType.ORDER_CONFIRMATION
+    assert len(order_confirmation_called_kwargs) == 2
+    assert order_confirmation_called_kwargs["payload_func"]() == expected_order_payload
+    assert order_confirmation_called_kwargs["channel_slug"] == channel_USD.slug
+
+    payment_confirmation_call = [
+        call
+        for call in mock_notify.call_args_list
+        if call.args[0] == NotifyEventType.ORDER_PAYMENT_CONFIRMATION
+    ][0]
+    payment_confirmation_called_args = payment_confirmation_call.args
+    payment_confirmation_called_kwargs = payment_confirmation_call.kwargs
+    assert (
+        payment_confirmation_called_args[0]
+        == NotifyEventType.ORDER_PAYMENT_CONFIRMATION
     )
+    assert len(payment_confirmation_called_kwargs) == 2
+    assert (
+        payment_confirmation_called_kwargs["payload_func"]() == expected_payment_payload
+    )
+    assert payment_confirmation_called_kwargs["channel_slug"] == channel_USD.slug
 
     # Ensure the correct customer event was created if the user was not anonymous
     placement_event = customer_user.events.get()  # type: CustomerEvent
@@ -197,6 +216,7 @@ def test_create_order_captured_payment_creates_expected_events_anonymous_user(
     payment_txn_captured,
     channel_USD,
     site_settings,
+    django_capture_on_commit_callbacks,
 ):
     checkout = checkout_with_item
     checkout_user = None
@@ -217,23 +237,23 @@ def test_create_order_captured_payment_creates_expected_events_anonymous_user(
     checkout.save()
 
     # Place checkout
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    order = _create_order(
-        checkout_info=checkout_info,
-        checkout_lines=lines,
-        order_data=_prepare_order_data(
-            manager=manager,
+    with django_capture_on_commit_callbacks(execute=True):
+        order = _create_order(
             checkout_info=checkout_info,
-            lines=lines,
-            prices_entered_with_tax=True,
-        ),
-        user=None,
-        app=None,
-        manager=manager,
-    )
-    flush_post_commit_hooks()
+            checkout_lines=lines,
+            order_data=_prepare_order_data(
+                manager=manager,
+                checkout_info=checkout_info,
+                lines=lines,
+                prices_entered_with_tax=True,
+            ),
+            user=None,
+            app=None,
+            manager=manager,
+        )
 
     (
         order_placed_event,
@@ -263,7 +283,7 @@ def test_create_order_captured_payment_creates_expected_events_anonymous_user(
     assert payment_captured_event.order is order
     # ensure a date was set
     assert payment_captured_event.date
-    # should not have any additional parameters
+    # should have additional parameters
     assert "amount" in payment_captured_event.parameters.keys()
     assert "payment_id" in payment_captured_event.parameters.keys()
     assert "payment_gateway" in payment_captured_event.parameters.keys()
@@ -277,8 +297,8 @@ def test_create_order_captured_payment_creates_expected_events_anonymous_user(
     assert order_fully_paid_event.order is order
     # ensure a date was set
     assert order_fully_paid_event.date
-    # should not have any additional parameters
-    assert not order_fully_paid_event.parameters
+    # should have payment_gateway in additional parameters
+    assert "payment_gateway" in order_fully_paid_event.parameters
 
     expected_order_payload = {
         "order": get_default_order_payload(order, checkout.redirect_url),
@@ -312,21 +332,36 @@ def test_create_order_captured_payment_creates_expected_events_anonymous_user(
     # ensure the event parameters are empty
     assert order_confirmed_event.parameters == {}
 
-    mock_notify.assert_has_calls(
-        [
-            mock.call(
-                NotifyEventType.ORDER_CONFIRMATION,
-                expected_order_payload,
-                channel_slug=channel_USD.slug,
-            ),
-            mock.call(
-                NotifyEventType.ORDER_PAYMENT_CONFIRMATION,
-                expected_payment_payload,
-                channel_slug=channel_USD.slug,
-            ),
-        ],
-        any_order=True,
+    assert mock_notify.call_count == 2
+
+    order_confirmation_call = [
+        call
+        for call in mock_notify.call_args_list
+        if call.args[0] == NotifyEventType.ORDER_CONFIRMATION
+    ][0]
+    order_confirmation_called_args = order_confirmation_call.args
+    order_confirmation_called_kwargs = order_confirmation_call.kwargs
+    assert order_confirmation_called_args[0] == NotifyEventType.ORDER_CONFIRMATION
+    assert len(order_confirmation_called_kwargs) == 2
+    assert order_confirmation_called_kwargs["payload_func"]() == expected_order_payload
+    assert order_confirmation_called_kwargs["channel_slug"] == channel_USD.slug
+
+    payment_confirmation_call = [
+        call
+        for call in mock_notify.call_args_list
+        if call.args[0] == NotifyEventType.ORDER_PAYMENT_CONFIRMATION
+    ][0]
+    payment_confirmation_called_args = payment_confirmation_call.args
+    payment_confirmation_called_kwargs = payment_confirmation_call.kwargs
+    assert (
+        payment_confirmation_called_args[0]
+        == NotifyEventType.ORDER_PAYMENT_CONFIRMATION
     )
+    assert len(payment_confirmation_called_kwargs) == 2
+    assert (
+        payment_confirmation_called_kwargs["payload_func"]() == expected_payment_payload
+    )
+    assert payment_confirmation_called_kwargs["channel_slug"] == channel_USD.slug
 
     # Check no event was created if the user was anonymous
     assert not CustomerEvent.objects.exists()  # should not have created any event
@@ -341,6 +376,7 @@ def test_create_order_preauth_payment_creates_expected_events(
     payment_txn_preauth,
     channel_USD,
     site_settings,
+    django_capture_on_commit_callbacks,
 ):
     checkout = checkout_with_item
     checkout_user = customer_user
@@ -360,23 +396,23 @@ def test_create_order_preauth_payment_creates_expected_events(
     checkout.save()
 
     # Place checkout
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    order = _create_order(
-        checkout_info=checkout_info,
-        checkout_lines=lines,
-        order_data=_prepare_order_data(
-            manager=manager,
+    with django_capture_on_commit_callbacks(execute=True):
+        order = _create_order(
             checkout_info=checkout_info,
-            lines=lines,
-            prices_entered_with_tax=True,
-        ),
-        user=customer_user,
-        app=None,
-        manager=manager,
-    )
-    flush_post_commit_hooks()
+            checkout_lines=lines,
+            order_data=_prepare_order_data(
+                manager=manager,
+                checkout_info=checkout_info,
+                lines=lines,
+                prices_entered_with_tax=True,
+            ),
+            user=customer_user,
+            app=None,
+            manager=manager,
+        )
 
     (
         order_placed_event,
@@ -428,11 +464,14 @@ def test_create_order_preauth_payment_creates_expected_events(
     # ensure the event parameters are empty
     assert order_confirmed_event.parameters == {}
 
-    mock_notify.assert_called_once_with(
-        NotifyEventType.ORDER_CONFIRMATION,
-        expected_payload,
-        channel_slug=channel_USD.slug,
-    )
+    assert mock_notify.call_count == 1
+    call_args = mock_notify.call_args_list[0]
+    called_args = call_args.args
+    called_kwargs = call_args.kwargs
+    assert called_args[0] == NotifyEventType.ORDER_CONFIRMATION
+    assert len(called_kwargs) == 2
+    assert called_kwargs["payload_func"]() == expected_payload
+    assert called_kwargs["channel_slug"] == channel_USD.slug
 
     # Ensure the correct customer event was created if the user was not anonymous
     placement_event = customer_user.events.get()  # type: CustomerEvent
@@ -452,6 +491,7 @@ def test_create_order_preauth_payment_creates_expected_events_anonymous_user(
     payment_txn_preauth,
     channel_USD,
     site_settings,
+    django_capture_on_commit_callbacks,
 ):
     checkout = checkout_with_item
     checkout_user = None
@@ -472,23 +512,23 @@ def test_create_order_preauth_payment_creates_expected_events_anonymous_user(
     checkout.save()
 
     # Place checkout
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    order = _create_order(
-        checkout_info=checkout_info,
-        checkout_lines=lines,
-        order_data=_prepare_order_data(
-            manager=manager,
+    with django_capture_on_commit_callbacks(execute=True):
+        order = _create_order(
             checkout_info=checkout_info,
-            lines=lines,
-            prices_entered_with_tax=True,
-        ),
-        user=None,
-        app=None,
-        manager=manager,
-    )
-    flush_post_commit_hooks()
+            checkout_lines=lines,
+            order_data=_prepare_order_data(
+                manager=manager,
+                checkout_info=checkout_info,
+                lines=lines,
+                prices_entered_with_tax=True,
+            ),
+            user=None,
+            app=None,
+            manager=manager,
+        )
 
     (
         order_placed_event,
@@ -539,11 +579,14 @@ def test_create_order_preauth_payment_creates_expected_events_anonymous_user(
     # ensure the event parameters are empty
     assert order_confirmed_event.parameters == {}
 
-    mock_notify.assert_called_once_with(
-        NotifyEventType.ORDER_CONFIRMATION,
-        expected_payload,
-        channel_slug=channel_USD.slug,
-    )
+    assert mock_notify.call_count == 1
+    call_args = mock_notify.call_args_list[0]
+    called_args = call_args.args
+    called_kwargs = call_args.kwargs
+    assert called_args[0] == NotifyEventType.ORDER_CONFIRMATION
+    assert len(called_kwargs) == 2
+    assert called_kwargs["payload_func"]() == expected_payload
+    assert called_kwargs["channel_slug"] == channel_USD.slug
 
     # Check no event was created if the user was anonymous
     assert not CustomerEvent.objects.exists()  # should not have created any event
@@ -553,7 +596,7 @@ def test_create_order_insufficient_stock(
     checkout, customer_user, product_without_shipping
 ):
     variant = product_without_shipping.variants.get()
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     checkout_info = fetch_checkout_info(checkout, [], manager)
 
     add_variant_to_checkout(checkout_info, variant, 10, check_quantity=False)
@@ -585,7 +628,7 @@ def test_create_order_doesnt_duplicate_order(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     order_data = _prepare_order_data(
@@ -630,7 +673,7 @@ def test_create_order_with_gift_card(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -686,7 +729,7 @@ def test_create_order_with_gift_card_partial_use(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -745,7 +788,7 @@ def test_create_order_with_many_gift_cards(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -805,6 +848,7 @@ def test_create_order_gift_card_bought(
     shipping_method,
     is_anonymous_user,
     non_shippable_gift_card_product,
+    django_capture_on_commit_callbacks,
 ):
     # given
     checkout_user = None if is_anonymous_user else customer_user
@@ -817,7 +861,7 @@ def test_create_order_gift_card_bought(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -852,24 +896,23 @@ def test_create_order_gift_card_bought(
     total_gross = subtotal.gross + shipping_price.gross - checkout.discount
 
     # when
-    order = _create_order(
-        checkout_info=checkout_info,
-        checkout_lines=lines,
-        order_data=_prepare_order_data(
-            manager=manager,
+    with django_capture_on_commit_callbacks(execute=True):
+        order = _create_order(
             checkout_info=checkout_info,
-            lines=lines,
-            prices_entered_with_tax=True,
-        ),
-        user=customer_user if not is_anonymous_user else None,
-        app=None,
-        manager=manager,
-    )
+            checkout_lines=lines,
+            order_data=_prepare_order_data(
+                manager=manager,
+                checkout_info=checkout_info,
+                lines=lines,
+                prices_entered_with_tax=True,
+            ),
+            user=customer_user if not is_anonymous_user else None,
+            app=None,
+            manager=manager,
+        )
 
     # then
-    flush_post_commit_hooks()
     assert order.total.gross == total_gross
-    flush_post_commit_hooks()
     gift_card = GiftCard.objects.get()
     assert (
         gift_card.initial_balance
@@ -878,7 +921,6 @@ def test_create_order_gift_card_bought(
         ).unit_price_gross
     )
     assert GiftCardEvent.objects.filter(gift_card=gift_card, type=GiftCardEvents.BOUGHT)
-    flush_post_commit_hooks()
     send_notification_mock.assert_called_once_with(
         checkout_user,
         None,
@@ -899,6 +941,7 @@ def test_create_order_gift_card_bought_order_not_captured_gift_cards_not_sent(
     customer_user,
     shipping_method,
     is_anonymous_user,
+    django_capture_on_commit_callbacks,
 ):
     """Check that digital gift cards are not issued if the payment is not captured."""
     # given
@@ -912,7 +955,7 @@ def test_create_order_gift_card_bought_order_not_captured_gift_cards_not_sent(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -931,23 +974,22 @@ def test_create_order_gift_card_bought_order_not_captured_gift_cards_not_sent(
     total_gross = subtotal.gross + shipping_price.gross - checkout.discount
 
     # when
-    order = _create_order(
-        checkout_info=checkout_info,
-        checkout_lines=lines,
-        order_data=_prepare_order_data(
-            manager=manager,
+    with django_capture_on_commit_callbacks(execute=True):
+        order = _create_order(
             checkout_info=checkout_info,
-            lines=lines,
-            prices_entered_with_tax=True,
-        ),
-        user=customer_user if not is_anonymous_user else None,
-        app=None,
-        manager=manager,
-    )
+            checkout_lines=lines,
+            order_data=_prepare_order_data(
+                manager=manager,
+                checkout_info=checkout_info,
+                lines=lines,
+                prices_entered_with_tax=True,
+            ),
+            user=customer_user if not is_anonymous_user else None,
+            app=None,
+            manager=manager,
+        )
 
     # then
-    flush_post_commit_hooks()
-    flush_post_commit_hooks()
     assert order.total.gross == total_gross
     assert not GiftCard.objects.exists()
     send_notification_mock.assert_not_called()
@@ -964,7 +1006,9 @@ def test_create_order_gift_card_bought_only_shippable_gift_card(
     is_anonymous_user,
 ):
     checkout_user = None if is_anonymous_user else customer_user
-    checkout_info = fetch_checkout_info(checkout, [], get_plugins_manager())
+    checkout_info = fetch_checkout_info(
+        checkout, [], get_plugins_manager(allow_replica=False)
+    )
     shippable_variant = shippable_gift_card_product.variants.get()
     add_variant_to_checkout(checkout_info, shippable_variant, 2)
 
@@ -976,7 +1020,7 @@ def test_create_order_gift_card_bought_only_shippable_gift_card(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1036,7 +1080,7 @@ def test_create_order_gift_card_bought_do_not_fulfill_gift_cards_automatically(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1078,7 +1122,7 @@ def test_note_in_created_order(checkout_with_item, address, customer_user):
     checkout_with_item.tracking_code = "tracking_code"
     checkout_with_item.redirect_url = "https://www.example.com"
     checkout_with_item.save()
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
     order = _create_order(
@@ -1107,7 +1151,7 @@ def test_create_order_with_variant_tracking_false(
     checkout.tracking_code = ""
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     checkout_info = fetch_checkout_info(checkout, [], manager)
     add_variant_to_checkout(checkout_info, variant, 10, check_quantity=False)
 
@@ -1147,7 +1191,7 @@ def test_create_order_use_translations(
     checkout.language_code = "fr"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1181,6 +1225,7 @@ def test_complete_checkout_0_total_with_transaction_for_mark_as_paid(
     checkout_with_item_total_0,
     customer_user,
     app,
+    django_capture_on_commit_callbacks,
 ):
     # given
     checkout = checkout_with_item_total_0
@@ -1196,24 +1241,23 @@ def test_complete_checkout_0_total_with_transaction_for_mark_as_paid(
         checkout, zero_money(checkout.currency), checkout_has_lines=True
     )
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
     # when
-    order, _, _ = complete_checkout(
-        checkout_info=checkout_info,
-        manager=manager,
-        lines=lines,
-        payment_data={},
-        store_source=False,
-        user=customer_user,
-        app=app,
-    )
+    with django_capture_on_commit_callbacks(execute=True):
+        order, _, _ = complete_checkout(
+            checkout_info=checkout_info,
+            manager=manager,
+            lines=lines,
+            payment_data={},
+            store_source=False,
+            user=customer_user,
+            app=app,
+        )
 
     # then
-    flush_post_commit_hooks()
-
     assert order
     assert order.authorize_status == OrderAuthorizeStatus.FULL
     assert order.charge_status == OrderChargeStatus.FULL
@@ -1227,6 +1271,7 @@ def test_complete_checkout_0_total_captured_payment_creates_expected_events(
     channel_USD,
     app,
     site_settings,
+    django_capture_on_commit_callbacks,
 ):
     checkout = checkout_with_item_total_0
     checkout_user = customer_user
@@ -1246,20 +1291,20 @@ def test_complete_checkout_0_total_captured_payment_creates_expected_events(
     checkout.save()
 
     # Place checkout
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    order, action_required, action_data = complete_checkout(
-        checkout_info=checkout_info,
-        lines=lines,
-        manager=manager,
-        payment_data={},
-        store_source=False,
-        user=customer_user,
-        app=app,
-    )
+    with django_capture_on_commit_callbacks(execute=True):
+        order, action_required, action_data = complete_checkout(
+            checkout_info=checkout_info,
+            lines=lines,
+            manager=manager,
+            payment_data={},
+            store_source=False,
+            user=customer_user,
+            app=app,
+        )
 
-    flush_post_commit_hooks()
     (
         order_marked_as_paid,
         order_placed_event,
@@ -1297,6 +1342,12 @@ def test_complete_checkout_0_total_captured_payment_creates_expected_events(
         **get_site_context_payload(site_settings.site),
     }
 
+    expected_payment_payload = {
+        "order": get_default_order_payload(order),
+        "recipient_email": order.get_customer_email(),
+        **get_site_context_payload(site_settings.site),
+    }
+
     assert order_fully_paid.type == OrderEvents.ORDER_FULLY_PAID
     assert order_fully_paid.user == checkout_user
 
@@ -1312,16 +1363,36 @@ def test_complete_checkout_0_total_captured_payment_creates_expected_events(
     # ensure the event parameters are empty
     assert order_confirmed_event.parameters == {}
 
-    mock_notify.assert_has_calls(
-        [
-            mock.call(
-                NotifyEventType.ORDER_CONFIRMATION,
-                expected_order_payload,
-                channel_slug=channel_USD.slug,
-            )
-        ],
-        any_order=True,
+    assert mock_notify.call_count == 2
+
+    order_confirmation_call = [
+        call
+        for call in mock_notify.call_args_list
+        if call.args[0] == NotifyEventType.ORDER_CONFIRMATION
+    ][0]
+    order_confirmation_called_args = order_confirmation_call.args
+    order_confirmation_called_kwargs = order_confirmation_call.kwargs
+    assert order_confirmation_called_args[0] == NotifyEventType.ORDER_CONFIRMATION
+    assert len(order_confirmation_called_kwargs) == 2
+    assert order_confirmation_called_kwargs["payload_func"]() == expected_order_payload
+    assert order_confirmation_called_kwargs["channel_slug"] == channel_USD.slug
+
+    payment_confirmation_call = [
+        call
+        for call in mock_notify.call_args_list
+        if call.args[0] == NotifyEventType.ORDER_PAYMENT_CONFIRMATION
+    ][0]
+    payment_confirmation_called_args = payment_confirmation_call.args
+    payment_confirmation_called_kwargs = payment_confirmation_call.kwargs
+    assert (
+        payment_confirmation_called_args[0]
+        == NotifyEventType.ORDER_PAYMENT_CONFIRMATION
     )
+    assert len(payment_confirmation_called_kwargs) == 2
+    assert (
+        payment_confirmation_called_kwargs["payload_func"]() == expected_payment_payload
+    )
+    assert payment_confirmation_called_kwargs["channel_slug"] == channel_USD.slug
 
     # Ensure the correct customer event was created if the user was not anonymous
     placement_event = customer_user.events.get()  # type: CustomerEvent
@@ -1366,7 +1437,7 @@ def test_complete_checkout_action_required_voucher_once_per_customer(
     voucher.apply_once_per_customer = True
     voucher.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1389,6 +1460,8 @@ def test_complete_checkout_action_required_voucher_once_per_customer(
     assert action_required is True
     assert not voucher_customer.exists()
     mocked_create_order.assert_not_called()
+    checkout.refresh_from_db()
+    assert checkout.is_voucher_usage_increased is False
 
 
 @mock.patch("saleor.checkout.complete_checkout._create_order")
@@ -1427,7 +1500,7 @@ def test_complete_checkout_action_required_voucher_single_use(
 
     assert code.is_active
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1450,9 +1523,16 @@ def test_complete_checkout_action_required_voucher_single_use(
     assert action_required is True
     assert not voucher_customer.exists()
     mocked_create_order.assert_not_called()
+    checkout.refresh_from_db()
+    assert checkout.is_voucher_usage_increased is False
+    checkout.refresh_from_db()
+    assert not checkout.completing_started_at
 
     code.refresh_from_db()
     assert code.is_active is True
+
+    checkout.refresh_from_db()
+    assert checkout.is_voucher_usage_increased is False
 
 
 @mock.patch("saleor.checkout.complete_checkout._create_order")
@@ -1485,7 +1565,7 @@ def test_complete_checkout_order_not_created_when_the_refund_is_ongoing(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1503,6 +1583,8 @@ def test_complete_checkout_order_not_created_when_the_refund_is_ongoing(
     # then
     assert not order
     mocked_create_order.assert_not_called()
+    checkout.refresh_from_db()
+    assert not checkout.completing_started_at
 
 
 @mock.patch("saleor.checkout.complete_checkout._create_order")
@@ -1536,7 +1618,7 @@ def test_complete_checkout_when_checkout_doesnt_exists(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1589,7 +1671,7 @@ def test_complete_checkout_checkout_was_deleted_before_completing(
     checkout.redirect_url = "https://www.example.com"
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1617,6 +1699,146 @@ def test_complete_checkout_checkout_was_deleted_before_completing(
     mocked_create_order.assert_not_called()
 
 
+@mock.patch("saleor.checkout.complete_checkout.gateway.payment_refund_or_void")
+@mock.patch("saleor.checkout.complete_checkout._process_payment")
+def test_complete_checkout_checkout_limited_use_voucher_multiple_thread(
+    mocked_process_payment,
+    mocked_payment_refund_or_void,
+    customer_user,
+    checkout_with_voucher_free_shipping,
+    voucher_free_shipping,
+    app,
+    success_gateway_response,
+):
+    # given
+    checkout = checkout_with_voucher_free_shipping
+    address = customer_user.default_billing_address
+    checkout.user = customer_user
+    checkout.billing_address = address
+    checkout.shipping_address = address
+    checkout.tracking_code = ""
+    checkout.redirect_url = "https://www.example.com"
+    checkout.save()
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    voucher_free_shipping.usage_limit = 1
+    voucher_free_shipping.save(update_fields=["usage_limit"])
+
+    total = calculations.calculate_checkout_total_with_gift_cards(
+        manager, checkout_info, lines, address
+    )
+
+    Payment.objects.create(
+        gateway="mirumee.payments.dummy",
+        is_active=True,
+        checkout=checkout,
+        total=total.gross.amount,
+    )
+    mocked_process_payment.return_value = success_gateway_response
+
+    # when
+    def call_checkout_complete(*args, **kwargs):
+        lines_2, _ = fetch_checkout_lines(checkout)
+        checkout_info_2 = fetch_checkout_info(checkout, lines, manager)
+        complete_checkout(
+            checkout_info=checkout_info_2,
+            lines=lines_2,
+            manager=manager,
+            payment_data={},
+            store_source=False,
+            user=customer_user,
+            app=app,
+        )
+
+    with before_after.after(
+        "saleor.checkout.complete_checkout._process_payment", call_checkout_complete
+    ):
+        order_from_checkout, action_required, _ = complete_checkout(
+            checkout_info=checkout_info,
+            lines=lines,
+            manager=manager,
+            payment_data={},
+            store_source=False,
+            user=customer_user,
+            app=app,
+        )
+    # then
+    assert order_from_checkout
+    mocked_payment_refund_or_void.assert_not_called()
+    code = voucher_free_shipping.codes.first()
+    assert code.used == 1
+
+
+@mock.patch("saleor.checkout.complete_checkout.gateway.payment_refund_or_void")
+@mock.patch("saleor.checkout.complete_checkout._process_payment")
+def test_complete_checkout_checkout_completed_in_the_meantime(
+    mocked_process_payment,
+    mocked_payment_refund_or_void,
+    customer_user,
+    checkout,
+    app,
+    success_gateway_response,
+):
+    # given
+    address = customer_user.default_billing_address
+    checkout.user = customer_user
+    checkout.billing_address = address
+    checkout.shipping_address = address
+    checkout.tracking_code = ""
+    checkout.redirect_url = "https://www.example.com"
+    checkout.save()
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    total = calculations.calculate_checkout_total_with_gift_cards(
+        manager, checkout_info, lines, address
+    )
+
+    Payment.objects.create(
+        gateway="mirumee.payments.dummy",
+        is_active=True,
+        checkout=checkout,
+        total=total.gross.amount,
+    )
+    mocked_process_payment.return_value = success_gateway_response
+
+    # when
+    def call_checkout_complete(*args, **kwargs):
+        lines_2, _ = fetch_checkout_lines(checkout)
+        checkout_info_2 = fetch_checkout_info(checkout, lines, manager)
+        complete_checkout(
+            checkout_info=checkout_info_2,
+            lines=lines_2,
+            manager=manager,
+            payment_data={},
+            store_source=False,
+            user=customer_user,
+            app=app,
+        )
+
+    with before_after.after(
+        "saleor.checkout.complete_checkout._reserve_stocks_without_availability_check",
+        call_checkout_complete,
+    ):
+        order_from_checkout, action_required, _ = complete_checkout(
+            checkout_info=checkout_info,
+            lines=lines,
+            manager=manager,
+            payment_data={},
+            store_source=False,
+            user=customer_user,
+            app=app,
+        )
+    # then
+    assert order_from_checkout
+    mocked_payment_refund_or_void.assert_not_called()
+
+
 def test_process_shipping_data_for_order_store_customer_shipping_address(
     checkout_with_item, customer_user, address_usa, shipping_method
 ):
@@ -1631,7 +1853,7 @@ def test_process_shipping_data_for_order_store_customer_shipping_address(
 
     user_address_count = customer_user.addresses.count()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     shipping_price = zero_taxed_money(checkout.currency)
@@ -1639,7 +1861,12 @@ def test_process_shipping_data_for_order_store_customer_shipping_address(
 
     # when
     _ = _process_shipping_data_for_order(
-        checkout_info, base_shipping_price, shipping_price, manager, lines
+        checkout_info,
+        base_shipping_price,
+        base_shipping_price,
+        shipping_price,
+        manager,
+        lines,
     )
 
     # then
@@ -1666,7 +1893,7 @@ def test_process_shipping_data_for_order_dont_store_customer_click_and_collect_a
 
     user_address_count = customer_user.addresses.count()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     shipping_price = zero_taxed_money(checkout.currency)
@@ -1674,7 +1901,12 @@ def test_process_shipping_data_for_order_dont_store_customer_click_and_collect_a
 
     # when
     _ = _process_shipping_data_for_order(
-        checkout_info, base_shipping_price, shipping_price, manager, lines
+        checkout_info,
+        base_shipping_price,
+        base_shipping_price,
+        shipping_price,
+        manager,
+        lines,
     )
 
     # then
@@ -1694,7 +1926,7 @@ def test_create_order_update_display_gross_prices(checkout_with_item, customer_u
     tax_configuration.save()
     tax_configuration.country_exceptions.all().delete()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     checkout_info = fetch_checkout_info(checkout, [], manager)
     lines, _ = fetch_checkout_lines(checkout)
     order_data = _prepare_order_data(
@@ -1733,7 +1965,7 @@ def test_create_order_store_shipping_prices(
     )
     expected_shipping_tax_rate = Decimal("0.1")
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     manager.get_checkout_shipping_tax_rate = mock.Mock(
         return_value=expected_shipping_tax_rate
     )
@@ -1760,14 +1992,19 @@ def test_create_order_store_shipping_prices(
     )
 
     # then
+    assert order.undiscounted_base_shipping_price == expected_base_shipping_price
     assert order.base_shipping_price == expected_base_shipping_price
     assert order.shipping_price == expected_shipping_price
     manager.calculate_checkout_shipping.assert_called_once_with(
-        checkout_info, lines, checkout.shipping_address
+        checkout_info, lines, checkout.shipping_address, plugin_ids=None
     )
     assert order.shipping_tax_rate == expected_shipping_tax_rate
     manager.get_checkout_shipping_tax_rate.assert_called_once_with(
-        checkout_info, lines, checkout.shipping_address, expected_shipping_price
+        checkout_info,
+        lines,
+        checkout.shipping_address,
+        expected_shipping_price,
+        plugin_ids=None,
     )
 
 
@@ -1778,8 +2015,11 @@ def test_create_order_store_shipping_prices_with_free_shipping_voucher(
 ):
     # given
     checkout = checkout_with_voucher_free_shipping
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
 
+    expected_undiscounted_shipping_price = shipping_method.channel_listings.get(
+        channel=checkout.channel
+    ).price
     expected_base_shipping_price = zero_money(checkout.currency)
     expected_shipping_price = zero_taxed_money(checkout.currency)
     expected_shipping_tax_rate = Decimal("0.0")
@@ -1810,14 +2050,33 @@ def test_create_order_store_shipping_prices_with_free_shipping_voucher(
     )
 
     # then
+    assert (
+        order.undiscounted_base_shipping_price == expected_undiscounted_shipping_price
+    )
     assert order.base_shipping_price == expected_base_shipping_price
     assert order.shipping_price == expected_shipping_price
+    undiscounted_subtotal = sum(
+        [line.undiscounted_total_price for line in order.lines.all()],
+        zero_taxed_money(order.currency),
+    )
+    assert (
+        order.undiscounted_total
+        == TaxedMoney(
+            net=expected_undiscounted_shipping_price,
+            gross=expected_undiscounted_shipping_price,
+        )
+        + undiscounted_subtotal
+    )
     manager.calculate_checkout_shipping.assert_called_once_with(
-        checkout_info, lines, checkout.shipping_address
+        checkout_info, lines, checkout.shipping_address, plugin_ids=None
     )
     assert order.shipping_tax_rate == expected_shipping_tax_rate
     manager.get_checkout_shipping_tax_rate.assert_called_once_with(
-        checkout_info, lines, checkout.shipping_address, expected_shipping_price
+        checkout_info,
+        lines,
+        checkout.shipping_address,
+        expected_shipping_price,
+        plugin_ids=None,
     )
 
 
@@ -1855,7 +2114,7 @@ def test_complete_checkout_invalid_shipping_method(
 
     voucher.apply_once_per_customer = True
     voucher.save()
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1877,9 +2136,12 @@ def test_complete_checkout_invalid_shipping_method(
     )
     assert not voucher_customer.exists()
 
-    mocked_payment_refund_or_void.called_once_with(
-        payment, manager, channel_slug=checkout.channel.slug
-    )
+    assert mocked_payment_refund_or_void.call_args_list == [
+        mock.call(payment, manager, channel_slug=checkout.channel.slug),
+        mock.call(payment, manager, channel_slug=checkout.channel.slug),
+    ]
+    checkout.refresh_from_db()
+    assert checkout.is_voucher_usage_increased is False
 
 
 @mock.patch("saleor.checkout.complete_checkout.complete_checkout_with_transaction")
@@ -1898,7 +2160,7 @@ def test_checkout_complete_pick_transaction_flow(
     checkout.tracking_code = ""
     checkout.redirect_url = "https://www.example.com"
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     transaction_item_generator(checkout_id=checkout.pk)
@@ -1925,6 +2187,7 @@ def test_checkout_complete_pick_transaction_flow(
         redirect_url=None,
         metadata_list=None,
         private_metadata_list=None,
+        is_automatic_completion=False,
     )
 
 
@@ -1940,7 +2203,7 @@ def test_checkout_complete_pick_transaction_flow_when_checkout_total_zero(
     checkout.tracking_code = ""
     checkout.redirect_url = "https://www.example.com"
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1976,6 +2239,67 @@ def test_checkout_complete_pick_transaction_flow_when_checkout_total_zero(
         redirect_url=None,
         metadata_list=None,
         private_metadata_list=None,
+        is_automatic_completion=False,
+    )
+
+
+@mock.patch("saleor.checkout.complete_checkout.complete_checkout_with_transaction")
+def test_checkout_complete_pick_transaction_flow_not_authorized_no_active_payment(
+    mocked_flow,
+    order,
+    checkout_ready_to_complete,
+    customer_user,
+    transaction_item_generator,
+    payment,
+):
+    # given
+    checkout = checkout_ready_to_complete
+    checkout.user = customer_user
+    checkout.billing_address = customer_user.default_billing_address
+    checkout.shipping_address = customer_user.default_billing_address
+    checkout.tracking_code = ""
+    checkout.redirect_url = "https://www.example.com"
+
+    # checkout is not fully authorized
+    checkout.authorize_status = CheckoutAuthorizeStatus.PARTIAL
+
+    # transaction item exists
+    transaction_item_generator(checkout_id=checkout.pk)
+    assert checkout.payment_transactions.exists()
+
+    # there is no active payments
+    payment.checkout = checkout
+    payment.is_active = False
+    payment.save(update_fields=["checkout", "is_active"])
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+    transaction_item_generator(checkout_id=checkout.pk)
+    mocked_flow.return_value = order, False, {}
+
+    # when
+    order, action_required, _ = complete_checkout(
+        checkout_info=checkout_info,
+        manager=manager,
+        lines=lines,
+        payment_data={},
+        store_source=False,
+        user=customer_user,
+        app=None,
+    )
+
+    # then
+    mocked_flow.assert_called_once_with(
+        manager=manager,
+        checkout_info=checkout_info,
+        lines=lines,
+        user=customer_user,
+        app=None,
+        redirect_url=None,
+        metadata_list=None,
+        private_metadata_list=None,
+        is_automatic_completion=False,
     )
 
 
@@ -1991,7 +2315,7 @@ def test_checkout_complete_pick_payment_flow(
     checkout.tracking_code = ""
     checkout.redirect_url = "https://www.example.com"
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -2026,6 +2350,68 @@ def test_checkout_complete_pick_payment_flow(
         redirect_url=None,
         metadata_list=None,
         private_metadata_list=None,
+        is_automatic_completion=False,
+    )
+
+
+@mock.patch("saleor.checkout.complete_checkout.complete_checkout_with_payment")
+def test_checkout_complete_pick_payment_flow_not_authorized_active_payment(
+    mocked_flow,
+    order,
+    checkout_ready_to_complete,
+    customer_user,
+    transaction_item_generator,
+    payment,
+):
+    # given
+    checkout = checkout_ready_to_complete
+    checkout.user = customer_user
+    checkout.billing_address = customer_user.default_billing_address
+    checkout.shipping_address = customer_user.default_billing_address
+    checkout.tracking_code = ""
+    checkout.redirect_url = "https://www.example.com"
+
+    # checkout is not fully authorized
+    checkout.authorize_status = CheckoutAuthorizeStatus.PARTIAL
+
+    # transaction item exists
+    transaction_item_generator(checkout_id=checkout.pk)
+    assert checkout.payment_transactions.exists()
+
+    # there is no active payments
+    payment.checkout = checkout
+    payment.save(update_fields=["checkout"])
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+    transaction_item_generator(checkout_id=checkout.pk)
+    mocked_flow.return_value = order, False, {}
+
+    # when
+    order, action_required, _ = complete_checkout(
+        checkout_info=checkout_info,
+        manager=manager,
+        lines=lines,
+        payment_data={},
+        store_source=False,
+        user=customer_user,
+        app=None,
+    )
+
+    # then
+    mocked_flow.assert_called_once_with(
+        manager=manager,
+        checkout_pk=checkout.pk,
+        payment_data={},
+        store_source=False,
+        user=customer_user,
+        app=None,
+        site_settings=None,
+        redirect_url=None,
+        metadata_list=None,
+        private_metadata_list=None,
+        is_automatic_completion=False,
     )
 
 
@@ -2055,7 +2441,7 @@ def test_complete_checkout_ensure_prices_are_not_recalculated_in_post_payment_pa
         transaction_id="1234",
         error=None,
     )
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     total = calculations.calculate_checkout_total_with_gift_cards(
@@ -2077,7 +2463,7 @@ def test_complete_checkout_ensure_prices_are_not_recalculated_in_post_payment_pa
     checkout.shipping_method = shipping_method
     checkout.tracking_code = ""
     checkout.redirect_url = "https://www.example.com"
-    checkout.price_expiration = timezone.now() + timedelta(hours=2)
+    checkout.price_expiration = timezone.now() + datetime.timedelta(hours=2)
     checkout.save()
 
     lines, _ = fetch_checkout_lines(checkout)
@@ -2085,7 +2471,7 @@ def test_complete_checkout_ensure_prices_are_not_recalculated_in_post_payment_pa
 
     def update_price_expiration(*args, **kwargs):
         # Invalidate checkout prices just after processing payment
-        checkout.price_expiration = timezone.now() - timedelta(hours=2)
+        checkout.price_expiration = timezone.now() - datetime.timedelta(hours=2)
         checkout.save(update_fields=["price_expiration"])
 
     # when
@@ -2109,3 +2495,200 @@ def test_complete_checkout_ensure_prices_are_not_recalculated_in_post_payment_pa
         mocked_get_tax_calculation_strategy_for_checkout.call_count
         == calculation_call_count
     )
+
+
+@mock.patch("saleor.checkout.complete_checkout.increase_voucher_usage")
+def test_increase_checkout_voucher_usage(
+    increase_voucher_usage_mock, checkout_with_voucher, voucher
+):
+    # given
+    code = voucher.codes.first()
+
+    # when
+    _increase_checkout_voucher_usage(checkout_with_voucher, code, voucher, None)
+
+    # then
+    checkout_with_voucher.refresh_from_db()
+    assert checkout_with_voucher.is_voucher_usage_increased is True
+    increase_voucher_usage_mock.assert_called_once()
+
+
+@mock.patch("saleor.checkout.complete_checkout.increase_voucher_usage")
+def test_increase_checkout_voucher_usage_checkout_usage_already_increased(
+    increase_voucher_usage_mock, checkout_with_voucher, voucher
+):
+    # given
+    code = voucher.codes.first()
+    checkout_with_voucher.is_voucher_usage_increased = True
+    checkout_with_voucher.save(update_fields=["is_voucher_usage_increased"])
+
+    # when
+    _increase_checkout_voucher_usage(checkout_with_voucher, code, voucher, None)
+
+    # then
+    checkout_with_voucher.refresh_from_db()
+    assert checkout_with_voucher.is_voucher_usage_increased is True
+    increase_voucher_usage_mock.assert_not_called()
+
+
+@mock.patch("saleor.checkout.complete_checkout.release_voucher_code_usage")
+def test_release_checkout_voucher_usage(
+    release_voucher_usage_mock, checkout_with_voucher, voucher
+):
+    # given
+    code = voucher.codes.first()
+    checkout_with_voucher.is_voucher_usage_increased = True
+    checkout_with_voucher.save(update_fields=["is_voucher_usage_increased"])
+
+    # when
+    _release_checkout_voucher_usage(checkout_with_voucher, code, voucher, None)
+
+    # then
+    checkout_with_voucher.refresh_from_db()
+    assert checkout_with_voucher.is_voucher_usage_increased is False
+    release_voucher_usage_mock.assert_called_once()
+
+
+@mock.patch("saleor.checkout.complete_checkout.release_voucher_code_usage")
+def test_release_checkout_voucher_usage_checkout_usage_not_increased(
+    release_voucher_usage_mock, checkout_with_voucher, voucher
+):
+    # given
+    code = voucher.codes.first()
+    checkout_with_voucher.is_voucher_usage_increased = False
+    checkout_with_voucher.save(update_fields=["is_voucher_usage_increased"])
+
+    # when
+    _release_checkout_voucher_usage(checkout_with_voucher, code, voucher, None)
+
+    # then
+    checkout_with_voucher.refresh_from_db()
+    assert checkout_with_voucher.is_voucher_usage_increased is False
+    release_voucher_usage_mock.assert_not_called()
+
+
+@mock.patch("saleor.checkout.complete_checkout.release_voucher_code_usage")
+def test_release_checkout_voucher_usage_no_voucher_code(
+    release_voucher_usage_mock, checkout_with_voucher, voucher
+):
+    # given
+    checkout_with_voucher.is_voucher_usage_increased = True
+    checkout_with_voucher.save(update_fields=["is_voucher_usage_increased"])
+
+    # when
+    _release_checkout_voucher_usage(checkout_with_voucher, None, voucher, None)
+
+    # then
+    checkout_with_voucher.refresh_from_db()
+    assert checkout_with_voucher.is_voucher_usage_increased is False
+    release_voucher_usage_mock.assert_not_called()
+
+
+@mock.patch("saleor.checkout.complete_checkout.gateway.payment_refund_or_void")
+@mock.patch("saleor.checkout.complete_checkout._release_checkout_voucher_usage")
+def test_complete_checkout_fail_handler(
+    _release_checkout_voucher_usage_mock,
+    _payment_refund_or_void_mock,
+    checkout_with_item,
+):
+    # given
+    checkout = checkout_with_item
+    checkout.completing_started_at = timezone.now()
+    checkout.save(update_fields=["completing_started_at"])
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    # when
+    _complete_checkout_fail_handler(checkout_info, manager)
+
+    # then
+    checkout.refresh_from_db()
+    assert not checkout.completing_started_at
+    _payment_refund_or_void_mock.assert_not_called()
+    _release_checkout_voucher_usage_mock.assert_not_called()
+
+
+@mock.patch("saleor.checkout.complete_checkout.gateway.payment_refund_or_void")
+@mock.patch("saleor.checkout.complete_checkout._release_checkout_voucher_usage")
+def test_complete_checkout_fail_handler_with_voucher(
+    _release_checkout_voucher_usage_mock,
+    _payment_refund_or_void_mock,
+    checkout_with_voucher,
+    voucher,
+):
+    # given
+    checkout = checkout_with_voucher
+    checkout.completing_started_at = timezone.now()
+    checkout.save(update_fields=["completing_started_at"])
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    # when
+    _complete_checkout_fail_handler(checkout_info, manager, voucher=voucher)
+
+    # then
+    checkout.refresh_from_db()
+    assert not checkout.completing_started_at
+    _payment_refund_or_void_mock.assert_not_called()
+    _release_checkout_voucher_usage_mock.assert_called_once()
+
+
+@mock.patch("saleor.checkout.complete_checkout.gateway.payment_refund_or_void")
+@mock.patch("saleor.checkout.complete_checkout._release_checkout_voucher_usage")
+def test_complete_checkout_fail_handler_with_payment(
+    _release_checkout_voucher_usage_mock,
+    _payment_refund_or_void_mock,
+    checkout_with_item,
+    payment,
+):
+    # given
+    checkout = checkout_with_item
+    checkout.completing_started_at = timezone.now()
+    checkout.save(update_fields=["completing_started_at"])
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    # when
+    _complete_checkout_fail_handler(checkout_info, manager, payment=payment)
+
+    # then
+    checkout.refresh_from_db()
+    assert not checkout.completing_started_at
+    _payment_refund_or_void_mock.assert_called_once()
+    _release_checkout_voucher_usage_mock.assert_not_called()
+
+
+@mock.patch("saleor.checkout.complete_checkout.gateway.payment_refund_or_void")
+@mock.patch("saleor.checkout.complete_checkout._release_checkout_voucher_usage")
+def test_complete_checkout_fail_handler_with_voucher_and_payment(
+    _release_checkout_voucher_usage_mock,
+    _payment_refund_or_void_mock,
+    checkout_with_voucher,
+    payment,
+    voucher,
+):
+    # given
+    checkout = checkout_with_voucher
+    checkout.completing_started_at = timezone.now()
+    checkout.save(update_fields=["completing_started_at"])
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    # when
+    _complete_checkout_fail_handler(
+        checkout_info, manager, voucher=voucher, payment=payment
+    )
+
+    # then
+    checkout.refresh_from_db()
+    assert not checkout.completing_started_at
+    _payment_refund_or_void_mock.assert_called_once()
+    _release_checkout_voucher_usage_mock.assert_called_once()

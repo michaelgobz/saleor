@@ -1,19 +1,19 @@
+import datetime
 import os
-from datetime import datetime, timedelta
 from unittest.mock import MagicMock, Mock, patch
 
 import graphene
 import pytest
-import pytz
 from django.core.files import File
 from graphql_relay import to_global_id
 
+from ....discount.utils.promotion import get_active_catalogue_promotion_rules
 from ....product.error_codes import CollectionErrorCode, ProductErrorCode
 from ....product.models import Collection, CollectionChannelListing, Product
 from ....product.tests.utils import create_image, create_zip_file_with_image_ext
 from ....tests.utils import dummy_editorjs
 from ....thumbnail.models import Thumbnail
-from ...core.enums import ThumbnailFormatEnum
+from ...core.enums import LanguageCodeEnum, ThumbnailFormatEnum
 from ...tests.utils import (
     get_graphql_content,
     get_graphql_content_from_response,
@@ -21,11 +21,12 @@ from ...tests.utils import (
 )
 
 QUERY_COLLECTION = """
-    query ($id: ID, $slug: String, $channel: String){
+    query ($id: ID, $slug: String, $channel: String, $slugLanguageCode: LanguageCodeEnum){
         collection(
             id: $id,
             slug: $slug,
             channel: $channel,
+            slugLanguageCode: $slugLanguageCode,
         ) {
             id
             name
@@ -75,6 +76,21 @@ def test_collection_query_by_slug(user_api_client, published_collection, channel
     variables = {
         "slug": published_collection.slug,
         "channel": channel_USD.slug,
+    }
+    response = user_api_client.post_graphql(QUERY_COLLECTION, variables=variables)
+    content = get_graphql_content(response)
+    collection_data = content["data"]["collection"]
+    assert collection_data is not None
+    assert collection_data["name"] == published_collection.name
+
+
+def test_collection_query_by_translated_slug(
+    user_api_client, published_collection, collection_translation_fr, channel_USD
+):
+    variables = {
+        "slug": collection_translation_fr.slug,
+        "channel": channel_USD.slug,
+        "slugLanguageCode": LanguageCodeEnum.FR.name,
     }
     response = user_api_client.post_graphql(QUERY_COLLECTION, variables=variables)
     content = get_graphql_content(response)
@@ -742,6 +758,63 @@ def test_update_collection(
     updated_webhook_mock.assert_called_once()
 
 
+def test_update_collection_metadata_marks_prices_to_recalculate(
+    staff_api_client,
+    collection,
+    permission_manage_products,
+    catalogue_promotion,
+    product,
+):
+    # given
+    query = """
+        mutation updateCollection(
+            $id: ID!,
+            $metadata: [MetadataInput!]
+            ) {
+
+            collectionUpdate(
+                id: $id, input: {
+                    metadata: $metadata,
+                }) {
+
+                collection {
+                    name
+                    slug
+                    description
+                    metadata {
+                        key
+                        value
+                    }
+                    privateMetadata {
+                        key
+                        value
+                    }
+                }
+            }
+        }
+    """
+    metadata_key = "md key"
+    metadata_value = "md value"
+
+    collection.products.set([product])
+
+    variables = {
+        "id": to_global_id("Collection", collection.id),
+        "metadata": [{"key": metadata_key, "value": metadata_value}],
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+    get_graphql_content(response)
+
+    collection.refresh_from_db()
+
+    # then
+    assert not catalogue_promotion.rules.filter(variants_dirty=False).exists()
+
+
 MUTATION_UPDATE_COLLECTION_WITH_BACKGROUND_IMAGE = """
     mutation updateCollection($name: String!, $slug: String!, $id: ID!,
             $backgroundImage: Upload, $backgroundImageAlt: String) {
@@ -1091,13 +1164,9 @@ DELETE_COLLECTION_MUTATION = """
 """
 
 
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 @patch("saleor.plugins.manager.PluginsManager.collection_deleted")
 def test_delete_collection(
     deleted_webhook_mock,
-    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     collection,
     product_list,
@@ -1122,11 +1191,8 @@ def test_delete_collection(
         collection.refresh_from_db()
 
     deleted_webhook_mock.assert_called_once()
-    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
-    args = set(
-        update_products_discounted_prices_for_promotion_task_mock.call_args.args[0]
-    )
-    assert args == {product.id for product in product_list}
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty is True
 
 
 @patch("saleor.core.tasks.delete_from_storage_task.delay")
@@ -1206,11 +1272,7 @@ COLLECTION_ADD_PRODUCTS_MUTATION = """
 """
 
 
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 def test_add_products_to_collection(
-    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     collection,
     product_list,
@@ -1233,11 +1295,8 @@ def test_add_products_to_collection(
     content = get_graphql_content(response)
     data = content["data"]["collectionAddProducts"]["collection"]
     assert data["products"]["totalCount"] == products_before + len(product_ids)
-    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
-    args = set(
-        update_products_discounted_prices_for_promotion_task_mock.call_args.args[0]
-    )
-    assert args == {product.id for product in product_list}
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty is True
 
 
 @patch("saleor.plugins.manager.PluginsManager.product_updated")
@@ -1312,11 +1371,7 @@ COLLECTION_REMOVE_PRODUCTS_MUTATION = """
 """
 
 
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 def test_remove_products_from_collection(
-    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     collection,
     product_list,
@@ -1339,11 +1394,8 @@ def test_remove_products_from_collection(
     content = get_graphql_content(response)
     data = content["data"]["collectionRemoveProducts"]["collection"]
     assert data["products"]["totalCount"] == products_before - len(product_ids)
-    update_products_discounted_prices_for_promotion_task_mock.assert_called_once()
-    args = set(
-        update_products_discounted_prices_for_promotion_task_mock.call_args.args[0]
-    )
-    assert args == {product.id for product in product_list}
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty is True
 
 
 @patch("saleor.plugins.manager.PluginsManager.product_updated")
@@ -1999,14 +2051,14 @@ def test_pagination_for_sorting_collections_by_published_at_date(
             Collection(name="Coll3", slug="collection-3"),
         ]
     )
-    now = datetime.now(pytz.UTC)
+    now = datetime.datetime.now(tz=datetime.UTC)
     CollectionChannelListing.objects.bulk_create(
         [
             CollectionChannelListing(
                 channel=channel_USD,
                 collection=collection,
                 is_published=True,
-                published_at=now - timedelta(days=num),
+                published_at=now - datetime.timedelta(days=num),
             )
             for num, collection in enumerate(collections)
         ]

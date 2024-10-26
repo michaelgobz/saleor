@@ -30,9 +30,9 @@ def assert_no_permission(response):
 def assert_negative_positive_decimal_value(response):
     content = get_graphql_content_from_response(response)
     assert "errors" in content, content
-    assert "Value cannot be lower than 0." in content["errors"][0]["message"], content[
-        "errors"
-    ]
+    assert (
+        'Expected type "PositiveDecimal"' in content["errors"][0]["message"]
+    ), content["errors"]
 
 
 def assert_graphql_error_with_message(response, message):
@@ -68,5 +68,5 @@ def get_multipart_request_body_with_multiple_files(query, variables, files, map_
             {"query": query, "variables": variables}, cls=DjangoJSONEncoder
         ),
         "map": json.dumps(map_dict, cls=DjangoJSONEncoder),
-        **{index: file for index, file in enumerate(files)},
+        **dict(enumerate(files)),
     }

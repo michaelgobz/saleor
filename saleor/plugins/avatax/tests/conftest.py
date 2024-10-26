@@ -3,9 +3,6 @@ import os
 import pytest
 
 from ....account.models import Address
-from ....checkout.fetch import CheckoutInfo, get_delivery_method_info
-from ....shipping.models import ShippingMethodChannelListing
-from ....shipping.utils import convert_to_shipping_method_data
 from ...models import PluginConfiguration
 from .. import AvataxConfiguration
 from ..plugin import AvataxPlugin
@@ -88,42 +85,6 @@ def ship_to_pl_address(db):
         country="PL",
         phone="+48713988155",
     )
-
-
-@pytest.fixture
-def checkout_with_items_and_shipping(checkout_with_items, address, shipping_method):
-    checkout_with_items.shipping_address = address
-    checkout_with_items.shipping_method = shipping_method
-    checkout_with_items.billing_address = address
-    checkout_with_items.save()
-    return checkout_with_items
-
-
-@pytest.fixture
-def checkout_with_items_and_shipping_info(checkout_with_items_and_shipping):
-    checkout = checkout_with_items_and_shipping
-    channel = checkout.channel
-    shipping_address = checkout.shipping_address
-    shipping_method = checkout.shipping_method
-    shipping_channel_listing = ShippingMethodChannelListing.objects.get(
-        channel=channel,
-        shipping_method=shipping_method,
-    )
-    checkout_info = CheckoutInfo(
-        checkout=checkout,
-        user=checkout.user,
-        channel=channel,
-        billing_address=checkout.billing_address,
-        shipping_address=shipping_address,
-        delivery_method_info=get_delivery_method_info(
-            convert_to_shipping_method_data(shipping_method, shipping_channel_listing),
-            shipping_address,
-        ),
-        tax_configuration=channel.tax_configuration,
-        valid_pick_up_points=[],
-        all_shipping_methods=[],
-    )
-    return checkout_info
 
 
 @pytest.fixture

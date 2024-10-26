@@ -5,7 +5,6 @@ from unittest import mock
 import graphene
 import pytest
 from django.core.exceptions import ValidationError
-from django.db.models import Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django_countries.fields import Country
@@ -31,7 +30,7 @@ from ....payment.interface import (
 )
 from ....plugins.manager import get_plugins_manager
 from ....plugins.tests.sample_plugins import ActiveDummyPaymentGateway
-from ....product.models import ProductVariant
+from ....product.models import ProductVariant, ProductVariantChannelListing
 from ....shipping.models import ShippingMethodTranslation
 from ....shipping.utils import convert_to_shipping_method_data
 from ....tests.utils import dummy_editorjs
@@ -58,7 +57,7 @@ def test_clean_delivery_method_after_shipping_address_changes_stay_the_same(
     checkout = checkout_with_single_item
     checkout.shipping_address = address
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     delivery_method = convert_to_shipping_method_data(
@@ -74,7 +73,7 @@ def test_clean_delivery_method_with_preorder_is_valid_for_enabled_warehouse(
     checkout = checkout_with_preorders_only
     checkout.shipping_address = address
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     is_valid_method = clean_delivery_method(checkout_info, lines, warehouses_for_cc[1])
@@ -89,7 +88,7 @@ def test_clean_delivery_method_does_nothing_if_no_shipping_method(
 
     checkout = checkout_with_single_item
     checkout.shipping_address = address
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     is_valid_method = clean_delivery_method(checkout_info, lines, None)
@@ -112,7 +111,7 @@ def test_update_checkout_shipping_method_if_invalid(
     shipping_method.shipping_zone = shipping_zone_without_countries
     shipping_method.save(update_fields=["shipping_zone"])
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     update_checkout_shipping_method_if_invalid(checkout_info, lines)
@@ -143,7 +142,7 @@ def test_update_checkout_shipping_method_if_invalid_no_checkout_metadata(
     shipping_method.shipping_zone = shipping_zone_without_countries
     shipping_method.save(update_fields=["shipping_zone"])
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -221,6 +220,8 @@ def test_checkout_available_payment_gateways_valid_info_sent(
     api_client.post_graphql(query, variables)
 
     # then
+    checkout_info.manager = mock.ANY
+    checkout_info.database_connection_name = mock.ANY
     mocked_list_gateways.assert_called_with(
         currency=currency,
         checkout_info=checkout_info,
@@ -233,7 +234,7 @@ def test_checkout_available_payment_gateways_currency_specified_USD(
     api_client,
     checkout_with_item,
     expected_dummy_gateway,
-    _sample_gateway,
+    sample_gateway,
 ):
     checkout_with_item.currency = "USD"
     checkout_with_item.save(update_fields=["currency"])
@@ -252,7 +253,7 @@ def test_checkout_available_payment_gateways_currency_specified_USD(
 
 
 def test_checkout_available_payment_gateways_currency_specified_EUR(
-    api_client, checkout_with_item, expected_dummy_gateway, _sample_gateway
+    api_client, checkout_with_item, expected_dummy_gateway, sample_gateway
 ):
     checkout_with_item.currency = "EUR"
     checkout_with_item.save(update_fields=["currency"])
@@ -583,7 +584,7 @@ def test_checkout_shipping_methods_with_price_based_shipping_method_and_discount
     shipping_method,
 ):
     checkout_with_item.shipping_address = address
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
 
@@ -625,7 +626,7 @@ def test_checkout_shipping_methods_with_price_based_shipping_and_shipping_discou
 ):
     """Test that shipping discounts properly qualify checkout for price-based shipping."""
     checkout_with_item.shipping_address = address
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
 
@@ -667,7 +668,7 @@ def test_checkout_shipping_methods_with_price_based_method_and_product_voucher(
     """Test that product discounts properly qualify checkout for price-based shipping."""
     # given
     checkout_with_item.shipping_address = address
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
 
     line = checkout_with_item.lines.first()
@@ -886,15 +887,27 @@ def test_available_collection_points_for_preorders_and_regular_variants_in_check
     api_client,
     staff_api_client,
     checkout_with_preorders_and_regular_variant,
+    preorder_variant_with_end_date,
     warehouses_for_cc,
 ):
-    expected_collection_points = [{"name": warehouses_for_cc[1].name}]
+    # given
+    warehouse = warehouses_for_cc[1]
+    Stock.objects.create(
+        warehouse=warehouse,
+        product_variant=preorder_variant_with_end_date,
+        quantity=10,
+    )
+    expected_collection_points = [{"name": warehouse.name}]
+
+    # wne
     response = staff_api_client.post_graphql(
         QUERY_GET_ALL_COLLECTION_POINTS_FROM_CHECKOUT,
         variables={
             "id": to_global_id_or_none(checkout_with_preorders_and_regular_variant)
         },
     )
+
+    # then
     response_content = get_graphql_content(response)
     assert (
         expected_collection_points
@@ -978,27 +991,77 @@ def test_checkout_available_collection_points_two_lines_for_same_checkout(
     assert all(c in expected_collection_points for c in received_collection_points)
 
 
-def test_checkout_avail_collect_points_exceeded_quantity_shows_only_all_warehouse(
-    api_client, checkout_with_items_for_cc, stocks_for_cc
+def test_checkout_avail_collect_points_only_all_warehouse_quantity_collected(
+    api_client, checkout_with_item_for_cc, warehouses_for_cc
 ):
+    # given
     query = GET_CHECKOUT_AVAILABLE_COLLECTION_POINTS
-    line = checkout_with_items_for_cc.lines.last()
-    line.quantity = (
-        Stock.objects.filter(product_variant=line.variant)
-        .aggregate(total_quantity=Sum("quantity"))
-        .get("total_quantity")
-        + 1
-    )
+    line = checkout_with_item_for_cc.lines.first()
+    line.quantity = 5
     line.save(update_fields=["quantity"])
-    checkout_with_items_for_cc.refresh_from_db()
 
-    variables = {"id": to_global_id_or_none(checkout_with_items_for_cc)}
+    all_warehouse = warehouses_for_cc[1]
+    local_warehouse_1 = warehouses_for_cc[2]
+    local_warehouse_2 = warehouses_for_cc[3]
+
+    Stock.objects.bulk_create(
+        [
+            Stock(warehouse=all_warehouse, product_variant=line.variant, quantity=0),
+            Stock(
+                warehouse=local_warehouse_1, product_variant=line.variant, quantity=2
+            ),
+            Stock(
+                warehouse=local_warehouse_2, product_variant=line.variant, quantity=4
+            ),
+        ]
+    )
+
+    variables = {"id": to_global_id_or_none(checkout_with_item_for_cc)}
+
+    # when
     response = api_client.post_graphql(query, variables)
+
+    # then
     content = get_graphql_content(response)
     data = content["data"]["checkout"]
 
     assert data["availableCollectionPoints"] == [
-        {"address": {"streetAddress1": "Tęczowa 7"}, "name": "Warehouse2"}
+        {"address": {"streetAddress1": "Tęczowa 7"}, "name": all_warehouse.name}
+    ]
+
+
+def test_checkout_avail_collect_points_all_warehouse_quantity_from_disabled_warehouse(
+    api_client, checkout_with_item_for_cc, warehouses_for_cc
+):
+    # given
+    query = GET_CHECKOUT_AVAILABLE_COLLECTION_POINTS
+    line = checkout_with_item_for_cc.lines.first()
+    line.quantity = 5
+    line.save(update_fields=["quantity"])
+
+    all_warehouse = warehouses_for_cc[1]
+    disabled_warehouse = warehouses_for_cc[0]
+
+    Stock.objects.bulk_create(
+        [
+            Stock(warehouse=all_warehouse, product_variant=line.variant, quantity=0),
+            Stock(
+                warehouse=disabled_warehouse, product_variant=line.variant, quantity=10
+            ),
+        ]
+    )
+
+    variables = {"id": to_global_id_or_none(checkout_with_item_for_cc)}
+
+    # when
+    response = api_client.post_graphql(query, variables)
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["checkout"]
+
+    assert data["availableCollectionPoints"] == [
+        {"address": {"streetAddress1": "Tęczowa 7"}, "name": all_warehouse.name}
     ]
 
 
@@ -1175,22 +1238,6 @@ def test_checkout_reservation_date_for_disabled_reservations(
     assert content["data"]["checkout"]["stockReservationExpires"] is None
 
 
-# @pytest.fixture
-# def fake_manager(mocker):
-#     return mocker.Mock(spec=PaymentInterface)
-
-
-# @pytest.fixture
-# def mock_get_manager(mocker, fake_manager):
-#     manager = mocker.patch(
-#         "saleor.payment.gateway.get_plugins_manager",
-#         autospec=True,
-#         return_value=fake_manager,
-#     )
-#     yield fake_manager
-#     manager.assert_called_once()
-
-
 QUERY_CHECKOUT_USER_ID = """
     query getCheckout($id: ID) {
         checkout(id: $id) {
@@ -1202,7 +1249,7 @@ QUERY_CHECKOUT_USER_ID = """
     """
 
 
-def test_anonymous_client_can_fetch_anonymoues_checkout_user(api_client, checkout):
+def test_anonymous_client_can_fetch_anonymous_checkout_user(api_client, checkout):
     # given
     query = QUERY_CHECKOUT_USER_ID
     variables = {"id": to_global_id_or_none(checkout)}
@@ -1216,7 +1263,7 @@ def test_anonymous_client_can_fetch_anonymoues_checkout_user(api_client, checkou
     assert not content["data"]["checkout"]["user"]
 
 
-def test_anonymous_client_cant_fetch_checkout_with_attached_user(
+def test_anonymous_client_cant_fetch_checkout_with_attached_user_with_user_data(
     api_client, checkout, customer_user
 ):
     # given
@@ -1230,8 +1277,25 @@ def test_anonymous_client_cant_fetch_checkout_with_attached_user(
     response = api_client.post_graphql(query, variables)
 
     # then
+    assert_no_permission(response)
+
+
+def test_anonymous_client_can_fetch_checkout_with_attached_user_without_user_data(
+    api_client, checkout, customer_user
+):
+    # given
+    checkout.user = customer_user
+    checkout.save()
+
+    query = QUERY_CHECKOUT
+    variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
+    response = api_client.post_graphql(query, variables)
+
+    # then
     content = get_graphql_content(response)
-    assert not content["data"]["checkout"]
+    assert content["data"]["checkout"]
 
 
 def test_authorized_access_to_checkout_user_as_customer(
@@ -1295,6 +1359,128 @@ def test_authorized_access_to_checkout_user_as_staff_no_permission(
         check_no_permissions=False,
     )
     assert_no_permission(response)
+
+
+def test_query_checkout_as_staff_with_no_permission_for_inactive_channel(
+    staff_api_client,
+    checkout,
+    customer_user,
+    permission_manage_checkouts,
+):
+    # given
+    query = QUERY_CHECKOUT
+    checkout.user = customer_user
+    checkout.save(update_fields=["user"])
+    channel = checkout.channel
+    channel.is_active = False
+    channel.save(update_fields=["is_active"])
+    variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
+    response = staff_api_client.post_graphql(
+        query,
+        variables,
+        check_no_permissions=False,
+    )
+
+    # then
+    assert_no_permission(response)
+
+
+def test_query_checkout_as_app_with_no_permission_for_inactive_channel(
+    app_api_client,
+    checkout,
+    customer_user,
+    permission_manage_checkouts,
+):
+    # given
+    query = QUERY_CHECKOUT
+    checkout.user = customer_user
+    checkout.save(update_fields=["user"])
+    channel = checkout.channel
+    channel.is_active = False
+    channel.save(update_fields=["is_active"])
+    variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
+    response = app_api_client.post_graphql(
+        query,
+        variables,
+        check_no_permissions=False,
+    )
+
+    # then
+    assert_no_permission(response)
+
+
+@pytest.mark.parametrize("permission", ["checkouts", "user", "payments"])
+def test_query_checkout_as_staff_with_permission_for_inactive_channel(
+    staff_api_client,
+    checkout,
+    customer_user,
+    permission_manage_payments,
+    permission_manage_checkouts,
+    permission_impersonate_user,
+    permission,
+):
+    # given
+    permissions = {
+        "checkouts": permission_manage_checkouts,
+        "user": permission_impersonate_user,
+        "payments": permission_manage_payments,
+    }
+    query = QUERY_CHECKOUT
+    checkout.user = customer_user
+    checkout.save(update_fields=["user"])
+    channel = checkout.channel
+    channel.is_active = False
+    channel.save(update_fields=["is_active"])
+    variables = {"id": to_global_id_or_none(checkout)}
+    # when
+    response = staff_api_client.post_graphql(
+        query,
+        variables,
+        permissions=[permissions.get(permission)],
+        check_no_permissions=False,
+    )
+    # then
+    content = get_graphql_content(response)
+    assert content["data"]["checkout"]
+
+
+@pytest.mark.parametrize("permission", ["checkouts", "user", "payments"])
+def test_query_checkout_as_app_with_permission_for_inactive_channel(
+    app_api_client,
+    checkout,
+    customer_user,
+    permission_manage_payments,
+    permission_manage_checkouts,
+    permission_impersonate_user,
+    permission,
+):
+    # given
+    permissions = {
+        "checkouts": permission_manage_checkouts,
+        "user": permission_impersonate_user,
+        "payments": permission_manage_payments,
+    }
+    query = QUERY_CHECKOUT
+    checkout.user = customer_user
+    checkout.save(update_fields=["user"])
+    channel = checkout.channel
+    channel.is_active = False
+    channel.save(update_fields=["is_active"])
+    variables = {"id": to_global_id_or_none(checkout)}
+    # when
+    response = app_api_client.post_graphql(
+        query,
+        variables,
+        permissions=[permissions.get(permission)],
+        check_no_permissions=False,
+    )
+    # then
+    content = get_graphql_content(response)
+    assert content["data"]["checkout"]
 
 
 QUERY_CHECKOUT = """
@@ -1378,16 +1564,40 @@ def test_query_anonymous_customer_checkout_as_staff_user(
     assert content["data"]["checkout"]["token"] == str(checkout.token)
 
 
-def test_query_anonymous_customer_checkout_as_app(
+def test_query_anonymous_customer_checkout_as_app_manage_checkouts(
     app_api_client, checkout, permission_manage_checkouts
 ):
+    # given
     variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
     response = app_api_client.post_graphql(
         QUERY_CHECKOUT,
         variables,
         permissions=[permission_manage_checkouts],
         check_no_permissions=False,
     )
+
+    # then
+    content = get_graphql_content(response)
+    assert content["data"]["checkout"]["token"] == str(checkout.token)
+
+
+def test_query_anonymous_customer_checkout_as_app_handle_payments(
+    app_api_client, checkout, permission_manage_payments
+):
+    # given
+    variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
+    response = app_api_client.post_graphql(
+        QUERY_CHECKOUT,
+        variables,
+        permissions=[permission_manage_payments],
+        check_no_permissions=False,
+    )
+
+    # then
     content = get_graphql_content(response)
     assert content["data"]["checkout"]["token"] == str(checkout.token)
 
@@ -1395,12 +1605,17 @@ def test_query_anonymous_customer_checkout_as_app(
 def test_query_customer_checkout_as_anonymous_customer(
     api_client, checkout, customer_user
 ):
+    # given
     checkout.user = customer_user
     checkout.save(update_fields=["user"])
     variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
     response = api_client.post_graphql(QUERY_CHECKOUT, variables)
+
+    # then
     content = get_graphql_content(response)
-    assert not content["data"]["checkout"]
+    assert content["data"]["checkout"]
 
 
 def test_query_customer_checkout_as_customer(user_api_client, checkout, customer_user):
@@ -1415,26 +1630,75 @@ def test_query_customer_checkout_as_customer(user_api_client, checkout, customer
 def test_query_other_customer_checkout_as_customer(
     user_api_client, checkout, staff_user
 ):
+    # given
     checkout.user = staff_user
     checkout.save(update_fields=["user"])
     variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
     response = user_api_client.post_graphql(QUERY_CHECKOUT, variables)
+
+    # then
     content = get_graphql_content(response)
-    assert not content["data"]["checkout"]
+    assert content["data"]["checkout"]
 
 
-def test_query_customer_checkout_as_staff_user(
+def test_query_other_customer_checkout_as_customer_for_inactive_channel(
+    user_api_client, checkout, staff_user
+):
+    # given
+    checkout.user = staff_user
+    channel = checkout.channel
+    checkout.save(update_fields=["user"])
+    channel.is_active = False
+    channel.save(update_fields=["is_active"])
+    variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
+    response = user_api_client.post_graphql(QUERY_CHECKOUT, variables)
+
+    # then
+    assert_no_permission(response)
+
+
+def test_query_customer_checkout_as_staff_user_manage_checkouts(
     app_api_client, checkout, customer_user, permission_manage_checkouts
 ):
+    # given
     checkout.user = customer_user
     checkout.save(update_fields=["user"])
     variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
     response = app_api_client.post_graphql(
         QUERY_CHECKOUT,
         variables,
         permissions=[permission_manage_checkouts],
         check_no_permissions=False,
     )
+
+    # then
+    content = get_graphql_content(response)
+    assert content["data"]["checkout"]["token"] == str(checkout.token)
+
+
+def test_query_customer_checkout_as_staff_user_handle_payments(
+    app_api_client, checkout, customer_user, permission_manage_payments
+):
+    # given
+    checkout.user = customer_user
+    checkout.save(update_fields=["user"])
+    variables = {"id": to_global_id_or_none(checkout)}
+
+    # when
+    response = app_api_client.post_graphql(
+        QUERY_CHECKOUT,
+        variables,
+        permissions=[permission_manage_payments],
+        check_no_permissions=False,
+    )
+
+    # then
     content = get_graphql_content(response)
     assert content["data"]["checkout"]["token"] == str(checkout.token)
 
@@ -1469,6 +1733,9 @@ QUERY_CHECKOUT_PRICES = """
         checkout(id: $id) {
            displayGrossPrices
            token
+           discount {
+                amount
+           }
            totalPrice {
                 currency
                 gross {
@@ -1482,6 +1749,10 @@ QUERY_CHECKOUT_PRICES = """
                 }
             }
            lines {
+                isGift
+                variant {
+                    id
+                }
                 unitPrice {
                     gross {
                         amount
@@ -1521,7 +1792,7 @@ def test_checkout_prices(user_api_client, checkout_with_item):
     assert data["token"] == str(checkout_with_item.token)
     assert len(data["lines"]) == checkout_with_item.lines.count()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
 
@@ -1592,7 +1863,7 @@ def test_checkout_prices_checkout_with_custom_prices(
     assert data["token"] == str(checkout_with_item.token)
     assert len(data["lines"]) == checkout_with_item.lines.count()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
 
@@ -1627,7 +1898,7 @@ def test_checkout_prices_with_sales(user_api_client, checkout_with_item_on_sale)
     checkout = checkout_with_item_on_sale
     variables = {"id": to_global_id_or_none(checkout)}
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1696,7 +1967,7 @@ def test_checkout_prices_with_promotion(
     checkout = checkout_with_item_on_promotion
     variables = {"id": to_global_id_or_none(checkout)}
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1757,6 +2028,119 @@ def test_checkout_prices_with_promotion(
     assert line_total_price.gross.amount < undiscounted_total_price
 
 
+def test_checkout_prices_with_order_promotion(
+    user_api_client, checkout_with_item_and_order_discount
+):
+    # given
+    query = QUERY_CHECKOUT_PRICES
+    checkout = checkout_with_item_and_order_discount
+    variables = {"id": to_global_id_or_none(checkout)}
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    # when
+    response = user_api_client.post_graphql(query, variables)
+    content = get_graphql_content(response)
+    data = content["data"]["checkout"]
+
+    # then
+    assert data["token"] == str(checkout.token)
+    assert len(data["lines"]) == checkout.lines.count()
+
+    line = checkout.lines.first()
+    variant = line.variant
+    variant_listing = variant.channel_listings.get(channel=checkout.channel)
+    unit_price = variant.get_price(variant_listing)
+    subtotal_price = unit_price * line.quantity
+    shipping_price = base_calculations.base_checkout_delivery_price(
+        checkout_info, lines
+    )
+    total_price = subtotal_price + shipping_price
+    discount_amount = checkout.discounts.first().amount_value
+
+    assert data["discount"]["amount"] == checkout.discount_amount
+    assert data["totalPrice"]["gross"]["amount"] == (
+        total_price.amount - discount_amount
+    )
+    assert data["subtotalPrice"]["gross"]["amount"] == (
+        subtotal_price.amount - discount_amount
+    )
+    assert str(data["lines"][0]["unitPrice"]["gross"]["amount"]) == str(
+        round((subtotal_price.amount - discount_amount) / line.quantity, 2)
+    )
+    assert (
+        data["lines"][0]["totalPrice"]["gross"]["amount"]
+        == subtotal_price.amount - discount_amount
+    )
+
+    assert data["lines"][0]["undiscountedUnitPrice"]["amount"] == unit_price.amount
+    assert data["lines"][0]["undiscountedTotalPrice"]["amount"] == subtotal_price.amount
+
+
+def test_checkout_prices_with_gift_promotion(
+    user_api_client, checkout_with_item_and_gift_promotion, gift_promotion_rule
+):
+    # given
+    query = QUERY_CHECKOUT_PRICES
+    checkout = checkout_with_item_and_gift_promotion
+    variants = gift_promotion_rule.gifts.all()
+    variant_listings = ProductVariantChannelListing.objects.filter(variant__in=variants)
+    top_price, variant_id = max(
+        variant_listings.values_list("discounted_price_amount", "variant")
+    )
+
+    variables = {"id": to_global_id_or_none(checkout)}
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    # when
+    response = user_api_client.post_graphql(query, variables)
+    content = get_graphql_content(response)
+    data = content["data"]["checkout"]
+
+    # then
+    assert data["token"] == str(checkout.token)
+    assert len(data["lines"]) == checkout.lines.count()
+
+    line = checkout.lines.get(is_gift=False)
+    variant = line.variant
+    variant_listing = variant.channel_listings.get(channel=checkout.channel)
+    unit_price = variant.get_price(variant_listing)
+    subtotal_price = unit_price * line.quantity
+    shipping_price = base_calculations.base_checkout_delivery_price(
+        checkout_info, lines
+    )
+    total_price = subtotal_price + shipping_price
+
+    assert data["discount"]["amount"] == 0
+    assert data["totalPrice"]["gross"]["amount"] == (total_price.amount)
+    assert data["subtotalPrice"]["gross"]["amount"] == (subtotal_price.amount)
+    line_data = [
+        line_data for line_data in data["lines"] if line_data["isGift"] is False
+    ][0]
+    assert line_data["unitPrice"]["gross"]["amount"] == (
+        round((subtotal_price.amount) / line.quantity, 2)
+    )
+    assert line_data["totalPrice"]["gross"]["amount"] == subtotal_price.amount
+
+    assert line_data["undiscountedUnitPrice"]["amount"] == unit_price.amount
+    assert line_data["undiscountedTotalPrice"]["amount"] == subtotal_price.amount
+    gift_line = [
+        line_data for line_data in data["lines"] if line_data["isGift"] is True
+    ][0]
+    assert gift_line["unitPrice"]["gross"]["amount"] == 0
+    assert gift_line["totalPrice"]["gross"]["amount"] == 0
+    assert gift_line["undiscountedUnitPrice"]["amount"] == top_price
+    assert gift_line["undiscountedTotalPrice"]["amount"] == top_price
+    assert gift_line["variant"]["id"] == graphene.Node.to_global_id(
+        "ProductVariant", variant_id
+    )
+
+
 def test_checkout_display_gross_prices_use_default(user_api_client, checkout_with_item):
     # given
     variables = {"id": to_global_id_or_none(checkout_with_item)}
@@ -1810,7 +2194,7 @@ def test_checkout_prices_with_specific_voucher(
     assert data["token"] == str(checkout.token)
     assert len(data["lines"]) == checkout.lines.count()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -1873,7 +2257,7 @@ def test_checkout_prices_with_voucher_once_per_order(
     # then
     assert data["token"] == str(checkout.token)
     assert len(data["lines"]) == checkout.lines.count()
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     total = calculations.checkout_total(
@@ -1935,7 +2319,7 @@ def test_checkout_prices_with_voucher(user_api_client, checkout_with_item_and_vo
     # then
     assert data["token"] == str(checkout.token)
     assert len(data["lines"]) == checkout.lines.count()
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     total = calculations.checkout_total(
@@ -1983,10 +2367,72 @@ def test_checkout_prices_with_voucher(user_api_client, checkout_with_item_and_vo
     )
 
 
-def test_query_checkouts(
-    checkout_with_item, staff_api_client, permission_manage_checkouts
+def test_checkout_prices_with_voucher_code_that_doesnt_exist(
+    user_api_client, checkout_with_item_and_voucher, voucher
 ):
-    query = """
+    # given
+    checkout = checkout_with_item_and_voucher
+    query = QUERY_CHECKOUT_PRICES
+    variables = {"id": to_global_id_or_none(checkout)}
+    voucher.delete()
+
+    # when
+    response = user_api_client.post_graphql(query, variables)
+    content = get_graphql_content(response)
+    data = content["data"]["checkout"]
+
+    # then
+    assert data["token"] == str(checkout.token)
+    assert len(data["lines"]) == checkout.lines.count()
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+    total = calculations.checkout_total(
+        manager=manager,
+        checkout_info=checkout_info,
+        lines=lines,
+        address=checkout_info.shipping_address,
+    )
+    assert data["totalPrice"]["gross"]["amount"] == (total.gross.amount)
+    subtotal = calculations.checkout_subtotal(
+        manager=manager,
+        checkout_info=checkout_info,
+        lines=lines,
+        address=checkout_info.shipping_address,
+    )
+    assert data["subtotalPrice"]["gross"]["amount"] == (subtotal.gross.amount)
+    line_info = lines[0]
+    assert line_info.line.quantity > 0
+    line_total_price = calculations.checkout_line_total(
+        manager=manager,
+        checkout_info=checkout_info,
+        lines=lines,
+        checkout_line_info=line_info,
+    )
+    assert data["lines"][0]["unitPrice"]["gross"]["amount"] == float(
+        quantize_price(
+            line_total_price.gross.amount / line_info.line.quantity, checkout.currency
+        )
+    )
+    assert (
+        data["lines"][0]["totalPrice"]["gross"]["amount"]
+        == line_total_price.gross.amount
+    )
+    undiscounted_unit_price = line_info.variant.get_price(
+        line_info.channel_listing,
+        line_info.line.price_override,
+    )
+    assert (
+        data["lines"][0]["undiscountedUnitPrice"]["amount"]
+        == undiscounted_unit_price.amount
+    )
+    assert (
+        data["lines"][0]["undiscountedTotalPrice"]["amount"]
+        == undiscounted_unit_price.amount * line_info.line.quantity
+    )
+
+
+CHECKOUTS_QUERY = """
     {
         checkouts(first: 20) {
             edges {
@@ -1996,11 +2442,61 @@ def test_query_checkouts(
             }
         }
     }
-    """
+"""
+
+
+def test_staff_user_can_query_checkouts_with_handle_payments_permission(
+    checkout_with_item, staff_api_client, permission_manage_payments
+):
+    # given
     checkout = checkout_with_item
+
+    # when
     response = staff_api_client.post_graphql(
-        query, {}, permissions=[permission_manage_checkouts]
+        CHECKOUTS_QUERY,
+        {},
+        permissions=[permission_manage_payments],
+        check_no_permissions=False,
     )
+
+    # then
+    content = get_graphql_content(response)
+    received_checkout = content["data"]["checkouts"]["edges"][0]["node"]
+    assert str(checkout.token) == received_checkout["token"]
+
+
+def test_app_can_query_checkouts_with_handle_payments_permission(
+    checkout_with_item, app_api_client, permission_manage_payments
+):
+    # given
+    checkout = checkout_with_item
+
+    # when
+    response = app_api_client.post_graphql(
+        CHECKOUTS_QUERY,
+        {},
+        permissions=[permission_manage_payments],
+        check_no_permissions=False,
+    )
+
+    # then
+    content = get_graphql_content(response)
+    received_checkout = content["data"]["checkouts"]["edges"][0]["node"]
+    assert str(checkout.token) == received_checkout["token"]
+
+
+def test_query_checkouts(
+    checkout_with_item, staff_api_client, permission_manage_checkouts
+):
+    # given
+    checkout = checkout_with_item
+
+    # when
+    response = staff_api_client.post_graphql(
+        CHECKOUTS_QUERY, {}, permissions=[permission_manage_checkouts]
+    )
+
+    # then
     content = get_graphql_content(response)
     received_checkout = content["data"]["checkouts"]["edges"][0]["node"]
     assert str(checkout.token) == received_checkout["token"]
@@ -2031,20 +2527,12 @@ def test_query_with_channel(
 def test_query_without_channel(
     checkouts_list, staff_api_client, permission_manage_checkouts
 ):
-    query = """
-    {
-        checkouts(first: 20) {
-            edges {
-                node {
-                    token
-                }
-            }
-        }
-    }
-    """
+    # when
     response = staff_api_client.post_graphql(
-        query, {}, permissions=[permission_manage_checkouts]
+        CHECKOUTS_QUERY, {}, permissions=[permission_manage_checkouts]
     )
+
+    # then
     content = get_graphql_content(response)
     assert len(content["data"]["checkouts"]["edges"]) == 5
 
@@ -2058,6 +2546,7 @@ def test_query_checkout_lines(
             edges {
                 node {
                     id
+                    isGift
                 }
             }
         }
@@ -2074,6 +2563,8 @@ def test_query_checkout_lines(
         graphene.Node.to_global_id("CheckoutLine", item.pk) for item in checkout
     ]
     assert expected_lines_ids == checkout_lines_ids
+    is_gift_flags = [line["node"]["isGift"] for line in lines]
+    assert all(item is False for item in is_gift_flags)
 
 
 def test_query_checkout_lines_with_meta(
@@ -2099,7 +2590,7 @@ def test_query_checkout_lines_with_meta(
     }
     """
     checkout = checkout_with_item
-    items = [item for item in checkout]
+    items = list(checkout)
 
     metadata_key = "md key"
     metadata_value = "md value"
@@ -2134,10 +2625,10 @@ def test_clean_checkout(checkout_with_item, payment_dummy, address, shipping_met
     checkout.billing_address = address
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     total = calculations.checkout_total(
         manager=manager, checkout_info=checkout_info, lines=lines, address=address
     )
@@ -2162,7 +2653,7 @@ def test_clean_checkout_no_shipping_method(checkout_with_item, address):
     checkout.shipping_address = address
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     with pytest.raises(ValidationError) as e:
@@ -2177,7 +2668,7 @@ def test_clean_checkout_no_shipping_address(checkout_with_item, shipping_method)
     checkout.shipping_method = shipping_method
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     with pytest.raises(ValidationError) as e:
@@ -2195,7 +2686,7 @@ def test_clean_checkout_invalid_shipping_method(
     checkout.shipping_method = shipping_method
     checkout.save()
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     with pytest.raises(ValidationError) as e:
@@ -2214,7 +2705,7 @@ def test_clean_checkout_no_billing_address(
     checkout.shipping_method = shipping_method
     checkout.save()
     payment = checkout.get_last_active_payment()
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -2233,7 +2724,7 @@ def test_clean_checkout_no_payment(checkout_with_item, shipping_method, address)
     checkout.billing_address = address
     checkout.save()
     payment = checkout.get_last_active_payment()
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 

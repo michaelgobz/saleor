@@ -15,6 +15,7 @@ class Migration(migrations.Migration):
             name="search_document",
             field=models.TextField(blank=True, default=""),
         ),
+        # nosemgrep: add-index-concurrently
         migrations.AddIndex(
             model_name="product",
             index=django.contrib.postgres.indexes.GinIndex(
@@ -35,12 +36,14 @@ class Migration(migrations.Migration):
             """
             DROP TRIGGER IF EXISTS title_vector_update
             ON product_product
-        """
+            """,
+            reverse_sql=migrations.RunSQL.noop,
         ),
         migrations.RunSQL(
             """
             DROP TRIGGER IF EXISTS tsvectorupdate
             ON product_product
-        """
+            """,
+            reverse_sql=migrations.RunSQL.noop,
         ),
     ]

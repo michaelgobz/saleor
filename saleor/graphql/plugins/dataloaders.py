@@ -3,6 +3,7 @@ from functools import partial, wraps
 
 from promise import Promise
 
+from ...core.middleware import Requestor
 from ...plugins.manager import PluginsManager, get_plugins_manager
 from ...plugins.models import EmailTemplate
 from ..app.dataloaders import get_app_promise
@@ -10,7 +11,7 @@ from ..core import SaleorContext
 from ..core.dataloaders import DataLoader
 
 
-class EmailTemplatesByPluginConfigurationLoader(DataLoader):
+class EmailTemplatesByPluginConfigurationLoader(DataLoader[int, list[EmailTemplate]]):
     """Loads email templates by plugin configuration ID."""
 
     context_key = "email_template_by_plugin_configuration"
@@ -27,15 +28,15 @@ class EmailTemplatesByPluginConfigurationLoader(DataLoader):
         return [config_to_template[key] for key in keys]
 
 
-class PluginManagerByRequestorDataloader(DataLoader):
+class PluginManagerByRequestorDataloader(DataLoader[Requestor, PluginsManager]):
     context_key = "plugin_manager_by_requestor"
 
     def batch_load(self, keys):
         allow_replica = getattr(self.context, "allow_replica", True)
-        return [get_plugins_manager(lambda: key, allow_replica) for key in keys]
+        return [get_plugins_manager(allow_replica, lambda: user) for user in keys]
 
 
-class AnonymousPluginManagerLoader(DataLoader):
+class AnonymousPluginManagerLoader(DataLoader[None, PluginsManager]):
     context_key = "anonymous_plugin_manager"
 
     def batch_load(self, keys):
@@ -43,7 +44,7 @@ class AnonymousPluginManagerLoader(DataLoader):
         # in `saleor.core.auth_backend.PluginBackend.authenticate`
 
         allow_replica = getattr(self.context, "allow_replica", True)
-        return [get_plugins_manager(None, allow_replica) for key in keys]
+        return [get_plugins_manager(allow_replica, None) for key in keys]
 
 
 def plugin_manager_promise(context: SaleorContext, app) -> Promise[PluginsManager]:
@@ -55,9 +56,8 @@ def plugin_manager_promise(context: SaleorContext, app) -> Promise[PluginsManage
 
 
 def get_plugin_manager_promise(context: SaleorContext) -> Promise[PluginsManager]:
-    return get_app_promise(context).then(
-        partial(plugin_manager_promise, context)  # type: ignore[arg-type] # mypy incorrectly assumes the return type to be a promise of a promise # noqa: E501
-    )
+    app = get_app_promise(context).get()
+    return plugin_manager_promise(context, app)
 
 
 def plugin_manager_promise_callback(func):

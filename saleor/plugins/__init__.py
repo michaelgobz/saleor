@@ -1,6 +1,6 @@
 import importlib
 
-default_app_config = "saleor.plugins.apps.PluginConfig"
+PLUGIN_IDENTIFIER_PREFIX = "plugin:"
 
 
 def discover_plugins_modules(plugins: list[str]):

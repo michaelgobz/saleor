@@ -8,7 +8,6 @@ from ...permission.enums import (
 from ...warehouse import models
 from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
-from ..core.descriptions import ADDED_IN_310
 from ..core.doc_category import DOC_CATEGORY_PRODUCTS
 from ..core.fields import FilterConnectionField, PermissionsField
 from ..core.utils import from_global_id_or_error
@@ -38,7 +37,7 @@ class WarehouseQueries(graphene.ObjectType):
         description="Look up a warehouse by ID.",
         id=graphene.Argument(graphene.ID, description="ID of a warehouse."),
         external_reference=graphene.Argument(
-            graphene.String, description=f"External ID of a warehouse. {ADDED_IN_310}"
+            graphene.String, description="External ID of a warehouse."
         ),
         permissions=[
             ProductPermissions.MANAGE_PRODUCTS,
@@ -62,14 +61,18 @@ class WarehouseQueries(graphene.ObjectType):
 
     @staticmethod
     def resolve_warehouse(
-        _root, _info: ResolveInfo, /, *, id=None, external_reference=None
+        _root, info: ResolveInfo, /, *, id=None, external_reference=None
     ):
-        return resolve_by_global_id_or_ext_ref(models.Warehouse, id, external_reference)
+        return resolve_by_global_id_or_ext_ref(
+            info, models.Warehouse, id, external_reference
+        )
 
     @staticmethod
     def resolve_warehouses(_root, info: ResolveInfo, **kwargs):
-        qs = resolve_warehouses()
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = resolve_warehouses(info)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, WarehouseCountableConnection)
 
 
@@ -85,7 +88,7 @@ class StockQueries(graphene.ObjectType):
     stock = PermissionsField(
         Stock,
         description="Look up a stock by ID",
-        id=graphene.ID(required=True, description="ID of an warehouse"),
+        id=graphene.ID(required=True, description="ID of a stock"),
         permissions=[ProductPermissions.MANAGE_PRODUCTS],
         doc_category=DOC_CATEGORY_PRODUCTS,
     )
@@ -98,14 +101,16 @@ class StockQueries(graphene.ObjectType):
     )
 
     @staticmethod
-    def resolve_stock(_root, _info: ResolveInfo, /, *, id: str):
+    def resolve_stock(_root, info: ResolveInfo, /, *, id: str):
         _, id = from_global_id_or_error(id, Stock)
-        return resolve_stock(id)
+        return resolve_stock(info, id)
 
     @staticmethod
     def resolve_stocks(_root, info: ResolveInfo, **kwargs):
-        qs = resolve_stocks()
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = resolve_stocks(info)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, StockCountableConnection)
 
 

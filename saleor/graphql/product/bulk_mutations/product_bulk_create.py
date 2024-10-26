@@ -1,8 +1,7 @@
+import datetime
 from collections import defaultdict
-from datetime import datetime
 
 import graphene
-import pytz
 from django.core.exceptions import ValidationError
 from django.core.files import File
 from django.db.models import F
@@ -15,23 +14,24 @@ from ....core.tracing import traced_atomic_transaction
 from ....core.utils import prepare_unique_slug
 from ....core.utils.editorjs import clean_editor_js
 from ....core.utils.validators import get_oembed_data
+from ....discount.utils.promotion import mark_active_catalogue_promotion_rules_as_dirty
 from ....permission.enums import ProductPermissions
 from ....product import ProductMediaTypes, models
 from ....product.error_codes import ProductBulkCreateErrorCode
-from ....product.tasks import update_products_discounted_prices_for_promotion_task
+from ....product.models import CollectionProduct
 from ....thumbnail.utils import get_filename_from_url
 from ....warehouse.models import Warehouse
 from ....webhook.event_types import WebhookEventAsyncType
 from ....webhook.utils import get_webhooks_for_event
 from ...attribute.types import AttributeValueInput
-from ...attribute.utils import AttributeAssignmentMixin
+from ...attribute.utils import ProductAttributeAssignmentMixin
 from ...channel import ChannelContext
-from ...core.descriptions import ADDED_IN_313, PREVIEW_FEATURE, RICH_CONTENT
+from ...core.descriptions import RICH_CONTENT
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
 from ...core.enums import ErrorPolicyEnum
 from ...core.fields import JSONString
 from ...core.mutations import BaseMutation, ModelMutation
-from ...core.scalars import WeightScalar
+from ...core.scalars import DateTime, WeightScalar
 from ...core.types import (
     BaseInputObjectType,
     BaseObjectType,
@@ -47,6 +47,7 @@ from ...meta.inputs import MetadataInput
 from ...plugins.dataloaders import get_plugin_manager_promise
 from ..mutations.product.product_create import ProductCreateInput
 from ..types import Product
+from ..utils import ALT_CHAR_LIMIT
 from .product_variant_bulk_create import (
     ProductVariantBulkCreate,
     ProductVariantBulkCreateInput,
@@ -75,9 +76,7 @@ class ProductChannelListingCreateInput(BaseInputObjectType):
     is_published = graphene.Boolean(
         description="Determines if object is visible to customers."
     )
-    published_at = graphene.types.datetime.DateTime(
-        description="Publication date time. ISO 8601 standard."
-    )
+    published_at = DateTime(description="Publication date time. ISO 8601 standard.")
     visible_in_listings = graphene.Boolean(
         description=(
             "Determines if product is visible in product listings "
@@ -91,7 +90,7 @@ class ProductChannelListingCreateInput(BaseInputObjectType):
             "this product is still visible to customers, but it cannot be purchased."
         ),
     )
-    available_for_purchase_at = graphene.DateTime(
+    available_for_purchase_at = DateTime(
         description=(
             "A start date time from which a product will be available "
             "for purchase. When not set and `isAvailable` is set to True, "
@@ -199,7 +198,7 @@ class ProductBulkCreate(BaseMutation):
         )
 
     class Meta:
-        description = "Creates products." + ADDED_IN_313 + PREVIEW_FEATURE
+        description = "Creates products."
         doc_category = DOC_CATEGORY_PRODUCTS
         permissions = (ProductPermissions.MANAGE_PRODUCTS,)
         error_type_class = ProductBulkCreateError
@@ -209,6 +208,12 @@ class ProductBulkCreate(BaseMutation):
     @classmethod
     def generate_unique_slug(cls, slugable_value, new_slugs):
         slug = slugify(unidecode(slugable_value))
+
+        # in case when slugable_value contains only not allowed in slug characters,
+        # slugify function will return empty string, so we need to provide some default
+        # value
+        if slug == "":
+            slug = "-"
 
         search_field = "slug__iregex"
         pattern = rf"{slug}-\d+$|{slug}$"
@@ -282,7 +287,7 @@ class ProductBulkCreate(BaseMutation):
         if attributes := cleaned_input.get("attributes"):
             try:
                 attributes_qs = cleaned_input["product_type"].product_attributes.all()
-                attributes = AttributeAssignmentMixin.clean_input(
+                attributes = ProductAttributeAssignmentMixin.clean_input(
                     attributes, attributes_qs
                 )
                 cleaned_input["attributes"] = attributes
@@ -292,14 +297,15 @@ class ProductBulkCreate(BaseMutation):
                         product_index, exc, index_error_map, "attributes"
                     )
                 else:
-                    index_error_map[product_index].append(
-                        ProductBulkCreateError(
-                            path="attributes",
-                            message=exc.message,
-                            code=exc.code,
+                    for error in exc.error_list:
+                        index_error_map[product_index].append(
+                            ProductBulkCreateError(
+                                path="attributes",
+                                message=error.message,
+                                code=error.code,
+                            )
                         )
-                    )
-                attributes_errors_count += 1
+                    attributes_errors_count += 1
         return attributes_errors_count
 
     @classmethod
@@ -344,14 +350,16 @@ class ProductBulkCreate(BaseMutation):
         if is_available_for_purchase is False:
             channel_data["available_for_purchase_at"] = None
         elif is_available_for_purchase is True and not available_for_purchase_at:
-            channel_data["available_for_purchase_at"] = datetime.now(pytz.UTC)
+            channel_data["available_for_purchase_at"] = datetime.datetime.now(
+                tz=datetime.UTC
+            )
         else:
             channel_data["available_for_purchase_at"] = available_for_purchase_at
 
     @staticmethod
     def set_published_at(channel_data):
         if channel_data.get("is_published") and not channel_data.get("published_at"):
-            channel_data["published_at"] = datetime.now(pytz.UTC)
+            channel_data["published_at"] = datetime.datetime.now(tz=datetime.UTC)
 
     @classmethod
     def clean_product_channel_listings(
@@ -422,6 +430,7 @@ class ProductBulkCreate(BaseMutation):
         for index, media_input in enumerate(media_inputs):
             image = media_input.get("image")
             media_url = media_input.get("media_url")
+            alt = media_input.get("alt")
 
             if not image and not media_url:
                 index_error_map[product_index].append(
@@ -439,6 +448,17 @@ class ProductBulkCreate(BaseMutation):
                         path=f"media.{index}",
                         message="Either image or external URL is required.",
                         code=ProductBulkCreateErrorCode.DUPLICATED_INPUT_ITEM.value,
+                    )
+                )
+                continue
+
+            if alt and len(alt) > ALT_CHAR_LIMIT:
+                index_error_map[product_index].append(
+                    ProductBulkCreateError(
+                        path=f"media.{index}",
+                        message=f"Alt field exceeds the character "
+                        f"limit of {ALT_CHAR_LIMIT}.",
+                        code=ProductBulkCreateErrorCode.INVALID.value,
                     )
                 )
                 continue
@@ -678,7 +698,7 @@ class ProductBulkCreate(BaseMutation):
     def create_variants(cls, info, product, variants_inputs, index, index_error_map):
         variants_instances_data = []
 
-        for variant_index, variant_data in enumerate(variants_inputs):
+        for variant_data in variants_inputs:
             if variant_data:
                 try:
                     metadata_list = variant_data.pop("metadata", None)
@@ -749,12 +769,29 @@ class ProductBulkCreate(BaseMutation):
         models.ProductChannelListing.objects.bulk_create(listings_to_create)
 
         for product, attributes in attributes_to_save:
-            AttributeAssignmentMixin.save(product, attributes)
+            ProductAttributeAssignmentMixin.save(product, attributes)
 
         if variants_input_data:
             variants = cls.save_variants(info, variants_input_data)
 
         return variants, updated_channels
+
+    @classmethod
+    def _save_m2m(cls, _info, instances_data):
+        product_collections = []
+        for instance_data in instances_data:
+            product = instance_data["instance"]
+            if not product:
+                continue
+
+            cleaned_input = instance_data["cleaned_input"]
+            if collections := cleaned_input.get("collections"):
+                for collection in collections:
+                    product_collections.append(
+                        CollectionProduct(product=product, collection=collection)
+                    )
+
+        CollectionProduct.objects.bulk_create(product_collections)
 
     @classmethod
     def prepare_products_channel_listings(
@@ -841,11 +878,9 @@ class ProductBulkCreate(BaseMutation):
         for variant in variants:
             cls.call_event(manager.product_variant_created, variant, webhooks=webhooks)
 
-        webhooks = get_webhooks_for_event(WebhookEventAsyncType.CHANNEL_UPDATED)
-        for channel in channels:
-            cls.call_event(manager.channel_updated, channel, webhooks=webhooks)
-
-        update_products_discounted_prices_for_promotion_task.delay(product_ids)
+        if products:
+            channel_ids = {channel.id for channel in channels}
+            cls.call_event(mark_active_catalogue_promotion_rules_as_dirty, channel_ids)
 
     @classmethod
     @traced_atomic_transaction()
@@ -860,7 +895,7 @@ class ProductBulkCreate(BaseMutation):
         )
 
         # check error policy
-        if any([True if error else False for error in index_error_map.values()]):
+        if any(index_error_map.values()):
             if error_policy == ErrorPolicyEnum.REJECT_EVERYTHING.value:
                 results = get_results(instances_data_with_errors_list, True)
                 return ProductBulkCreate(count=0, results=results)
@@ -872,6 +907,9 @@ class ProductBulkCreate(BaseMutation):
 
         # save all objects
         variants, updated_channels = cls.save(info, instances_data_with_errors_list)
+
+        # save m2m fields
+        cls._save_m2m(info, instances_data_with_errors_list)
 
         # prepare and return data
         results = get_results(instances_data_with_errors_list)

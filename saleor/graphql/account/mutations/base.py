@@ -23,7 +23,9 @@ from ...account.types import Address, AddressInput, User
 from ...app.dataloaders import get_app_promise
 from ...channel.utils import clean_channel, validate_channel
 from ...core import ResolveInfo, SaleorContext
-from ...core.descriptions import ADDED_IN_310, ADDED_IN_314, ADDED_IN_315
+from ...core.descriptions import (
+    DEPRECATED_IN_3X_INPUT,
+)
 from ...core.doc_category import DOC_CATEGORY_USERS
 from ...core.enums import LanguageCodeEnum
 from ...core.mutations import ModelDeleteMutation, ModelMutation
@@ -90,8 +92,8 @@ class BaseAddressUpdate(ModelMutation, I18nMixin):
         cleaned_input = cls.clean_input(
             info=info, instance=instance, data=data.get("input")
         )
-        cls.update_metadata(instance, cleaned_input.pop("metadata", list()))
-        address = cls.validate_address(cleaned_input, instance=instance)
+        cls.update_metadata(instance, cleaned_input.pop("metadata", []))
+        address = cls.validate_address(cleaned_input, instance=instance, info=info)
         cls.clean_instance(info, address)
         cls.save(info, address, cleaned_input)
         cls._save_m2m(info, address, cleaned_input)
@@ -177,14 +179,12 @@ class UserInput(BaseInputObjectType):
     note = graphene.String(description="A note about the user.")
     metadata = NonNullList(
         MetadataInput,
-        description="Fields required to update the user metadata." + ADDED_IN_314,
+        description="Fields required to update the user metadata.",
         required=False,
     )
     private_metadata = NonNullList(
         MetadataInput,
-        description=(
-            "Fields required to update the user private metadata." + ADDED_IN_314
-        ),
+        description="Fields required to update the user private metadata.",
         required=False,
     )
 
@@ -209,10 +209,10 @@ class CustomerInput(UserInput, UserAddressInput):
         LanguageCodeEnum, required=False, description="User language code."
     )
     external_reference = graphene.String(
-        description="External ID of the customer." + ADDED_IN_310, required=False
+        description="External ID of the customer.", required=False
     )
     is_confirmed = graphene.Boolean(
-        required=False, description="User account is confirmed." + ADDED_IN_315
+        required=False, description="User account is confirmed."
     )
 
     class Meta:
@@ -231,6 +231,15 @@ class UserCreateInput(CustomerInput):
             "Slug of a channel which will be used for notify user. Optional when "
             "only one channel exists."
         )
+    )
+    is_confirmed = graphene.Boolean(
+        required=False,
+        description=(
+            "User account is confirmed."
+            + DEPRECATED_IN_3X_INPUT
+            + "\n\nThe user will be always set as unconfirmed. "
+            "The confirmation will take place when the user sets the password."
+        ),
     )
 
     class Meta:
@@ -255,7 +264,7 @@ class BaseCustomerCreate(ModelMutation, I18nMixin):
         cleaned_input = super().clean_input(info, instance, data, **kwargs)
 
         if shipping_address_data:
-            address_metadata = shipping_address_data.pop("metadata", list())
+            address_metadata = shipping_address_data.pop("metadata", [])
             shipping_address = cls.validate_address(
                 shipping_address_data,
                 address_type=AddressType.SHIPPING,
@@ -266,7 +275,7 @@ class BaseCustomerCreate(ModelMutation, I18nMixin):
             cleaned_input[SHIPPING_ADDRESS_FIELD] = shipping_address
 
         if billing_address_data:
-            address_metadata = billing_address_data.pop("metadata", list())
+            address_metadata = billing_address_data.pop("metadata", [])
             billing_address = cls.validate_address(
                 billing_address_data,
                 address_type=AddressType.BILLING,
@@ -279,14 +288,19 @@ class BaseCustomerCreate(ModelMutation, I18nMixin):
         if cleaned_input.get("redirect_url"):
             try:
                 validate_storefront_url(cleaned_input.get("redirect_url"))
-            except ValidationError as error:
+            except ValidationError as e:
                 raise ValidationError(
-                    {"redirect_url": error}, code=AccountErrorCode.INVALID.value
-                )
+                    {"redirect_url": e}, code=AccountErrorCode.INVALID.value
+                ) from e
 
         email = cleaned_input.get("email")
         if email:
             cleaned_input["email"] = email.lower()
+
+        # Always set the user as unconfirmed during account creation.
+        # The confirmation will take place when the user sets the password.
+        if not instance.id:
+            cleaned_input["is_confirmed"] = False
 
         return cleaned_input
 
@@ -330,7 +344,7 @@ class BaseCustomerCreate(ModelMutation, I18nMixin):
             channel_slug = cleaned_input.get("channel")
             if not instance.is_staff:
                 channel_slug = clean_channel(
-                    channel_slug, error_class=AccountErrorCode
+                    channel_slug, error_class=AccountErrorCode, allow_replica=False
                 ).slug
             elif channel_slug is not None:
                 channel_slug = validate_channel(
@@ -379,7 +393,7 @@ class UserDeleteMixin:
                     )
                 }
             )
-        elif instance.is_superuser:
+        if instance.is_superuser:
             raise ValidationError(
                 {
                     "id": ValidationError(

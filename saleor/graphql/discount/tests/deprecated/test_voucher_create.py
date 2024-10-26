@@ -1,6 +1,6 @@
+import datetime
 import json
-from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import graphene
 from django.utils import timezone
@@ -52,8 +52,8 @@ mutation  voucherCreate(
 
 def test_create_voucher(staff_api_client, permission_manage_discounts):
     # given
-    start_date = timezone.now() - timedelta(days=365)
-    end_date = timezone.now() + timedelta(days=365)
+    start_date = timezone.now() - datetime.timedelta(days=365)
+    end_date = timezone.now() + datetime.timedelta(days=365)
     variables = {
         "name": "test voucher",
         "type": VoucherTypeEnum.ENTIRE_ORDER.name,
@@ -103,8 +103,8 @@ def test_create_voucher_trigger_webhook(
 
     name = "test voucher"
     code = "testcode123"
-    start_date = timezone.now() - timedelta(days=365)
-    end_date = timezone.now() + timedelta(days=365)
+    start_date = timezone.now() - datetime.timedelta(days=365)
+    end_date = timezone.now() + datetime.timedelta(days=365)
     variables = {
         "name": name,
         "type": VoucherTypeEnum.ENTIRE_ORDER.name,
@@ -125,9 +125,7 @@ def test_create_voucher_trigger_webhook(
     content = get_graphql_content(response)
     voucher = Voucher.objects.last()
 
-    # then
-    assert content["data"]["voucherCreate"]["voucher"]
-    mocked_webhook_trigger.assert_called_once_with(
+    voucher_created = call(
         json.dumps(
             {
                 "id": graphene.Node.to_global_id("Voucher", voucher.id),
@@ -145,13 +143,18 @@ def test_create_voucher_trigger_webhook(
         [any_webhook],
         voucher,
         SimpleLazyObject(lambda: staff_api_client.user),
+        allow_replica=False,
     )
+
+    # then
+    assert content["data"]["voucherCreate"]["voucher"]
+    assert voucher_created in mocked_webhook_trigger.call_args_list
 
 
 def test_create_voucher_with_empty_code(staff_api_client, permission_manage_discounts):
     # given
-    start_date = timezone.now() - timedelta(days=365)
-    end_date = timezone.now() + timedelta(days=365)
+    start_date = timezone.now() - datetime.timedelta(days=365)
+    end_date = timezone.now() + datetime.timedelta(days=365)
     variables = {
         "name": "test voucher",
         "type": VoucherTypeEnum.ENTIRE_ORDER.name,
@@ -180,8 +183,8 @@ def test_create_voucher_with_existing_gift_card_code(
     staff_api_client, gift_card, permission_manage_discounts
 ):
     # given
-    start_date = timezone.now() - timedelta(days=365)
-    end_date = timezone.now() + timedelta(days=365)
+    start_date = timezone.now() - datetime.timedelta(days=365)
+    end_date = timezone.now() + datetime.timedelta(days=365)
     variables = {
         "name": "test voucher",
         "type": VoucherTypeEnum.ENTIRE_ORDER.name,
@@ -212,8 +215,8 @@ def test_create_voucher_with_existing_voucher_code(
     staff_api_client, voucher_shipping_type, permission_manage_discounts
 ):
     # given
-    start_date = timezone.now() - timedelta(days=365)
-    end_date = timezone.now() + timedelta(days=365)
+    start_date = timezone.now() - datetime.timedelta(days=365)
+    end_date = timezone.now() + datetime.timedelta(days=365)
     variables = {
         "name": "test voucher",
         "type": VoucherTypeEnum.ENTIRE_ORDER.name,
@@ -244,8 +247,8 @@ def test_create_voucher_with_enddate_before_startdate(
     staff_api_client, voucher_shipping_type, permission_manage_discounts
 ):
     # given
-    start_date = timezone.now() + timedelta(days=365)
-    end_date = timezone.now() - timedelta(days=365)
+    start_date = timezone.now() + datetime.timedelta(days=365)
+    end_date = timezone.now() - datetime.timedelta(days=365)
     variables = {
         "name": "test voucher",
         "type": VoucherTypeEnum.ENTIRE_ORDER.name,

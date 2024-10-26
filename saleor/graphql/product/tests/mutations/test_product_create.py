@@ -1,15 +1,15 @@
+import datetime
 import json
-from datetime import datetime
 from unittest.mock import ANY, patch
 
 import graphene
 import pytest
-import pytz
 from django.conf import settings
 from django.utils.text import slugify
 from freezegun import freeze_time
 
 from .....core.taxes import TaxType
+from .....discount.utils.promotion import get_active_catalogue_promotion_rules
 from .....graphql.core.enums import AttributeErrorCode
 from .....graphql.tests.utils import (
     get_graphql_content,
@@ -86,15 +86,11 @@ CREATE_PRODUCT_MUTATION = """
 """
 
 
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 @patch("saleor.plugins.manager.PluginsManager.product_updated")
 @patch("saleor.plugins.manager.PluginsManager.product_created")
 def test_create_product(
     created_webhook_mock,
     updated_webhook_mock,
-    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     product_type,
     category,
@@ -122,7 +118,7 @@ def test_create_product(
     monkeypatch.setattr(
         PluginsManager,
         "get_tax_code_from_object_meta",
-        lambda self, x: TaxType(description="", code=product_tax_rate),
+        lambda self, x, channel_slug: TaxType(description="", code=product_tax_rate),
     )
 
     # Default attribute defined in product_type fixture
@@ -189,9 +185,8 @@ def test_create_product(
 
     created_webhook_mock.assert_called_once_with(product)
     updated_webhook_mock.assert_not_called()
-    update_products_discounted_prices_for_promotion_task_mock.assert_called_once_with(
-        [product.id]
-    )
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty
 
 
 def test_create_product_without_slug_and_not_allowed_characters_for_slug_in_name(
@@ -750,7 +745,7 @@ def test_create_product_no_value_for_plain_text_attribute(
     assert expected_attributes_data in data["product"]["attributes"]
 
 
-@freeze_time(datetime(2020, 5, 5, 5, 5, 5, tzinfo=pytz.utc))
+@freeze_time(datetime.datetime(2020, 5, 5, 5, 5, 5, tzinfo=datetime.UTC))
 def test_create_product_with_date_time_attribute(
     staff_api_client,
     product_type,
@@ -768,7 +763,7 @@ def test_create_product_with_date_time_attribute(
     date_time_attribute_id = graphene.Node.to_global_id(
         "Attribute", date_time_attribute.id
     )
-    value = datetime.now(tz=pytz.utc)
+    value = datetime.datetime.now(tz=datetime.UTC)
 
     # test creating root product
     variables = {
@@ -814,7 +809,7 @@ def test_create_product_with_date_time_attribute(
     assert expected_attributes_data in data["product"]["attributes"]
 
 
-@freeze_time(datetime(2020, 5, 5, 5, 5, 5, tzinfo=pytz.utc))
+@freeze_time(datetime.datetime(2020, 5, 5, 5, 5, 5, tzinfo=datetime.UTC))
 def test_create_product_with_date_attribute(
     staff_api_client,
     product_type,
@@ -830,7 +825,7 @@ def test_create_product_with_date_attribute(
     # Add second attribute
     product_type.product_attributes.add(date_attribute)
     date_attribute_id = graphene.Node.to_global_id("Attribute", date_attribute.id)
-    value = datetime.now(tz=pytz.utc).date()
+    value = datetime.datetime.now(tz=datetime.UTC).date()
 
     # test creating root product
     variables = {
@@ -1089,11 +1084,7 @@ def test_create_product_no_category_id(
     assert data["product"]["category"] is None
 
 
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 def test_create_product_with_negative_weight(
-    update_products_discounted_prices_for_promotion_task_mock,
     staff_api_client,
     product_type,
     category,
@@ -1122,7 +1113,6 @@ def test_create_product_with_negative_weight(
     error = data["errors"][0]
     assert error["field"] == "weight"
     assert error["code"] == ProductErrorCode.INVALID.name
-    update_products_discounted_prices_for_promotion_task_mock.assert_not_called()
 
 
 def test_create_product_with_unicode_in_slug_and_name(
@@ -1427,7 +1417,7 @@ def test_product_create_with_invalid_json_description(staff_api_client):
     assert content["errors"]
     assert len(content["errors"]) == 1
     assert content["errors"][0]["extensions"]["exception"]["code"] == "GraphQLError"
-    assert "is not a valid JSONString" in content["errors"][0]["message"]
+    assert 'Expected type "JSONString"' in content["errors"][0]["message"]
 
 
 @freeze_time("2020-03-18 12:00:00")

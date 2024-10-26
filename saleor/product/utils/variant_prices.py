@@ -1,8 +1,8 @@
 from collections import defaultdict
 from decimal import Decimal
-from typing import Optional
 from uuid import UUID
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Exists, OuterRef
 from prices import Money
@@ -11,9 +11,9 @@ from ...channel.models import Channel
 from ...core.taxes import zero_money
 from ...discount import PromotionRuleInfo
 from ...discount.models import PromotionRule
-from ...discount.utils import (
+from ...discount.utils.promotion import (
     calculate_discounted_price_for_promotions,
-    fetch_active_promotion_rules,
+    get_variants_to_promotion_rules_map,
 )
 from ..managers import ProductsQueryset, ProductVariantQueryset
 from ..models import (
@@ -25,7 +25,7 @@ from ..models import (
 
 
 def update_discounted_prices_for_promotion(
-    products: ProductsQueryset, rules_info: Optional[list[PromotionRuleInfo]] = None
+    products: ProductsQueryset, only_dirty_products: bool = False
 ):
     """Update Products and ProductVariants discounted prices.
 
@@ -34,12 +34,14 @@ def update_discounted_prices_for_promotion(
     If there is no applied promotion rule, the discounted price for the product
     is equal to the cheapest variant price, in the case of the variant it's equal
     to the variant price.
+
+    When only_dirty_products set to True, the prices will be recalculated only for the
+    listings marked as dirty.
     """
-    variant_qs = ProductVariant.objects.filter(
-        Exists(products.filter(id=OuterRef("product_id")))
-    )
-    if rules_info is None:
-        rules_info_per_promotion_id = fetch_active_promotion_rules(variant_qs)
+    variant_qs = ProductVariant.objects.using(
+        settings.DATABASE_CONNECTION_REPLICA_NAME
+    ).filter(Exists(products.filter(id=OuterRef("product_id"))))
+    rules_info_per_variant = get_variants_to_promotion_rules_map(variant_qs)
     product_to_variant_listings_per_channel_map = (
         _get_product_to_variant_channel_listings_per_channel_map(variant_qs)
     )
@@ -53,9 +55,12 @@ def update_discounted_prices_for_promotion(
     changed_variant_listing_promotion_rule_to_create = []
     changed_variant_listing_promotion_rule_to_update = []
 
-    product_channel_listings = ProductChannelListing.objects.filter(
-        Exists(products.filter(id=OuterRef("product_id")))
-    )
+    product_channel_listings = ProductChannelListing.objects.using(
+        settings.DATABASE_CONNECTION_REPLICA_NAME
+    ).filter(Exists(products.filter(id=OuterRef("product_id"))))
+    if only_dirty_products:
+        product_channel_listings.filter(discounted_price_dirty=True)
+
     for product_channel_listing in product_channel_listings:
         product_id = product_channel_listing.product_id
         channel_id = product_channel_listing.channel_id
@@ -71,7 +76,7 @@ def update_discounted_prices_for_promotion(
             variant_listing_promotion_rule_to_update,
         ) = _get_discounted_variants_prices_for_promotions(
             variant_listings,
-            rules_info_per_promotion_id,
+            rules_info_per_variant,
             product_channel_listing.channel,
             variant_listing_to_listing_rule_per_rule_map,
         )
@@ -112,11 +117,13 @@ def _update_or_create_listings(
 ):
     if changed_products_listings_to_update:
         ProductChannelListing.objects.bulk_update(
-            changed_products_listings_to_update, ["discounted_price_amount"]
+            sorted(changed_products_listings_to_update, key=lambda listing: listing.id),
+            ["discounted_price_amount"],
         )
     if changed_variants_listings_to_update:
         ProductVariantChannelListing.objects.bulk_update(
-            changed_variants_listings_to_update, ["discounted_price_amount"]
+            sorted(changed_variants_listings_to_update, key=lambda listing: listing.id),
+            ["discounted_price_amount"],
         )
     if changed_variant_listing_promotion_rule_to_create:
         _create_variant_listing_promotion_rule(
@@ -124,7 +131,11 @@ def _update_or_create_listings(
         )
     if changed_variant_listing_promotion_rule_to_update:
         VariantChannelListingPromotionRule.objects.bulk_update(
-            changed_variant_listing_promotion_rule_to_update, ["discount_amount"]
+            sorted(
+                changed_variant_listing_promotion_rule_to_update,
+                key=lambda listing: listing.id,
+            ),
+            ["discount_amount"],
         )
 
 
@@ -139,10 +150,16 @@ def _create_variant_listing_promotion_rule(variant_listing_promotion_rule_to_cre
             for listing in variant_listing_promotion_rule_to_create
         ]
         # Lock PromotionRule and ProductVariantChannelListing before bulk_create
-        rules = PromotionRule.objects.filter(id__in=rule_ids).select_for_update()
-        variant_listings = ProductVariantChannelListing.objects.filter(
-            id__in=listing_ids
-        ).select_for_update()
+        rules = (
+            PromotionRule.objects.filter(id__in=rule_ids)
+            .select_for_update()
+            .order_by("pk")
+        )
+        variant_listings = (
+            ProductVariantChannelListing.objects.filter(id__in=listing_ids)
+            .select_for_update()
+            .order_by("pk")
+        )
         # Do not create VariantChannelListingPromotionRule for rules that were deleted.
         if len(rules) < len(rule_ids):
             variant_listing_promotion_rule_to_create = [
@@ -171,18 +188,16 @@ def _get_product_to_variant_channel_listings_per_channel_map(
     variant_channel_listings = ProductVariantChannelListing.objects.filter(
         Exists(variants.filter(id=OuterRef("variant_id"))), price_amount__isnull=False
     )
-    variant_to_product_id = {
-        variant_id: product_id
-        for variant_id, product_id in variants.values_list(
-            "id", "product_id"
-        ).iterator()
-    }
+    variant_to_product_id = dict(variants.values_list("id", "product_id").iterator())
 
     price_data: dict[int, dict[int, list[Money]]] = defaultdict(
         lambda: defaultdict(list)
     )
     for variant_channel_listing in variant_channel_listings.iterator():
-        product_id = variant_to_product_id[variant_channel_listing.variant_id]
+        try:
+            product_id = variant_to_product_id[variant_channel_listing.variant_id]
+        except KeyError:
+            continue
         price_data[product_id][variant_channel_listing.channel_id].append(
             variant_channel_listing
         )
@@ -222,7 +237,7 @@ def _get_variant_listings_to_listing_rule_per_rule_id_map(
 
 def _get_discounted_variants_prices_for_promotions(
     variant_listings: list[ProductVariantChannelListing],
-    rules_info_per_promotion_id: dict[UUID, list[PromotionRuleInfo]],
+    rules_info_per_variant: dict[int, list[PromotionRuleInfo]],
     channel: Channel,
     variant_listing_to_listing_rule_per_rule_map: dict,
 ) -> tuple[
@@ -240,20 +255,22 @@ def _get_discounted_variants_prices_for_promotions(
         VariantChannelListingPromotionRule
     ] = []
     for variant_listing in variant_listings:
-        applied_discounts = calculate_discounted_price_for_promotions(
+        applied_discount = calculate_discounted_price_for_promotions(
             price=variant_listing.price,
-            rules_info_per_promotion_id=rules_info_per_promotion_id,
+            rules_info_per_variant=rules_info_per_variant,
             channel=channel,
             variant_id=variant_listing.variant_id,
         )
-        rule_ids = []
         discounted_variant_price = variant_listing.price
-        for rule_id, discount in applied_discounts:
-            if discounted_variant_price.amount < discount.amount:
-                discount = discounted_variant_price
-                discounted_variant_price = zero_money(discounted_variant_price.currency)
-            else:
-                discounted_variant_price -= discount
+
+        rule_id = None
+        if applied_discount:
+            rule_id, discount = applied_discount
+            discounted_variant_price -= discount
+            discounted_variant_price = max(
+                discounted_variant_price, zero_money(discounted_variant_price.currency)
+            )
+
             _handle_discount_rule_id(
                 variant_listing,
                 rule_id,
@@ -263,19 +280,16 @@ def _get_discounted_variants_prices_for_promotions(
                 variant_listing_promotion_rule_to_update,
                 variant_listing_promotion_rule_to_create,
             )
-            rule_ids.append(rule_id)
-            if discounted_variant_price.amount == 0:
-                break
 
         if variant_listing.discounted_price != discounted_variant_price:
             variant_listing.discounted_price_amount = discounted_variant_price.amount
             variants_listings_to_update.append(variant_listing)
 
-            # delete variant listing - promotion rules relationd that are not valid
+            # delete variant listing - promotion rules relations that are not valid
             # anymore
             VariantChannelListingPromotionRule.objects.filter(
                 variant_channel_listing_id=variant_listing.id
-            ).exclude(promotion_rule_id__in=rule_ids).delete()
+            ).exclude(promotion_rule_id=rule_id).delete()
 
         discounted_variants_price.append(discounted_variant_price)
 

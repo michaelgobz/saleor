@@ -9,33 +9,17 @@ from ......account.error_codes import AccountErrorCode
 from ......account.models import User
 from ......account.notifications import get_default_user_payload
 from ......account.search import generate_user_fields_search_document_value
-from ......core.notify_events import NotifyEventType
+from ......core.notify import NotifyEventType
 from ......core.tests.utils import get_site_context_payload
 from ......core.utils.url import prepare_url
 from .....tests.utils import get_graphql_content
 
 ACCOUNT_REGISTER_MUTATION = """
     mutation RegisterAccount(
-        $password: String!,
-        $email: String!,
-        $firstName: String,
-        $lastName: String,
-        $redirectUrl: String,
-        $languageCode: LanguageCodeEnum
-        $metadata: [MetadataInput!],
-        $channel: String
+        $input: AccountRegisterInput!
     ) {
         accountRegister(
-            input: {
-                password: $password,
-                email: $email,
-                firstName: $firstName,
-                lastName: $lastName,
-                redirectUrl: $redirectUrl,
-                languageCode: $languageCode,
-                metadata: $metadata,
-                channel: $channel
-            }
+            input: $input
         ) {
             errors {
                 field
@@ -64,24 +48,30 @@ def test_customer_register(
     order,
     site_settings,
 ):
+    # given
     mocked_generator.return_value = "token"
     email = "customer@example.com"
 
     redirect_url = "http://localhost:3000"
     variables = {
-        "email": email,
-        "password": "Password",
-        "redirectUrl": redirect_url,
-        "firstName": "saleor",
-        "lastName": "rocks",
-        "languageCode": "PL",
-        "metadata": [{"key": "meta", "value": "data"}],
-        "channel": channel_PLN.slug,
+        "input": {
+            "email": email,
+            "password": "Password",
+            "redirectUrl": redirect_url,
+            "firstName": "saleor",
+            "lastName": "rocks",
+            "languageCode": "PL",
+            "metadata": [{"key": "meta", "value": "data"}],
+            "channel": channel_PLN.slug,
+        }
     }
     query = ACCOUNT_REGISTER_MUTATION
     mutation_name = "accountRegister"
+
+    # when
     response = api_client.post_graphql(query, variables)
 
+    # then
     new_user = User.objects.get(email=email)
     content = get_graphql_content(response)
     data = content["data"][mutation_name]
@@ -98,17 +88,20 @@ def test_customer_register(
     }
     assert new_user.metadata == {"meta": "data"}
     assert new_user.language_code == "pl"
-    assert new_user.first_name == variables["firstName"]
-    assert new_user.last_name == variables["lastName"]
+    assert new_user.first_name == variables["input"]["firstName"]
+    assert new_user.last_name == variables["input"]["lastName"]
     assert new_user.search_document == generate_user_fields_search_document_value(
         new_user
     )
     assert not data["errors"]
-    mocked_notify.assert_called_once_with(
-        NotifyEventType.ACCOUNT_CONFIRMATION,
-        payload=expected_payload,
-        channel_slug=channel_PLN.slug,
-    )
+    assert mocked_notify.call_count == 1
+    call_args = mocked_notify.call_args_list[0]
+    called_args = call_args.args
+    called_kwargs = call_args.kwargs
+    assert called_args[0] == NotifyEventType.ACCOUNT_CONFIRMATION
+    assert len(called_kwargs) == 2
+    assert called_kwargs["payload_func"]() == expected_payload
+    assert called_kwargs["channel_slug"] == channel_PLN.slug
 
     response = api_client.post_graphql(query, variables)
     content = get_graphql_content(response)
@@ -137,14 +130,16 @@ def test_customer_register_generates_valid_token(
     email = "customer@example.com"
     redirect_url = "http://localhost:3000"
     variables = {
-        "email": email,
-        "password": "Password",
-        "redirectUrl": redirect_url,
-        "firstName": "saleor",
-        "lastName": "rocks",
-        "languageCode": "PL",
-        "metadata": [{"key": "meta", "value": "data"}],
-        "channel": channel_PLN.slug,
+        "input": {
+            "email": email,
+            "password": "Password",
+            "redirectUrl": redirect_url,
+            "firstName": "saleor",
+            "lastName": "rocks",
+            "languageCode": "PL",
+            "metadata": [{"key": "meta", "value": "data"}],
+            "channel": channel_PLN.slug,
+        }
     }
 
     # when
@@ -154,7 +149,12 @@ def test_customer_register_generates_valid_token(
     data = content["data"]["accountRegister"]
 
     # then
-    token = mocked_notify.call_args.kwargs["payload"]["token"]
+    assert mocked_notify.call_count == 1
+    call_args = mocked_notify.call_args_list[0]
+    called_kwargs = call_args.kwargs
+    token = called_kwargs["payload_func"]()["token"]
+    assert called_kwargs["channel_slug"] == channel_PLN.slug
+
     assert not data["errors"]
     assert default_token_generator.check_token(new_user, token)
 
@@ -168,7 +168,7 @@ def test_customer_register_disabled_email_confirmation(
     site_settings.save(update_fields=["enable_account_confirmation_by_email"])
 
     email = "customer@example.com"
-    variables = {"email": email, "password": "Password"}
+    variables = {"input": {"email": email, "password": "Password"}}
 
     #   when
     response = api_client.post_graphql(ACCOUNT_REGISTER_MUTATION, variables)
@@ -189,14 +189,14 @@ def test_customer_register_no_redirect_url(mocked_notify, api_client, site_setti
     site_settings.enable_account_confirmation_by_email = True
     site_settings.save(update_fields=["enable_account_confirmation_by_email"])
 
-    variables = {"email": "customer@example.com", "password": "Password"}
+    variables = {"input": {"email": "customer@example.com", "password": "Password"}}
 
     #   when
     response = api_client.post_graphql(ACCOUNT_REGISTER_MUTATION, variables)
     errors = response.json()["data"]["accountRegister"]["errors"]
 
     # then
-    assert "redirectUrl" in map(lambda error: error["field"], errors)
+    assert "redirectUrl" in (error["field"] for error in errors)
     mocked_notify.assert_not_called()
 
 
@@ -207,7 +207,7 @@ def test_customer_register_upper_case_email(api_client, site_settings):
     site_settings.save(update_fields=["enable_account_confirmation_by_email"])
 
     email = "CUSTOMER@example.com"
-    variables = {"email": email, "password": "Password"}
+    variables = {"input": {"email": email, "password": "Password"}}
 
     # when
     response = api_client.post_graphql(ACCOUNT_REGISTER_MUTATION, variables)
@@ -217,3 +217,37 @@ def test_customer_register_upper_case_email(api_client, site_settings):
     data = content["data"]["accountRegister"]
     assert not data["errors"]
     assert data["user"]["email"].lower()
+
+
+@patch("saleor.plugins.manager.PluginsManager.notify")
+def test_customer_register_no_channel_email_confirmation_unset(
+    mocked_notify, api_client, channel_PLN, site_settings
+):
+    # given
+    site_settings.enable_account_confirmation_by_email = False
+    site_settings.save(update_fields=["enable_account_confirmation_by_email"])
+
+    email = "customer@example.com"
+    redirect_url = "http://localhost:3000"
+    variables = {
+        "input": {
+            "email": email,
+            "password": "Password",
+            "redirectUrl": redirect_url,
+            "firstName": "saleor",
+            "lastName": "rocks",
+            "languageCode": "PL",
+            "metadata": [{"key": "meta", "value": "data"}],
+        }
+    }
+
+    # when
+    response = api_client.post_graphql(ACCOUNT_REGISTER_MUTATION, variables)
+    content = get_graphql_content(response)
+    data = content["data"]["accountRegister"]
+
+    # then
+    data = content["data"]["accountRegister"]
+    assert not data["errors"]
+    assert data["user"]["email"].lower()
+    mocked_notify.assert_not_called()

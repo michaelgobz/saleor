@@ -9,16 +9,9 @@ from ....webhook.event_types import WebhookEventAsyncType
 from ...account.enums import CountryCodeEnum
 from ...core import ResolveInfo
 from ...core.descriptions import (
-    ADDED_IN_31,
-    ADDED_IN_35,
-    ADDED_IN_37,
-    ADDED_IN_312,
-    ADDED_IN_313,
-    ADDED_IN_314,
-    ADDED_IN_315,
-    ADDED_IN_316,
+    ADDED_IN_318,
+    ADDED_IN_320,
     DEPRECATED_IN_3X_INPUT,
-    DEPRECATED_PREVIEW_IN_316_INPUT,
     PREVIEW_FEATURE,
 )
 from ...core.doc_category import (
@@ -72,9 +65,20 @@ class CheckoutSettingsInput(BaseInputObjectType):
             "Some of the `problems` can block the finalizing checkout process. "
             "The legacy flow will be removed in Saleor 4.0. "
             "The flow with `checkout.problems` will be the default one. "
-            + ADDED_IN_315
             + DEPRECATED_IN_3X_INPUT
         )
+    )
+    automatically_complete_fully_paid_checkouts = graphene.Boolean(
+        description=(
+            "Default `false`. Determines if the paid checkouts should be automatically "
+            "completed. This setting applies only to checkouts where payment "
+            "was processed through transactions."
+            "When enabled, the checkout will be automatically completed once the "
+            "checkout `charge_status` reaches `FULL`. This occurs when the total sum "
+            "of charged and authorized transaction amounts equals or exceeds the "
+            "checkout's total amount."
+        )
+        + ADDED_IN_320,
     )
 
     class Meta:
@@ -91,21 +95,21 @@ class OrderSettingsInput(BaseInputObjectType):
     automatically_fulfill_non_shippable_gift_card = graphene.Boolean(
         required=False,
         description="When enabled, all non-shippable gift card orders "
-        "will be fulfilled automatically. By defualt set to True.",
+        "will be fulfilled automatically. By default set to True.",
     )
     expire_orders_after = Minute(
         required=False,
         description=(
             "Expiration time in minutes. "
             "Default null - means do not expire any orders. "
-            "Enter 0 or null to disable." + ADDED_IN_313 + PREVIEW_FEATURE
+            "Enter 0 or null to disable."
         ),
     )
     delete_expired_orders_after = Day(
         required=False,
         description=(
             "The time in days after expired orders will be deleted."
-            "Allowed range is from 1 to 120." + ADDED_IN_314 + PREVIEW_FEATURE
+            "Allowed range is from 1 to 120."
         ),
     )
     mark_as_paid_strategy = MarkAsPaidStrategyEnum(
@@ -116,27 +120,24 @@ class OrderSettingsInput(BaseInputObjectType):
             "and attached to the order when it's manually marked as paid."
             "\n`PAYMENT_FLOW` - [default option] creates the `Payment` object."
             "\n`TRANSACTION_FLOW` - creates the `TransactionItem` object."
-            + ADDED_IN_313
-            + PREVIEW_FEATURE
-        ),
-    )
-    default_transaction_flow_strategy = TransactionFlowStrategyEnum(
-        required=False,
-        description=(
-            "Determine the transaction flow strategy to be used. "
-            "Include the selected option in the payload sent to the payment app, as a "
-            "requested action for the transaction."
-            + ADDED_IN_313
-            + PREVIEW_FEATURE
-            + DEPRECATED_PREVIEW_IN_316_INPUT
-            + " Use `PaymentSettingsInput.defaultTransactionFlowStrategy` instead."
         ),
     )
     allow_unpaid_orders = graphene.Boolean(
         required=False,
         description=(
             "Determine if it is possible to place unpaid order by calling "
-            "`checkoutComplete` mutation." + ADDED_IN_315 + PREVIEW_FEATURE
+            "`checkoutComplete` mutation."
+        ),
+    )
+    include_draft_order_in_voucher_usage = graphene.Boolean(
+        required=False,
+        description=(
+            "Specify whether a coupon applied to draft orders will count toward "
+            "voucher usage."
+            "\n\nWarning:  when switching this setting from `false` to `true`, "
+            "the vouchers will be disconnected from all draft orders."
+            + ADDED_IN_318
+            + PREVIEW_FEATURE
         ),
     )
 
@@ -150,7 +151,7 @@ class PaymentSettingsInput(BaseInputObjectType):
         description=(
             "Determine the transaction flow strategy to be used. "
             "Include the selected option in the payload sent to the payment app, as a "
-            "requested action for the transaction." + ADDED_IN_316 + PREVIEW_FEATURE
+            "requested action for the transaction."
         ),
     )
 
@@ -164,7 +165,7 @@ class ChannelInput(BaseInputObjectType):
     )
     stock_settings = graphene.Field(
         StockSettingsInput,
-        description=("The channel stock settings." + ADDED_IN_37),
+        description="The channel stock settings.",
         required=False,
     )
     add_shipping_zones = NonNullList(
@@ -174,33 +175,33 @@ class ChannelInput(BaseInputObjectType):
     )
     add_warehouses = NonNullList(
         graphene.ID,
-        description="List of warehouses to assign to the channel." + ADDED_IN_35,
+        description="List of warehouses to assign to the channel.",
         required=False,
     )
     order_settings = graphene.Field(
         OrderSettingsInput,
-        description="The channel order settings" + ADDED_IN_312,
+        description="The channel order settings",
         required=False,
     )
     metadata = common_types.NonNullList(
         MetadataInput,
-        description="Channel public metadata." + ADDED_IN_315,
+        description="Channel public metadata.",
         required=False,
     )
     private_metadata = common_types.NonNullList(
         MetadataInput,
-        description="Channel private metadata." + ADDED_IN_315,
+        description="Channel private metadata.",
         required=False,
     )
 
     checkout_settings = graphene.Field(
         CheckoutSettingsInput,
-        description="The channel checkout settings" + ADDED_IN_315 + PREVIEW_FEATURE,
+        description="The channel checkout settings",
         required=False,
     )
     payment_settings = graphene.Field(
         PaymentSettingsInput,
-        description="The channel payment settings" + ADDED_IN_316 + PREVIEW_FEATURE,
+        description="The channel payment settings",
         required=False,
     )
 
@@ -218,7 +219,7 @@ class ChannelCreateInput(ChannelInput):
         description=(
             "Default country for the channel. Default country can be "
             "used in checkout to determine the stock quantities or calculate taxes "
-            "when the country was not explicitly provided." + ADDED_IN_31
+            "when the country was not explicitly provided."
         ),
         required=True,
     )
@@ -262,7 +263,7 @@ class ChannelCreate(ModelMutation):
         if stock_settings := cleaned_input.get("stock_settings"):
             cleaned_input["allocation_strategy"] = stock_settings["allocation_strategy"]
         if order_settings := cleaned_input.get("order_settings"):
-            clean_input_order_settings(order_settings, cleaned_input)
+            clean_input_order_settings(order_settings, cleaned_input, instance)
 
         if checkout_settings := cleaned_input.get("checkout_settings"):
             clean_input_checkout_settings(checkout_settings, cleaned_input)

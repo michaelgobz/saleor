@@ -1,5 +1,5 @@
+import datetime
 import json
-from datetime import timedelta
 from unittest.mock import call, patch
 
 import graphene
@@ -42,9 +42,9 @@ CHANNEL_UPDATE_MUTATION = """
                     automaticallyFulfillNonShippableGiftCard
                     expireOrdersAfter
                     markAsPaidStrategy
-                    defaultTransactionFlowStrategy
                     deleteExpiredOrdersAfter
                     allowUnpaidOrders
+                    includeDraftOrderInVoucherUsage
                 }
             }
             errors{
@@ -60,7 +60,9 @@ CHANNEL_UPDATE_MUTATION = """
 
 
 def test_channel_update_mutation_as_staff_user(
-    permission_manage_channels, staff_api_client, channel_USD
+    permission_manage_channels,
+    staff_api_client,
+    channel_USD,
 ):
     # given
     channel_id = graphene.Node.to_global_id("Channel", channel_USD.id)
@@ -80,6 +82,7 @@ def test_channel_update_mutation_as_staff_user(
                 "automaticallyFulfillNonShippableGiftCard": False,
                 "expireOrdersAfter": 10,
                 "allowUnpaidOrders": True,
+                "includeDraftOrderInVoucherUsage": True,
             },
         },
     }
@@ -112,6 +115,7 @@ def test_channel_update_mutation_as_staff_user(
         is False
     )
     assert channel_data["orderSettings"]["expireOrdersAfter"] == 10
+    assert channel_data["orderSettings"]["includeDraftOrderInVoucherUsage"] is True
     assert channel_data["orderSettings"]["allowUnpaidOrders"] is True
 
 
@@ -536,7 +540,10 @@ def test_channel_update_mutation_trigger_webhook(
     metadata_webhook_args = update_webhook_args.copy()
     metadata_webhook_args[1] = WebhookEventAsyncType.CHANNEL_METADATA_UPDATED
     mocked_webhook_trigger.assert_has_calls(
-        [call(*update_webhook_args), call(*metadata_webhook_args)]
+        [
+            call(*update_webhook_args, allow_replica=False),
+            call(*metadata_webhook_args, allow_replica=False),
+        ]
     )
 
 
@@ -1021,54 +1028,13 @@ def test_channel_update_order_mark_as_paid_strategy(
     )
 
 
-def test_channel_update_default_transaction_flow_strategy_via_order_settings(
-    permission_manage_orders,
-    staff_api_client,
-    channel_USD,
-):
-    # given
-    channel_id = graphene.Node.to_global_id("Channel", channel_USD.id)
-    variables = {
-        "id": channel_id,
-        "input": {
-            "orderSettings": {
-                "defaultTransactionFlowStrategy": (
-                    TransactionFlowStrategyEnum.AUTHORIZATION.name
-                ),
-            },
-        },
-    }
-
-    # when
-    response = staff_api_client.post_graphql(
-        CHANNEL_UPDATE_MUTATION,
-        variables=variables,
-        permissions=(permission_manage_orders,),
-    )
-    content = get_graphql_content(response)
-
-    # then
-    data = content["data"]["channelUpdate"]
-    assert not data["errors"]
-    channel_data = data["channel"]
-    assert (
-        channel_data["orderSettings"]["defaultTransactionFlowStrategy"]
-        == TransactionFlowStrategyEnum.AUTHORIZATION.name
-    )
-    channel_USD.refresh_from_db()
-    assert (
-        channel_USD.default_transaction_flow_strategy
-        == TransactionFlowStrategyEnum.AUTHORIZATION.value
-    )
-
-
 def test_channel_update_delete_expired_orders_after(
     permission_manage_orders,
     staff_api_client,
     channel_USD,
 ):
     # given
-    channel_USD.delete_expired_orders_after = timedelta(days=1)
+    channel_USD.delete_expired_orders_after = datetime.timedelta(days=1)
     channel_USD.save()
 
     delete_expired_after = 10
@@ -1099,7 +1065,7 @@ def test_channel_update_delete_expired_orders_after(
         channel_data["orderSettings"]["deleteExpiredOrdersAfter"]
         == delete_expired_after
     )
-    assert channel_USD.delete_expired_orders_after == timedelta(
+    assert channel_USD.delete_expired_orders_after == datetime.timedelta(
         days=delete_expired_after
     )
 
@@ -1112,7 +1078,7 @@ def test_channel_update_set_incorrect_delete_expired_orders_after(
     channel_USD,
 ):
     # given
-    channel_USD.delete_expired_orders_after = timedelta(days=1)
+    channel_USD.delete_expired_orders_after = datetime.timedelta(days=1)
     channel_USD.save()
 
     channel_id = graphene.Node.to_global_id("Channel", channel_USD.id)
@@ -1139,6 +1105,80 @@ def test_channel_update_set_incorrect_delete_expired_orders_after(
     assert error["code"] == ChannelErrorCode.INVALID.name
 
 
+@patch("saleor.discount.tasks.decrease_voucher_codes_usage_task.delay")
+def test_channel_update_order_settings_voucher_usage_disable(
+    decrease_voucher_codes_usage_task_mock,
+    permission_manage_orders,
+    staff_api_client,
+    channel_USD,
+    draft_order_list_with_multiple_use_voucher,
+):
+    # given
+    channel_id = graphene.Node.to_global_id("Channel", channel_USD.id)
+    channel_USD.include_draft_order_in_voucher_usage = True
+    channel_USD.save(update_fields=["include_draft_order_in_voucher_usage"])
+
+    variables = {
+        "id": channel_id,
+        "input": {
+            "orderSettings": {
+                "includeDraftOrderInVoucherUsage": False,
+            },
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        CHANNEL_UPDATE_MUTATION,
+        variables=variables,
+        permissions=(permission_manage_orders,),
+    )
+    content = get_graphql_content(response)
+
+    # then
+    data = content["data"]["channelUpdate"]
+    assert not data["errors"]
+    assert data["channel"]["orderSettings"]["includeDraftOrderInVoucherUsage"] is False
+    decrease_voucher_codes_usage_task_mock.assert_called_once()
+
+
+@patch("saleor.discount.tasks.disconnect_voucher_codes_from_draft_orders_task.delay")
+def test_channel_update_order_settings_voucher_usage_enable(
+    disconnect_voucher_codes_from_draft_orders_task_mock,
+    permission_manage_orders,
+    staff_api_client,
+    channel_USD,
+    draft_order_list_with_multiple_use_voucher,
+):
+    # given
+    channel_id = graphene.Node.to_global_id("Channel", channel_USD.id)
+    channel_USD.include_draft_order_in_voucher_usage = False
+    channel_USD.save(update_fields=["include_draft_order_in_voucher_usage"])
+
+    variables = {
+        "id": channel_id,
+        "input": {
+            "orderSettings": {
+                "includeDraftOrderInVoucherUsage": True,
+            },
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        CHANNEL_UPDATE_MUTATION,
+        variables=variables,
+        permissions=(permission_manage_orders,),
+    )
+    content = get_graphql_content(response)
+
+    # then
+    data = content["data"]["channelUpdate"]
+    assert not data["errors"]
+    assert data["channel"]["orderSettings"]["includeDraftOrderInVoucherUsage"] is True
+    disconnect_voucher_codes_from_draft_orders_task_mock.assert_called_once()
+
+
 CHANNEL_UPDATE_MUTATION_WITH_CHECKOUT_SETTINGS = """
     mutation UpdateChannel($id: ID!,$input: ChannelUpdateInput!){
         channelUpdate(id: $id, input: $input){
@@ -1149,6 +1189,7 @@ CHANNEL_UPDATE_MUTATION_WITH_CHECKOUT_SETTINGS = """
                 currencyCode
                 checkoutSettings {
                     useLegacyErrorFlow
+                    automaticallyCompleteFullyPaidCheckouts
                 }
             }
             errors{
@@ -1163,15 +1204,21 @@ CHANNEL_UPDATE_MUTATION_WITH_CHECKOUT_SETTINGS = """
 """
 
 
-def test_channel_update_set_checkout_use_legacy_error_flow(
+def test_channel_update_channel_settings(
     permission_manage_channels, staff_api_client, channel_USD
 ):
     # given
     channel_id = graphene.Node.to_global_id("Channel", channel_USD.id)
+    use_legacy_error_flow = False
+    automatically_complete_fully_paid_checkouts = True
+
     variables = {
         "id": channel_id,
         "input": {
-            "checkoutSettings": {"useLegacyErrorFlow": False},
+            "checkoutSettings": {
+                "useLegacyErrorFlow": use_legacy_error_flow,
+                "automaticallyCompleteFullyPaidCheckouts": automatically_complete_fully_paid_checkouts,
+            },
         },
     }
 
@@ -1187,20 +1234,36 @@ def test_channel_update_set_checkout_use_legacy_error_flow(
     data = content["data"]["channelUpdate"]
     assert not data["errors"]
     channel_data = data["channel"]
+    assert (
+        channel_data["checkoutSettings"]["useLegacyErrorFlow"] == use_legacy_error_flow
+    )
+    assert (
+        channel_data["checkoutSettings"]["automaticallyCompleteFullyPaidCheckouts"]
+        == automatically_complete_fully_paid_checkouts
+    )
     channel_USD.refresh_from_db()
-    assert channel_data["checkoutSettings"]["useLegacyErrorFlow"] is False
-    assert channel_USD.use_legacy_error_flow_for_checkout is False
+    assert channel_USD.use_legacy_error_flow_for_checkout == use_legacy_error_flow
+    assert (
+        channel_USD.automatically_complete_fully_paid_checkouts
+        == automatically_complete_fully_paid_checkouts
+    )
 
 
-def test_channel_update_set_checkout_use_legacy_error_flow_with_checkout_permission(
+def test_channel_update_channel_settings_with_checkout_permission(
     permission_manage_checkouts, staff_api_client, channel_USD
 ):
     # given
     channel_id = graphene.Node.to_global_id("Channel", channel_USD.id)
+    use_legacy_error_flow = False
+    automatically_complete_fully_paid_checkouts = True
+
     variables = {
         "id": channel_id,
         "input": {
-            "checkoutSettings": {"useLegacyErrorFlow": False},
+            "checkoutSettings": {
+                "useLegacyErrorFlow": use_legacy_error_flow,
+                "automaticallyCompleteFullyPaidCheckouts": automatically_complete_fully_paid_checkouts,
+            },
         },
     }
 
@@ -1216,12 +1279,22 @@ def test_channel_update_set_checkout_use_legacy_error_flow_with_checkout_permiss
     data = content["data"]["channelUpdate"]
     assert not data["errors"]
     channel_data = data["channel"]
+    assert (
+        channel_data["checkoutSettings"]["useLegacyErrorFlow"] == use_legacy_error_flow
+    )
+    assert (
+        channel_data["checkoutSettings"]["automaticallyCompleteFullyPaidCheckouts"]
+        == automatically_complete_fully_paid_checkouts
+    )
     channel_USD.refresh_from_db()
-    assert channel_data["checkoutSettings"]["useLegacyErrorFlow"] is False
-    assert channel_USD.use_legacy_error_flow_for_checkout is False
+    assert channel_USD.use_legacy_error_flow_for_checkout == use_legacy_error_flow
+    assert (
+        channel_USD.automatically_complete_fully_paid_checkouts
+        == automatically_complete_fully_paid_checkouts
+    )
 
 
-def test_channel_update_set_checkout_use_legacy_error_flow_without_permission(
+def test_channel_update_channel_settings_without_permission(
     staff_api_client, channel_USD
 ):
     # given
@@ -1229,7 +1302,10 @@ def test_channel_update_set_checkout_use_legacy_error_flow_without_permission(
     variables = {
         "id": channel_id,
         "input": {
-            "checkoutSettings": {"useLegacyErrorFlow": False},
+            "checkoutSettings": {
+                "useLegacyErrorFlow": False,
+                "automaticallyCompleteFullyPaidCheckouts": True,
+            },
         },
     }
 
@@ -1243,7 +1319,7 @@ def test_channel_update_set_checkout_use_legacy_error_flow_without_permission(
     assert_no_permission(response)
 
 
-def test_channel_update_checkout_and_order_settings_with_manage_orders(
+def test_channel_update_order_settings_with_manage_orders(
     staff_api_client, channel_USD, permission_manage_orders
 ):
     # given

@@ -6,7 +6,6 @@ from ...permission.utils import message_one_of_permissions_required
 from ..app.dataloaders import app_promise_callback
 from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
-from ..core.descriptions import ADDED_IN_310
 from ..core.doc_category import DOC_CATEGORY_USERS
 from ..core.fields import BaseField, FilterConnectionField, PermissionsField
 from ..core.types import FilterInputObjectType
@@ -138,7 +137,7 @@ class AccountQueries(graphene.ObjectType):
         UserCountableConnection,
         filter=CustomerFilterInput(description="Filtering options for customers."),
         sort_by=UserSortingInput(description="Sort customers."),
-        description="List of the shop's customers.",
+        description="List of the shop's customers. This list includes all users who registered through the accountRegister mutation. Additionally, staff users who have placed an order using their account will also appear in this list.",
         permissions=[OrderPermissions.MANAGE_ORDERS, AccountPermissions.MANAGE_USERS],
         doc_category=DOC_CATEGORY_USERS,
     )
@@ -181,7 +180,7 @@ class AccountQueries(graphene.ObjectType):
             graphene.String, description="Email address of the user."
         ),
         external_reference=graphene.Argument(
-            graphene.String, description=f"External ID of the user. {ADDED_IN_310}"
+            graphene.String, description="External ID of the user."
         ),
         permissions=[
             AccountPermissions.MANAGE_STAFF,
@@ -213,19 +212,23 @@ class AccountQueries(graphene.ObjectType):
     @staticmethod
     def resolve_customers(_root, info: ResolveInfo, **kwargs):
         qs = resolve_customers(info)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, UserCountableConnection)
 
     @staticmethod
     def resolve_permission_groups(_root, info: ResolveInfo, **kwargs):
         qs = resolve_permission_groups(info)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, GroupCountableConnection)
 
     @staticmethod
-    def resolve_permission_group(_root, _info: ResolveInfo, *, id):
+    def resolve_permission_group(_root, info: ResolveInfo, *, id):
         _, id = from_global_id_or_error(id, Group)
-        return resolve_permission_group(id)
+        return resolve_permission_group(info, id)
 
     @staticmethod
     def resolve_me(_root, info):
@@ -235,7 +238,9 @@ class AccountQueries(graphene.ObjectType):
     @staticmethod
     def resolve_staff_users(_root, info: ResolveInfo, **kwargs):
         qs = resolve_staff_users(info)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, UserCountableConnection)
 
     @staticmethod

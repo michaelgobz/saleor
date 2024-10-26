@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+import graphene
 import pytest
 from prices import Money, TaxedMoney
 
@@ -9,21 +10,24 @@ from ...discount.interface import VariantPromotionRuleInfo
 from ...giftcard import GiftCardEvents
 from ...giftcard.models import GiftCardEvent
 from ...graphql.order.utils import OrderLineData
+from ...payment import TransactionEventType
 from ...plugins.manager import get_plugins_manager
 from ...product.models import VariantChannelListingPromotionRule
-from .. import OrderStatus
+from .. import OrderGrantedRefundStatus, OrderStatus
 from ..events import OrderEvents
 from ..fetch import OrderLineInfo
 from ..models import Order, OrderEvent
 from ..utils import (
     add_gift_cards_to_order,
     add_variant_to_order,
+    calculate_order_granted_refund_status,
     change_order_line_quantity,
     create_order_line_discounts,
     get_order_country,
     get_total_order_discount_excluding_shipping,
     get_valid_shipping_methods_for_order,
     match_orders_with_new_user,
+    order_info_for_logs,
     update_order_display_gross_prices,
 )
 
@@ -71,7 +75,7 @@ def test_change_quantity_generates_proper_event(
         previous_quantity,
         new_quantity,
         order_with_lines.channel,
-        get_plugins_manager(),
+        get_plugins_manager(allow_replica=False),
     )
 
     if removed_count:
@@ -123,7 +127,7 @@ def test_change_quantity_update_line_fields(
         line.quantity,
         new_quantity,
         order_with_lines.channel,
-        get_plugins_manager(),
+        get_plugins_manager(allow_replica=False),
     )
 
     # then
@@ -184,7 +188,9 @@ def test_get_valid_shipping_methods_for_order(order_line_with_one_allocation, ad
 
     # when
     valid_shipping_methods = get_valid_shipping_methods_for_order(
-        order, order.channel.shipping_method_listings.all(), get_plugins_manager()
+        order,
+        order.channel.shipping_method_listings.all(),
+        get_plugins_manager(allow_replica=False),
     )
 
     # then
@@ -206,7 +212,9 @@ def test_get_valid_shipping_methods_for_order_no_channel_shipping_zones(
 
     # when
     valid_shipping_methods = get_valid_shipping_methods_for_order(
-        order, order.channel.shipping_method_listings.all(), get_plugins_manager()
+        order,
+        order.channel.shipping_method_listings.all(),
+        get_plugins_manager(allow_replica=False),
     )
 
     # then
@@ -225,7 +233,9 @@ def test_get_valid_shipping_methods_for_order_no_shipping_address(
 
     # when
     valid_shipping_methods = get_valid_shipping_methods_for_order(
-        order, order.channel.shipping_method_listings.all(), get_plugins_manager()
+        order,
+        order.channel.shipping_method_listings.all(),
+        get_plugins_manager(allow_replica=False),
     )
 
     # then
@@ -246,7 +256,9 @@ def test_get_valid_shipping_methods_for_order_shipping_not_required(
 
     # when
     valid_shipping_methods = get_valid_shipping_methods_for_order(
-        order, order.channel.shipping_method_listings.all(), get_plugins_manager()
+        order,
+        order.channel.shipping_method_listings.all(),
+        get_plugins_manager(allow_replica=False),
     )
 
     # then
@@ -257,13 +269,13 @@ def test_add_variant_to_order(
     order,
     customer_user,
     variant,
-    promotion_with_single_rule,
+    catalogue_promotion_with_single_rule,
 ):
     # given
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     quantity = 4
 
-    promotion = promotion_with_single_rule
+    promotion = catalogue_promotion_with_single_rule
     discount_value = promotion.rules.first().reward_value
     channel_listing = variant.channel_listings.get(channel=order.channel)
     channel_listing.discounted_price_amount = (
@@ -309,7 +321,7 @@ def test_add_gift_cards_to_order(
     checkout = checkout_with_item
     checkout.user = staff_user
     checkout.gift_cards.add(gift_card, gift_card_expiry_date)
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -363,7 +375,7 @@ def test_add_gift_cards_to_order_with_more_than_total(
     checkout = checkout_with_item
     checkout.user = staff_user
     checkout.gift_cards.add(gift_card_expiry_date, gift_card)
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -393,7 +405,7 @@ def test_add_gift_cards_to_order_no_checkout_user(
     checkout.save(update_fields=["user", "email"])
 
     checkout.gift_cards.add(gift_card, gift_card_expiry_date)
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
@@ -568,9 +580,13 @@ def test_get_order_country_use_channel_country(order):
 
 
 def test_create_order_line_discounts(
-    order_line, promotion, promotion_translation_fr, promotion_rule_translation_fr
+    order_line,
+    catalogue_promotion,
+    promotion_translation_fr,
+    promotion_rule_translation_fr,
 ):
     # given
+    promotion = catalogue_promotion
     rules = promotion.rules.all()
     rule_1 = rules[0]
     rule_2 = rules[1]
@@ -650,3 +666,81 @@ def test_create_order_line_discounts(
     assert discount_2.name == f"{promotion.name}: {rule_2.name}"
     assert discount_2.translated_name == f"{promotion_translation_fr.name}"
     assert discount_2.promotion_rule == rule_2
+
+
+@pytest.mark.parametrize(
+    ("expected_granted_status", "event_type"),
+    [
+        (OrderGrantedRefundStatus.NONE, TransactionEventType.CHARGE_SUCCESS),
+        (OrderGrantedRefundStatus.PENDING, TransactionEventType.REFUND_REQUEST),
+        (OrderGrantedRefundStatus.SUCCESS, TransactionEventType.REFUND_SUCCESS),
+        (OrderGrantedRefundStatus.FAILURE, TransactionEventType.REFUND_FAILURE),
+        (OrderGrantedRefundStatus.NONE, TransactionEventType.REFUND_REVERSE),
+    ],
+)
+def test_calculate_order_granted_refund_status(
+    expected_granted_status, event_type, order, transaction_item_generator
+):
+    # given
+    transaction_item = transaction_item_generator(
+        order_id=order.pk,
+        charged_value=Decimal("100.00"),
+        refunded_value=Decimal("5.00"),
+    )
+
+    granted_refund = order.granted_refunds.create(
+        amount_value=Decimal("10.00"),
+        currency=order.currency,
+        transaction_item=transaction_item,
+    )
+
+    transaction_item.events.create(
+        amount_value=Decimal("10.00"),
+        currency=order.currency,
+        type=event_type,
+        related_granted_refund=granted_refund,
+    )
+
+    # when
+    calculate_order_granted_refund_status(granted_refund)
+
+    # then
+    granted_refund.refresh_from_db()
+    assert granted_refund.status == expected_granted_status
+
+
+def test_order_info_for_logs(order_with_lines, voucher, order_promotion_with_rule):
+    # given
+    order = order_with_lines
+    voucher_code = voucher.codes.first().code
+    order.voucher_code = voucher_code
+    order.voucher = voucher
+    order.status = OrderStatus.DRAFT
+    order.save(update_fields=["voucher_code", "voucher_id", "status"])
+
+    order.discounts.create(
+        type=DiscountType.ORDER_PROMOTION,
+        value_type=DiscountValueType.FIXED,
+        value=Decimal(5),
+        amount_value=Decimal(5),
+        promotion_rule=order_promotion_with_rule.rules.first(),
+        currency=order.currency,
+    )
+
+    lines = order.lines.all()
+    lines[0].discounts.create(
+        type=DiscountType.VOUCHER,
+        value_type=DiscountValueType.FIXED,
+        value=Decimal(5),
+        currency=order.currency,
+        amount_value=Decimal(5),
+        voucher=voucher,
+    )
+
+    # when
+    extra = order_info_for_logs(order, lines)
+
+    # then
+    assert extra["order_id"] == graphene.Node.to_global_id("Order", order.pk)
+    assert extra["discounts"]
+    assert extra["lines"][0]["discounts"]

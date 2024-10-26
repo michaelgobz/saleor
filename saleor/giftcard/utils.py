@@ -1,14 +1,16 @@
+import datetime
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import date
 from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 
 from dateutil.relativedelta import relativedelta
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models.expressions import Exists, OuterRef
 from django.utils import timezone
 
+from ..checkout.error_codes import CheckoutErrorCode
 from ..checkout.models import Checkout
 from ..core.exceptions import GiftCardNotApplicable
 from ..core.tracing import traced_atomic_transaction
@@ -42,27 +44,30 @@ def add_gift_card_code_to_checkout(
     try:
         # only active gift card with currency the same as channel currency can be used
         gift_card = (
-            GiftCard.objects.active(date=date.today())
+            GiftCard.objects.active(date=datetime.datetime.now(tz=datetime.UTC).date())
             .filter(currency=currency)
             .get(code=promo_code)
         )
-    except GiftCard.DoesNotExist:
-        raise InvalidPromoCode()
+    except GiftCard.DoesNotExist as e:
+        raise InvalidPromoCode() from e
 
     checkout.gift_cards.add(gift_card)
     checkout.save(update_fields=["last_change"])
 
 
-def remove_gift_card_code_from_checkout(checkout: Checkout, gift_card_code: str):
-    """Remove gift card data from checkout by code.
+def remove_gift_card_code_from_checkout_or_error(
+    checkout: Checkout, gift_card_code: str
+) -> None:
+    """Remove gift card data from checkout by code or raise an error."""
 
-    Return information whether promo code was removed.
-    """
     if gift_card := checkout.gift_cards.filter(code=gift_card_code).first():
         checkout.gift_cards.remove(gift_card)
         checkout.save(update_fields=["last_change"])
-        return True
-    return False
+    else:
+        raise ValidationError(
+            "Cannot remove a gift card not attached to this checkout.",
+            code=CheckoutErrorCode.INVALID.value,
+        )
 
 
 def deactivate_gift_card(gift_card: GiftCard):
@@ -116,9 +121,9 @@ def fulfill_gift_card_lines(
     settings: "SiteSettings",
     manager: "PluginsManager",
 ):
-    lines_for_warehouses: defaultdict[
-        UUID, list[OrderFulfillmentLineInfo]
-    ] = defaultdict(list)
+    lines_for_warehouses: defaultdict[UUID, list[OrderFulfillmentLineInfo]] = (
+        defaultdict(list)
+    )
     channel_slug = order.channel.slug
     for line in gift_card_lines.prefetch_related(
         "allocations__stock", "variant__stocks"
@@ -156,7 +161,7 @@ def fulfill_gift_card_lines(
 @traced_atomic_transaction()
 def gift_cards_create(
     order: "Order",
-    gift_card_lines_info: Iterable["GiftCardLineData"],
+    gift_card_lines_info: list["GiftCardLineData"],
     settings: "SiteSettings",
     requestor_user: Optional["User"],
     app: Optional["App"],
@@ -270,7 +275,7 @@ def assign_user_gift_cards(user):
 def is_gift_card_expired(gift_card: GiftCard):
     """Return True when gift card expiry date pass."""
     today = timezone.now().date()
-    return bool(gift_card.expiry_date) and gift_card.expiry_date < today  # type: ignore
+    return bool(gift_card.expiry_date) and gift_card.expiry_date < today  # type: ignore[operator]
 
 
 def get_user_gift_cards(user: "User") -> "QuerySet":

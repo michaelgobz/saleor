@@ -37,7 +37,7 @@ def generate_fake_user() -> "User":
 
     The instance cannot be saved
     """
-    fake_user = create_fake_user(user_password=None, save=False)
+    fake_user = create_fake_user(user_password=None, save=False, generate_id=True)
     # Prevent accidental saving of the instance
     fake_user.save = _fake_save
     return fake_user
@@ -45,7 +45,7 @@ def generate_fake_user() -> "User":
 
 def generate_fake_metadata() -> dict[str, str]:
     """Generate a fake metadata/private metadata dictionary."""
-    return fake.pydict(value_types=str)
+    return fake.pydict(value_types=[str])
 
 
 def anonymize_order(order: "Order") -> "Order":

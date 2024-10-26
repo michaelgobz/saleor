@@ -2,10 +2,12 @@ from itertools import chain
 from typing import Optional
 
 from django.db.models import Q
+from graphql import GraphQLError
 from i18naddress import get_validation_rules
 
 from ...account import models
 from ...core.exceptions import PermissionDenied
+from ...graphql.core.context import get_database_connection_name
 from ...payment import gateway
 from ...payment.utils import fetch_customer_id
 from ...permission.auth_filters import AuthorizationFilters
@@ -35,26 +37,33 @@ USER_SEARCH_FIELDS = (
 )
 
 
-def resolve_customers(_info):
-    return models.User.objects.customers()
+def resolve_customers(info):
+    return models.User.objects.customers().using(
+        get_database_connection_name(info.context)
+    )
 
 
-def resolve_permission_group(id):
-    return models.Group.objects.filter(id=id).first()
+def resolve_permission_group(info, id):
+    return (
+        models.Group.objects.using(get_database_connection_name(info.context))
+        .filter(id=id)
+        .first()
+    )
 
 
-def resolve_permission_groups(_info):
-    return models.Group.objects.all()
+def resolve_permission_groups(info):
+    return models.Group.objects.using(get_database_connection_name(info.context)).all()
 
 
-def resolve_staff_users(_info):
-    return models.User.objects.staff()
+def resolve_staff_users(info):
+    return models.User.objects.staff().using(get_database_connection_name(info.context))
 
 
 @traced_resolver
 def resolve_user(info, id=None, email=None, external_reference=None):
     requester = get_user_or_app_from_context(info.context)
     if requester:
+        connection_name = get_database_connection_name(info.context)
         filter_kwargs = {}
         if id:
             _model, filter_kwargs["pk"] = from_global_id_or_error(id, User)
@@ -65,13 +74,27 @@ def resolve_user(info, id=None, email=None, external_reference=None):
         if requester.has_perms(
             [AccountPermissions.MANAGE_STAFF, AccountPermissions.MANAGE_USERS]
         ):
-            return models.User.objects.filter(**filter_kwargs).first()
+            return (
+                models.User.objects.using(connection_name)
+                .filter(**filter_kwargs)
+                .first()
+            )
         if requester.has_perm(AccountPermissions.MANAGE_STAFF):
-            return models.User.objects.staff().filter(**filter_kwargs).first()
+            return (
+                models.User.objects.staff()
+                .using(connection_name)
+                .filter(**filter_kwargs)
+                .first()
+            )
         if has_one_of_permissions(
             requester, [AccountPermissions.MANAGE_USERS, OrderPermissions.MANAGE_ORDERS]
         ):
-            return models.User.objects.customers().filter(**filter_kwargs).first()
+            return (
+                models.User.objects.customers()
+                .using(connection_name)
+                .filter(**filter_kwargs)
+                .first()
+            )
     return PermissionDenied(
         permissions=[
             AccountPermissions.MANAGE_STAFF,
@@ -84,21 +107,22 @@ def resolve_user(info, id=None, email=None, external_reference=None):
 @traced_resolver
 def resolve_users(info, ids=None, emails=None):
     requester = get_user_or_app_from_context(info.context)
+    connection_name = get_database_connection_name(info.context)
     if not requester:
         return models.User.objects.none()
 
     if requester.has_perms(
         [AccountPermissions.MANAGE_STAFF, AccountPermissions.MANAGE_USERS]
     ):
-        qs = models.User.objects.all()
+        qs = models.User.objects.using(connection_name).all()
     elif requester.has_perm(AccountPermissions.MANAGE_STAFF):
-        qs = models.User.objects.staff()
+        qs = models.User.objects.staff().using(connection_name)
     elif requester.has_perm(AccountPermissions.MANAGE_USERS):
-        qs = models.User.objects.customers()
+        qs = models.User.objects.customers().using(connection_name)
     elif requester.id:
         # If user has no access to all users, we can only return themselves, but
         # only if they are authenticated and one of requested users
-        qs = models.User.objects.filter(id=requester.id)
+        qs = models.User.objects.using(connection_name).filter(id=requester.id)
     else:
         qs = models.User.objects.none()
 
@@ -107,7 +131,7 @@ def resolve_users(info, ids=None, emails=None):
 
     if ids and emails:
         return qs.filter(Q(id__in=ids) | Q(email__in=emails))
-    elif ids:
+    if ids:
         return qs.filter(id__in=ids)
     return qs.filter(email__in=emails)
 
@@ -126,6 +150,10 @@ def resolve_address_validation_rules(
         "city": city,
         "city_area": city_area,
     }
+    # EU is available as a country code in CountryCode enum but it's not valid for
+    # the address validation
+    if country_code.upper() == "EU":
+        raise GraphQLError("Cannot validate address for EU country code.")
     rules = get_validation_rules(params)
     return AddressValidationData(
         country_code=rules.country_code,
@@ -155,11 +183,13 @@ def resolve_address_validation_rules(
 
 
 @traced_resolver
-def resolve_payment_sources(_info, user: models.User, manager, channel_slug: str):
-    stored_customer_accounts = (
+def resolve_payment_sources(
+    _info, user: models.User, manager, channel_slug: Optional[str]
+):
+    stored_customer_accounts = [
         (gtw.id, fetch_customer_id(user, gtw.id))
         for gtw in gateway.list_gateways(manager, channel_slug)
-    )
+    ]
     return list(
         chain(
             *[
@@ -200,7 +230,11 @@ def resolve_address(info, id, app):
     user = info.context.user
     _, address_pk = from_global_id_or_error(id, Address)
     if app and app.has_perm(AccountPermissions.MANAGE_USERS):
-        return models.Address.objects.filter(pk=address_pk).first()
+        return (
+            models.Address.objects.using(get_database_connection_name(info.context))
+            .filter(pk=address_pk)
+            .first()
+        )
     if user:
         return user.addresses.filter(id=address_pk).first()
     raise PermissionDenied(
@@ -215,13 +249,16 @@ def resolve_addresses(info, ids, app):
         for address_id in ids
     ]
     if app and app.has_perm(AccountPermissions.MANAGE_USERS):
-        return models.Address.objects.filter(id__in=ids)
+        return models.Address.objects.using(
+            get_database_connection_name(info.context)
+        ).filter(id__in=ids)
     if user:
         return user.addresses.filter(id__in=ids)
     return models.Address.objects.none()
 
 
-def resolve_permissions(root: models.User):
-    permissions = get_user_permissions(root)
+def resolve_permissions(root: models.User, info: ResolveInfo):
+    database_connection_name = get_database_connection_name(info.context)
+    permissions = get_user_permissions(root).using(database_connection_name)
     permissions = permissions.order_by("codename")
     return format_permissions_for_display(permissions)

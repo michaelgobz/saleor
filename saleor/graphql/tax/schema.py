@@ -8,7 +8,7 @@ from ...tax import models
 from ..account.enums import CountryCodeEnum
 from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
-from ..core.descriptions import ADDED_IN_39
+from ..core.context import get_database_connection_name
 from ..core.doc_category import DOC_CATEGORY_TAXES
 from ..core.fields import FilterConnectionField, PermissionsField
 from ..core.types import NonNullList
@@ -36,7 +36,7 @@ from .types import (
 class TaxQueries(graphene.ObjectType):
     tax_configuration = PermissionsField(
         TaxConfiguration,
-        description="Look up a tax configuration." + ADDED_IN_39,
+        description="Look up a tax configuration.",
         id=graphene.Argument(
             graphene.ID, description="ID of a tax configuration.", required=True
         ),
@@ -48,7 +48,7 @@ class TaxQueries(graphene.ObjectType):
     )
     tax_configurations = FilterConnectionField(
         TaxConfigurationCountableConnection,
-        description="List of tax configurations." + ADDED_IN_39,
+        description="List of tax configurations.",
         filter=TaxConfigurationFilterInput(
             description="Filtering options for tax configurations."
         ),
@@ -60,7 +60,7 @@ class TaxQueries(graphene.ObjectType):
     )
     tax_class = PermissionsField(
         TaxClass,
-        description="Look up a tax class." + ADDED_IN_39,
+        description="Look up a tax class.",
         id=graphene.Argument(
             graphene.ID, description="ID of a tax class.", required=True
         ),
@@ -72,7 +72,7 @@ class TaxQueries(graphene.ObjectType):
     )
     tax_classes = FilterConnectionField(
         TaxClassCountableConnection,
-        description="List of tax classes." + ADDED_IN_39,
+        description="List of tax classes.",
         sort_by=TaxClassSortingInput(description="Sort tax classes."),
         filter=TaxClassFilterInput(description="Filtering options for tax classes."),
         permissions=[
@@ -109,40 +109,60 @@ class TaxQueries(graphene.ObjectType):
     )
 
     @staticmethod
-    def resolve_tax_configuration(_root, _info: ResolveInfo, id):
+    def resolve_tax_configuration(_root, info: ResolveInfo, id):
         _, id = from_global_id_or_error(id, TaxConfiguration)
-        return models.TaxConfiguration.objects.filter(id=id).first()
+        return (
+            models.TaxConfiguration.objects.using(
+                get_database_connection_name(info.context)
+            )
+            .filter(id=id)
+            .first()
+        )
 
     @staticmethod
     def resolve_tax_configurations(_root, info: ResolveInfo, **kwargs):
-        qs = models.TaxConfiguration.objects.all()
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = models.TaxConfiguration.objects.using(
+            get_database_connection_name(info.context)
+        ).all()
+        allow_replica = getattr(info.context, "allow_replica", True)
+        qs = filter_connection_queryset(qs, kwargs, allow_replica=allow_replica)
         return create_connection_slice(
             qs, info, kwargs, TaxConfigurationCountableConnection
         )
 
     @staticmethod
-    def resolve_tax_class(_root, _info: ResolveInfo, id):
+    def resolve_tax_class(_root, info: ResolveInfo, id):
         _, id = from_global_id_or_error(id, TaxClass)
-        return models.TaxClass.objects.filter(id=id).first()
+        return (
+            models.TaxClass.objects.using(get_database_connection_name(info.context))
+            .filter(id=id)
+            .first()
+        )
 
     @staticmethod
     def resolve_tax_classes(_root, info: ResolveInfo, **kwargs):
-        qs = models.TaxClass.objects.all()
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = models.TaxClass.objects.using(
+            get_database_connection_name(info.context)
+        ).all()
+        allow_replica = getattr(info.context, "allow_replica", True)
+        qs = filter_connection_queryset(qs, kwargs, allow_replica=allow_replica)
         return create_connection_slice(qs, info, kwargs, TaxClassCountableConnection)
 
     @staticmethod
-    def resolve_tax_country_configuration(_root, _info: ResolveInfo, country_code):
-        country_rates = models.TaxClassCountryRate.objects.filter(country=country_code)
+    def resolve_tax_country_configuration(_root, info: ResolveInfo, country_code):
+        country_rates = models.TaxClassCountryRate.objects.using(
+            get_database_connection_name(info.context)
+        ).filter(country=country_code)
         return TaxCountryConfiguration(
             country=Country(country_code),
             tax_class_country_rates=country_rates,
         )
 
     @staticmethod
-    def resolve_tax_country_configurations(_root, _info: ResolveInfo, **kwargs):
-        country_rates = models.TaxClassCountryRate.objects.all()
+    def resolve_tax_country_configurations(_root, info: ResolveInfo, **kwargs):
+        country_rates = models.TaxClassCountryRate.objects.using(
+            get_database_connection_name(info.context)
+        ).all()
         rates_per_country = defaultdict(list)
         for country_rate in country_rates:
             rates_per_country[country_rate.country].append(country_rate)

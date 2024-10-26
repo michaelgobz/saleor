@@ -23,15 +23,9 @@ def setup_celery_logging(loglevel=None, **kwargs):
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "saleor.settings")
 
-app = Celery("saleor")
+app = Celery("saleor", task_cls="saleor.core.tasks:RestrictWriterDBTask")
 
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
-app.autodiscover_tasks(
-    packages=[
-        "saleor.discount.migrations.tasks",
-    ],
-    related_name="saleor3_17",
-)
 app.autodiscover_tasks(lambda: discover_plugins_modules(settings.PLUGINS))  # type: ignore[misc] # circular import # noqa: E501
 app.autodiscover_tasks(related_name="search_tasks")

@@ -6,7 +6,6 @@ from ....permission.enums import ProductTypePermissions
 from ....product import models as product_models
 from ....webhook.event_types import WebhookEventAsyncType
 from ...core import ResolveInfo
-from ...core.descriptions import ADDED_IN_310
 from ...core.mutations import ModelDeleteMutation, ModelWithExtRefMutation
 from ...core.types import AttributeError
 from ...core.utils import WebhookEventInfo
@@ -21,7 +20,7 @@ class AttributeValueDelete(ModelDeleteMutation, ModelWithExtRefMutation):
         id = graphene.ID(required=False, description="ID of a value to delete.")
         external_reference = graphene.String(
             required=False,
-            description=f"External ID of a value to delete. {ADDED_IN_310}",
+            description="External ID of a value to delete.",
         )
 
     class Meta:
@@ -65,7 +64,7 @@ class AttributeValueDelete(ModelDeleteMutation, ModelWithExtRefMutation):
             Exists(instance.variantassignments.filter(variant_id=OuterRef("id")))
         )
         product_ids = product_models.Product.objects.filter(
-            Q(Exists(instance.productassignments.filter(product_id=OuterRef("id"))))
+            Q(Exists(instance.productvalueassignment.filter(product_id=OuterRef("id"))))
             | Q(Exists(variants.filter(product_id=OuterRef("id"))))
         ).values_list("id", flat=True)
         return list(product_ids)

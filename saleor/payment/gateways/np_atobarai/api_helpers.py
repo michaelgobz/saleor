@@ -73,15 +73,16 @@ def _request(
 def np_request(
     config: "ApiConfig", method: str, path: str = "", json: Optional[dict] = None
 ) -> NPResponse:
+    response_data = {}
     try:
         response = _request(config, method, path, json)
         response_data = response.json()
         if "errors" in response_data:
-            return NPResponse({}, response_data["errors"][0]["codes"])
-        return NPResponse(response_data["results"][0], [])
+            return NPResponse({}, response_data["errors"][0]["codes"], response_data)
+        return NPResponse(response_data["results"][0], [], response_data)
     except requests.RequestException:
         logger.warning("Cannot connect to NP Atobarai.", exc_info=True)
-        return NPResponse({}, [NP_CONNECTION_ERROR])
+        return NPResponse({}, [NP_CONNECTION_ERROR], response_data)
 
 
 def handle_unrecoverable_state(
@@ -137,7 +138,7 @@ def format_price(price: Decimal, currency: str) -> int:
 def _get_goods_name(line: PaymentLineData, config: "ApiConfig") -> str:
     if not config.sku_as_name:
         return line.product_name
-    elif sku := line.product_sku:
+    if sku := line.product_sku:
         return sku
     return str(line.variant_id)
 

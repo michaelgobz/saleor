@@ -1,11 +1,11 @@
 import logging
-from typing import Optional
+from typing import Optional, cast
 
 from authlib.common.errors import AuthlibBaseError
 from django.core import signing
 from django.core.exceptions import ValidationError
 from django.core.handlers.wsgi import WSGIRequest
-from jwt import ExpiredSignatureError, InvalidTokenError
+from jwt import DecodeError, ExpiredSignatureError, InvalidTokenError
 from requests import HTTPError, PreparedRequest
 
 from ...account.models import User
@@ -41,6 +41,7 @@ from .utils import (
     get_user_from_oauth_access_token,
     get_user_from_token,
     is_owner_of_token_valid,
+    send_user_event,
     validate_refresh_token,
 )
 
@@ -265,11 +266,11 @@ class OpenIDConnectPlugin(BasePlugin):
 
         try:
             state_data = signing.loads(state)
-        except signing.BadSignature:
+        except signing.BadSignature as e:
             msg = "Bad signature"
             raise ValidationError(
                 {"state": ValidationError(msg, code=PluginErrorCode.INVALID.value)}
-            )
+            ) from e
 
         redirect_uri = state_data.get("redirectUri")
         if not redirect_uri:
@@ -282,23 +283,27 @@ class OpenIDConnectPlugin(BasePlugin):
             token_data = self.oauth.fetch_token(
                 self.config.token_url, code=code, redirect_uri=redirect_uri
             )
-        except AuthlibBaseError as error:
+        except AuthlibBaseError as e:
             raise ValidationError(
                 {
                     "code": ValidationError(
-                        error.description, code=PluginErrorCode.INVALID.value
+                        e.description, code=PluginErrorCode.INVALID.value
                     )
                 }
+            ) from e
+
+        try:
+            parsed_id_token = get_parsed_id_token(
+                token_data, self.config.json_web_key_set_url
             )
-
-        parsed_id_token = get_parsed_id_token(
-            token_data, self.config.json_web_key_set_url
-        )
-
-        user = get_or_create_user_from_payload(
-            parsed_id_token,
-            self.config.authorization_url,
-        )
+            user, user_created, user_updated = get_or_create_user_from_payload(
+                parsed_id_token,
+                self.config.authorization_url,
+            )
+        except AuthenticationError as e:
+            raise ValidationError(
+                {"code": ValidationError(str(e), code=PluginErrorCode.INVALID.value)}
+            ) from e
 
         user_permissions = []
         is_staff_user_email = self.is_staff_user_email(user)
@@ -314,10 +319,15 @@ class OpenIDConnectPlugin(BasePlugin):
                 )
                 if not user.is_staff:
                     user.is_staff = True
+                    user_updated = True
                     user.save(update_fields=["is_staff"])
             elif user.is_staff and not is_staff_user:
                 user.is_staff = False
+                user_updated = True
                 user.save(update_fields=["is_staff"])
+
+        if user_created or user_updated:
+            send_user_event(user, user_created, user_updated)
 
         tokens = create_tokens_from_oauth_payload(
             token_data, user, parsed_id_token, user_permissions, owner=self.PLUGIN_ID
@@ -381,14 +391,15 @@ class OpenIDConnectPlugin(BasePlugin):
         refresh_token = data.get("refreshToken") or refresh_token
 
         validate_refresh_token(refresh_token, data)
-        saleor_refresh_token = jwt_decode(refresh_token)  # type: ignore
+        refresh_token = cast(str, refresh_token)
+        saleor_refresh_token = jwt_decode(refresh_token)
         token_endpoint = self.config.token_url
         try:
             token_data = self.oauth.refresh_token(
                 token_endpoint,
                 refresh_token=saleor_refresh_token[OAUTH_TOKEN_REFRESH_FIELD],
             )
-        except (AuthlibBaseError, HTTPError):
+        except (AuthlibBaseError, HTTPError) as e:
             logger.warning("Unable to refresh the token.", exc_info=True)
             raise ValidationError(
                 {
@@ -397,7 +408,7 @@ class OpenIDConnectPlugin(BasePlugin):
                         code=error_code,
                     )
                 }
-            )
+            ) from e
         try:
             parsed_id_token = get_parsed_id_token(
                 token_data, self.config.json_web_key_set_url
@@ -419,7 +430,7 @@ class OpenIDConnectPlugin(BasePlugin):
         except AuthenticationError as e:
             raise ValidationError(
                 {"refreshToken": ValidationError(str(e), code=error_code)}
-            )
+            ) from e
 
     def get_and_update_user_permissions(
         self, user: User, use_scope_permissions: bool, scope: str
@@ -471,7 +482,7 @@ class OpenIDConnectPlugin(BasePlugin):
                 return previous_value
             user.is_staff = False
         except (ExpiredSignatureError, InvalidTokenError) as e:
-            raise ValidationError({"token": e})
+            raise ValidationError({"token": e}) from e
         permissions = payload.get(PERMISSIONS_FIELD)
         if permissions:
             user.is_staff = True
@@ -492,8 +503,11 @@ class OpenIDConnectPlugin(BasePlugin):
             token, owner=self.PLUGIN_ID
         ):
             # Check if the token is created by this plugin
-            payload = jwt_decode(token)
-            user = get_user_from_access_payload(payload, request)
+            try:
+                payload = jwt_decode(token)
+                user = get_user_from_access_payload(payload, request)
+            except (InvalidTokenError, DecodeError):
+                return previous_value
             if user.is_staff:
                 assign_staff_to_default_group_and_update_permissions(
                     user, self.config.default_group_name
@@ -503,13 +517,16 @@ class OpenIDConnectPlugin(BasePlugin):
         staff_user_domains = get_staff_user_domains(self.config)
 
         if self.use_oauth_access_token:
-            user = get_user_from_oauth_access_token(
-                token,
-                self.config.json_web_key_set_url,
-                self.config.user_info_url,
-                self.config.use_scope_permissions,
-                self.config.audience,
-                staff_user_domains,
-                self.config.default_group_name,
-            )
+            try:
+                user = get_user_from_oauth_access_token(
+                    token,
+                    self.config.json_web_key_set_url,
+                    self.config.user_info_url,
+                    self.config.use_scope_permissions,
+                    self.config.audience,
+                    staff_user_domains,
+                    self.config.default_group_name,
+                )
+            except AuthenticationError:
+                return previous_value
         return user or previous_value

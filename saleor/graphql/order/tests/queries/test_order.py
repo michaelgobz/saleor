@@ -20,7 +20,7 @@ from .....order.utils import (
 from .....payment import ChargeStatus, TransactionAction
 from .....payment.models import TransactionEvent, TransactionItem
 from .....shipping.models import ShippingMethod, ShippingMethodChannelListing
-from .....warehouse.models import Warehouse
+from .....warehouse.models import Stock, Warehouse
 from ....order.enums import OrderAuthorizeStatusEnum, OrderChargeStatusEnum
 from ....payment.types import PaymentChargeStatusEnum
 from ....tests.utils import (
@@ -68,6 +68,9 @@ query OrdersQuery {
                     amount
                     currency
                 }
+                undiscountedShippingPrice{
+                    amount
+                }
                 shippingPrice {
                     gross {
                         amount
@@ -88,6 +91,7 @@ query OrdersQuery {
                 }
                 lines {
                     id
+                    isPriceOverridden
                     unitPrice{
                         gross{
                             amount
@@ -98,6 +102,9 @@ query OrdersQuery {
                     }
                     undiscountedUnitPrice{
                         gross{
+                            amount
+                        }
+                        net{
                             amount
                         }
                     }
@@ -272,10 +279,14 @@ def test_order_query(
 ):
     # given
     order = fulfilled_order
-    net = Money(amount=Decimal("10"), currency="USD")
-    gross = Money(amount=net.amount * Decimal(1.23), currency="USD").quantize()
-    shipping_price = TaxedMoney(net=net, gross=gross)
+    shipping_net = Money(amount=Decimal("10"), currency="USD")
+    shipping_gross = Money(
+        amount=shipping_net.amount * Decimal(1.23), currency="USD"
+    ).quantize()
+    shipping_price = TaxedMoney(net=shipping_net, gross=shipping_gross)
     order.shipping_price = shipping_price
+    order.base_shipping_price = shipping_net
+    order.undiscounted_base_shipping_price = shipping_net
     shipping_tax_rate = Decimal("0.23")
     order.shipping_tax_rate = shipping_tax_rate
     private_value = "abc123"
@@ -312,6 +323,7 @@ def test_order_query(
     expected_price = Money(
         amount=str(order_data["shippingPrice"]["gross"]["amount"]), currency="USD"
     )
+    assert order_data["undiscountedShippingPrice"]["amount"] == shipping_net.amount
     assert expected_price == shipping_price.gross
     assert order_data["shippingTaxRate"] == float(shipping_tax_rate)
     shipping_tax_class = order.shipping_method.tax_class
@@ -345,13 +357,13 @@ def test_order_query(
     assert len(order_data["payments"]) == order.payments.count()
 
     expected_methods = ShippingMethod.objects.applicable_shipping_methods(
-        price=order.get_subtotal().gross,
-        weight=order.get_total_weight(),
+        price=order.subtotal.gross,
+        weight=order.weight,
         country_code=order.shipping_address.country.code,
         channel_id=order.channel_id,
     )
     expected_collection_points = Warehouse.objects.applicable_for_click_and_collect(
-        lines_qs=order.lines, channel_id=order.channel.id
+        lines_qs=order.lines.all(), channel_id=order.channel.id
     )
 
     assert len(order_data["availableShippingMethods"]) == (expected_methods.count())
@@ -416,6 +428,30 @@ def test_order_query_denormalized_shipping_tax_class_data(
     )
 
 
+def test_order_query_price_overridden(
+    staff_api_client,
+    permission_group_manage_orders,
+    permission_group_manage_shipping,
+    fulfilled_order,
+):
+    # given
+    order = fulfilled_order
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+    permission_group_manage_shipping.user_set.add(staff_api_client.user)
+    line = order.lines.first()
+    line.is_price_overridden = True
+    line.save(update_fields=["is_price_overridden"])
+
+    # when
+    response = staff_api_client.post_graphql(ORDERS_FULL_QUERY)
+    content = get_graphql_content(response)
+
+    # then
+    order_data = content["data"]["orders"]["edges"][0]["node"]
+    order_line = order_data["lines"][0]
+    assert order_line["isPriceOverridden"] is True
+
+
 def test_order_query_total_price_is_0(
     staff_api_client,
     permission_group_manage_orders,
@@ -457,6 +493,45 @@ def test_order_query_total_price_is_0(
         order_data["paymentStatusDisplay"]
         == dict(ChargeStatus.CHOICES)[payment_charge_status.value]
     )
+
+
+def test_order_avail_collect_points_all_warehouse_quantity_from_disabled_warehouse(
+    staff_api_client,
+    permission_group_manage_orders,
+    permission_group_manage_shipping,
+    order_line,
+    warehouses_for_cc,
+):
+    # given
+    order = order_line.order
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+    permission_group_manage_shipping.user_set.add(staff_api_client.user)
+
+    line = order.lines.first()
+    line.quantity = 5
+    line.save(update_fields=["quantity"])
+
+    all_warehouse = warehouses_for_cc[1]
+    disabled_warehouse = warehouses_for_cc[0]
+
+    Stock.objects.bulk_create(
+        [
+            Stock(warehouse=all_warehouse, product_variant=line.variant, quantity=0),
+            Stock(
+                warehouse=disabled_warehouse, product_variant=line.variant, quantity=10
+            ),
+        ]
+    )
+
+    # when
+    response = staff_api_client.post_graphql(ORDERS_FULL_QUERY)
+    content = get_graphql_content(response)
+
+    # then
+    order_data = content["data"]["orders"]["edges"][0]["node"]
+    order_line = order_data["lines"][0]
+    assert len(order_data["availableCollectionPoints"]) == 1
+    assert order_data["availableCollectionPoints"][0]["name"] == all_warehouse.name
 
 
 def test_order_query_shows_non_draft_orders(
@@ -918,8 +993,13 @@ def test_order_line_discount_query(
     unit_discount_amount = quantize_price(
         Decimal(line_with_discount["unitDiscount"]["amount"]), currency=order.currency
     )
-    undiscounted_unit_price = quantize_price(
+
+    undiscounted_unit_price_gross = quantize_price(
         Decimal(line_with_discount["undiscountedUnitPrice"]["gross"]["amount"]),
+        currency=order.currency,
+    )
+    undiscounted_unit_price_net = quantize_price(
+        Decimal(line_with_discount["undiscountedUnitPrice"]["net"]["amount"]),
         currency=order.currency,
     )
 
@@ -929,13 +1009,21 @@ def test_order_line_discount_query(
     expected_unit_discount_amount = quantize_price(
         line.unit_discount.amount, currency=order.currency
     )
-    expected_undiscounted_unit_price = quantize_price(
+    expected_undiscounted_unit_price_gross = quantize_price(
         line.undiscounted_unit_price.gross.amount, currency=order.currency
+    )
+    expected_calculated_gross = quantize_price(
+        line.undiscounted_unit_price.net.amount * (line.tax_rate + 1), line.currency
+    )
+    expected_undiscounted_unit_price_net = quantize_price(
+        line.undiscounted_unit_price.net.amount, currency=order.currency
     )
 
     assert unit_gross_amount == expected_unit_price_gross_amount
     assert unit_discount_amount == expected_unit_discount_amount
-    assert undiscounted_unit_price == expected_undiscounted_unit_price
+    assert undiscounted_unit_price_gross == expected_undiscounted_unit_price_gross
+    assert undiscounted_unit_price_net == expected_undiscounted_unit_price_net
+    assert undiscounted_unit_price_gross == expected_calculated_gross
 
 
 def test_order_query_in_pln_channel(
@@ -980,8 +1068,8 @@ def test_order_query_in_pln_channel(
     assert len(order_data["payments"]) == order.payments.count()
 
     expected_methods = ShippingMethod.objects.applicable_shipping_methods(
-        price=order.get_subtotal().gross,
-        weight=order.get_total_weight(),
+        price=order.subtotal.gross,
+        weight=order.weight,
         country_code=order.shipping_address.country.code,
         channel_id=order.channel_id,
     )
@@ -1106,7 +1194,7 @@ QUERY_ORDER_BY_EXTERNAL_REFERENCE = """
 """
 
 
-def test_query_order_by_external_reference(user_api_client, order):
+def test_query_order_by_external_reference_missing_permission(user_api_client, order):
     # given
     query = QUERY_ORDER_BY_EXTERNAL_REFERENCE
     ext_ref = "test-ext-ref"
@@ -1116,6 +1204,29 @@ def test_query_order_by_external_reference(user_api_client, order):
 
     # when
     response = user_api_client.post_graphql(query, variables)
+
+    # then
+    assert_no_permission(response)
+
+
+def test_query_order_by_external_reference(
+    staff_api_client, order, permission_manage_orders
+):
+    # given
+    query = QUERY_ORDER_BY_EXTERNAL_REFERENCE
+    ext_ref = "test-ext-ref"
+    order.external_reference = ext_ref
+    order.save(update_fields=["external_reference"])
+    variables = {"externalReference": ext_ref}
+
+    # when
+    response = staff_api_client.post_graphql(
+        query,
+        variables,
+        permissions=[
+            permission_manage_orders,
+        ],
+    )
     content = get_graphql_content(response)
 
     # then
@@ -1127,7 +1238,7 @@ def test_query_order_by_external_reference(user_api_client, order):
 
 @pytest.mark.parametrize("external_reference", ['" "', "not-existing"])
 def test_query_order_by_not_existing_external_reference(
-    external_reference, user_api_client, order
+    external_reference, staff_api_client, order, permission_manage_orders
 ):
     # given
     query = QUERY_ORDER_BY_EXTERNAL_REFERENCE
@@ -1136,7 +1247,13 @@ def test_query_order_by_not_existing_external_reference(
     variables = {"externalReference": external_reference}
 
     # when
-    response = user_api_client.post_graphql(query, variables)
+    response = staff_api_client.post_graphql(
+        query,
+        variables,
+        permissions=[
+            permission_manage_orders,
+        ],
+    )
     content = get_graphql_content(response)
 
     # then

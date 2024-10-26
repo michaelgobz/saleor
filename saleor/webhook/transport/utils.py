@@ -11,9 +11,11 @@ from urllib.parse import unquote, urlparse, urlunparse
 
 import boto3
 from botocore.exceptions import ClientError
+from celery import Task
 from celery.exceptions import MaxRetriesExceededError, Retry
 from celery.utils.log import get_task_logger
 from django.conf import settings
+from django.db import transaction
 from django.urls import reverse
 from google.cloud import pubsub_v1
 from requests import RequestException
@@ -21,6 +23,7 @@ from requests_hardened.ip_filter import InvalidIPAddress
 
 from ...app.headers import AppHeaders, DeprecatedAppHeaders
 from ...app.models import App
+from ...core.db.connection import allow_writer
 from ...core.http_client import HTTPClient
 from ...core.models import (
     EventDelivery,
@@ -28,9 +31,11 @@ from ...core.models import (
     EventDeliveryStatus,
     EventPayload,
 )
+from ...core.tasks import delete_files_from_private_storage_task
 from ...core.taxes import TaxData, TaxLineData
 from ...core.utils import build_absolute_uri
 from ...core.utils.events import call_event
+from ...payment import PaymentError
 from ...payment.interface import (
     GatewayResponse,
     PaymentData,
@@ -38,15 +43,19 @@ from ...payment.interface import (
     PaymentMethodInfo,
     TransactionActionData,
 )
-from ...payment.utils import create_failed_transaction_event
+from ...payment.utils import (
+    create_failed_transaction_event,
+    recalculate_refundable_for_checkout,
+)
 from ...webhook.utils import get_webhooks_for_event
 from .. import observability
 from ..const import APP_ID_PREFIX
 from ..event_types import WebhookEventSyncType
+from ..models import Webhook
 from . import signature_for_payload
 
 logger = logging.getLogger(__name__)
-task_logger = get_task_logger(__name__)
+task_logger = get_task_logger(f"{__name__}.celery")
 
 
 DEFAULT_TAX_CODE = "UNMAPPED"
@@ -167,14 +176,16 @@ def send_webhook_using_http(
         response_status_code=response.status_code,
         duration=response.elapsed.total_seconds(),
         status=(
-            EventDeliveryStatus.SUCCESS if response.ok else EventDeliveryStatus.FAILED
+            EventDeliveryStatus.SUCCESS
+            if 200 <= response.status_code < 300
+            else EventDeliveryStatus.FAILED
         ),
     )
 
 
 def send_webhook_using_aws_sqs(
     target_url, message, domain, signature, event_type, **kwargs
-):
+) -> WebhookResponse:
     parts = urlparse(target_url)
     region = "us-east-1"
     hostname_parts = parts.hostname.split(".")
@@ -223,8 +234,8 @@ def send_webhook_using_aws_sqs(
         message_kwargs["MessageGroupId"] = domain
     with catch_duration_time() as duration:
         try:
-            response = client.send_message(**message_kwargs)
-        except (ClientError,) as e:
+            response = json.dumps(client.send_message(**message_kwargs))
+        except ClientError as e:
             return WebhookResponse(
                 content=str(e), status=EventDeliveryStatus.FAILED, duration=duration()
             )
@@ -263,7 +274,7 @@ def send_webhook_using_scheme_method(
     custom_headers=None,
 ) -> WebhookResponse:
     parts = urlparse(target_url)
-    message = data.encode("utf-8")
+    message = data if isinstance(data, bytes) else data.encode("utf-8")
     signature = signature_for_payload(message, secret)
     scheme_matrix: dict[WebhookSchemes, Callable] = {
         WebhookSchemes.HTTP: send_webhook_using_http,
@@ -286,7 +297,11 @@ def send_webhook_using_scheme_method(
 
 
 def handle_webhook_retry(
-    celery_task, webhook, response_content, delivery, delivery_attempt
+    celery_task: Task,
+    webhook: Webhook,
+    response: WebhookResponse,
+    delivery: EventDelivery,
+    delivery_attempt: EventDeliveryAttempt,
 ) -> bool:
     """Handle celery retry for webhook requests.
 
@@ -294,15 +309,37 @@ def handle_webhook_retry(
     When MaxRetriesExceededError is raised the function will end without exception.
     """
     is_success = True
+    log_extra_details = {
+        "webhook": {
+            "id": webhook.id,
+            "target_url": webhook.target_url,
+            "event": delivery.event_type,
+            "execution_mode": "async",
+            "duration": response.duration,
+            "http_status_code": response.response_status_code,
+        },
+    }
     task_logger.info(
         "[Webhook ID: %r] Failed request to %r: %r for event: %r."
         " Delivery attempt id: %r",
         webhook.id,
         webhook.target_url,
-        response_content,
+        response.content,
         delivery.event_type,
         delivery_attempt.id,
+        extra=log_extra_details,
     )
+    if response.response_status_code and 300 <= response.response_status_code < 500:
+        # do not retry for 30x and 40x status codes
+        task_logger.info(
+            "[Webhook ID: %r] Failed request to %r: received HTTP %d. Delivery ID: %r",
+            webhook.id,
+            webhook.target_url,
+            response.response_status_code,
+            delivery.id,
+            extra=log_extra_details,
+        )
+        return False
     try:
         countdown = celery_task.retry_backoff * (2**celery_task.request.retries)
         celery_task.retry(countdown=countdown, **celery_task.retry_kwargs)
@@ -313,11 +350,11 @@ def handle_webhook_retry(
     except MaxRetriesExceededError:
         is_success = False
         task_logger.info(
-            "[Webhook ID: %r] Failed request to %r: exceeded retry limit."
-            "Delivery id: %r",
+            "[Webhook ID: %r] Failed request to %r: exceeded retry limit. Delivery ID: %r",
             webhook.id,
             webhook.target_url,
             delivery.id,
+            extra=log_extra_details,
         )
     return is_success
 
@@ -328,7 +365,7 @@ def get_delivery_for_webhook(event_delivery_id) -> Optional["EventDelivery"]:
             id=event_delivery_id
         )
     except EventDelivery.DoesNotExist:
-        logger.error("Event delivery id: %r not found", event_delivery_id)
+        logger.warning("Event delivery id: %r not found", event_delivery_id)
         return None
 
     if not delivery.webhook.is_active:
@@ -344,11 +381,13 @@ def catch_duration_time():
     yield lambda: time() - start
 
 
+@allow_writer()
 def create_attempt(
     delivery: "EventDelivery",
     task_id: Optional[str] = None,
+    with_save: bool = True,
 ):
-    attempt = EventDeliveryAttempt.objects.create(
+    attempt = EventDeliveryAttempt(
         delivery=delivery,
         task_id=task_id,
         duration=None,
@@ -357,9 +396,12 @@ def create_attempt(
         response_headers=None,
         status=EventDeliveryStatus.PENDING,
     )
+    if with_save:
+        attempt.save()
     return attempt
 
 
+@allow_writer()
 def attempt_update(
     attempt: "EventDeliveryAttempt",
     webhook_response: "WebhookResponse",
@@ -370,47 +412,73 @@ def attempt_update(
     attempt.response_status_code = webhook_response.response_status_code
     attempt.request_headers = json.dumps(webhook_response.request_headers)
     attempt.status = webhook_response.status
-    attempt.save(
-        update_fields=[
-            "duration",
-            "response",
-            "response_headers",
-            "response_status_code",
-            "request_headers",
-            "status",
-        ]
-    )
+
+    if attempt.id:
+        attempt.save(
+            update_fields=[
+                "duration",
+                "response",
+                "response_headers",
+                "response_status_code",
+                "request_headers",
+                "status",
+            ]
+        )
 
 
+@allow_writer()
 def clear_successful_delivery(delivery: "EventDelivery"):
-    if delivery.status == EventDeliveryStatus.SUCCESS:
-        payload_id = delivery.payload_id
-        delivery.delete()
-        if payload_id:
-            EventPayload.objects.filter(pk=payload_id, deliveries__isnull=True).delete()
+    if not delivery.id or delivery.status != EventDeliveryStatus.SUCCESS:
+        return
+
+    payload_id = delivery.payload_id
+    delivery.delete()
+    if payload_id:
+        payloads_to_delete = EventPayload.objects.filter(
+            pk=payload_id, deliveries__isnull=True
+        )
+        files_to_delete = [
+            event_payload.payload_file.name
+            for event_payload in payloads_to_delete.using(
+                settings.DATABASE_CONNECTION_REPLICA_NAME
+            )
+            if event_payload.payload_file
+        ]
+        payloads_to_delete.delete()
+        delete_files_from_private_storage_task(files_to_delete)
 
 
+@allow_writer()
 def delivery_update(delivery: "EventDelivery", status: str):
     delivery.status = status
-    delivery.save(update_fields=["status"])
+    if delivery.id:
+        delivery.save(update_fields=["status"])
+
+
+@allow_writer()
+def save_unsuccessful_delivery_attempt(attempt: "EventDeliveryAttempt"):
+    delivery = attempt.delivery
+    if not delivery or delivery.status == EventDeliveryStatus.SUCCESS:
+        return
+
+    event_payload = delivery.payload
+    if event_payload:
+        event_payload.save_as_file()
+
+    delivery.save()
+    if not attempt.id:
+        attempt.save()
 
 
 def trigger_transaction_request(
     transaction_data: "TransactionActionData", event_type: str, requestor
-):
+) -> None:
     from ..payloads import generate_transaction_action_request_payload
     from .synchronous.transport import (
         create_delivery_for_subscription_sync_event,
         handle_transaction_request_task,
     )
 
-    if not transaction_data.event:
-        logger.warning(
-            "The transaction request for transaction: %s doesn't have a "
-            "proper REQUEST event.",
-            transaction_data.transaction.id,
-        )
-        return None
     if not transaction_data.transaction_app_owner:
         create_failed_transaction_event(
             transaction_data.event,
@@ -419,7 +487,10 @@ def trigger_transaction_request(
                 "attached to any app."
             ),
         )
-        return None
+        recalculate_refundable_for_checkout(
+            transaction_data.transaction, transaction_data.event
+        )
+        return
     webhook = get_webhooks_for_event(
         event_type, apps_ids=[transaction_data.transaction_app_owner.pk]
     ).first()
@@ -428,37 +499,49 @@ def trigger_transaction_request(
             transaction_data.event,
             cause="Cannot find a webhook that can process the action.",
         )
-        return None
+        recalculate_refundable_for_checkout(
+            transaction_data.transaction, transaction_data.event
+        )
+        return
 
     if webhook.subscription_query:
-        delivery = create_delivery_for_subscription_sync_event(
-            event_type=event_type,
-            subscribable_object=transaction_data,
-            webhook=webhook,
-        )
+        delivery = None
+        try:
+            delivery = create_delivery_for_subscription_sync_event(
+                event_type=event_type,
+                subscribable_object=transaction_data,
+                webhook=webhook,
+            )
+        except PaymentError as e:
+            logger.warning("Failed to create delivery for subscription webhook: %s", e)
         if not delivery:
             create_failed_transaction_event(
                 transaction_data.event,
                 cause="Cannot generate a payload for the action.",
             )
-            return None
+            recalculate_refundable_for_checkout(
+                transaction_data.transaction, transaction_data.event
+            )
+            return
     else:
         payload = generate_transaction_action_request_payload(
             transaction_data, requestor
         )
-        event_payload = EventPayload.objects.create(payload=payload)
-        delivery = EventDelivery.objects.create(
-            status=EventDeliveryStatus.PENDING,
-            event_type=event_type,
-            payload=event_payload,
-            webhook=webhook,
-        )
+        with allow_writer():
+            # Use transaction to ensure EventPayload and EventDelivery are created together, preventing inconsistent DB state.
+            with transaction.atomic():
+                event_payload = EventPayload.objects.create_with_payload_file(payload)
+                delivery = EventDelivery.objects.create(
+                    status=EventDeliveryStatus.PENDING,
+                    event_type=event_type,
+                    payload=event_payload,
+                    webhook=webhook,
+                )
     call_event(
         handle_transaction_request_task.delay,
         delivery.id,
         transaction_data.event.id,
     )
-    return None
 
 
 def parse_tax_data(
@@ -578,6 +661,7 @@ def get_current_tax_app() -> Optional[App]:
     """Return currently used tax app or None, if there aren't any."""
     return (
         App.objects.order_by("pk")
+        .filter(removed_at__isnull=True)
         .for_event_type(WebhookEventSyncType.CHECKOUT_CALCULATE_TAXES)
         .for_event_type(WebhookEventSyncType.ORDER_CALCULATE_TAXES)
         .last()

@@ -1,13 +1,16 @@
-from datetime import datetime, timedelta
+import datetime
 from decimal import Decimal
 
 import graphene
 import pytest
-import pytz
 from django.utils import timezone
 
 from .....attribute import AttributeInputType, AttributeType
 from .....attribute.models import Attribute, AttributeValue
+from .....attribute.tests.model_helpers import (
+    get_product_attribute_values,
+    get_product_attributes,
+)
 from .....attribute.utils import associate_attribute_values_to_instance
 from .....core.postgres import FlatConcatSearchVector
 from .....core.units import MeasurementUnits
@@ -24,31 +27,27 @@ from .....tests.utils import dummy_editorjs
 from .....warehouse.models import Allocation, Reservation, Stock, Warehouse
 from ....tests.utils import get_graphql_content
 
-
-@pytest.fixture
-def query_products_with_filter():
-    query = """
-        query ($filter: ProductFilterInput!, $channel: String) {
-          products(first:5, filter: $filter, channel: $channel) {
-            edges{
-              node{
-                id
-                name
-              }
-            }
+QUERY_PRODUCTS_WITH_FILTER = """
+    query ($filter: ProductFilterInput!, $channel: String) {
+      products(first:5, filter: $filter, channel: $channel) {
+        edges{
+          node{
+            id
+            name
           }
         }
-        """
-    return query
+      }
+    }
+    """
 
 
 def test_products_query_with_filter_attributes(
-    query_products_with_filter,
     staff_api_client,
     product,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     product_type = ProductType.objects.create(
         name="Custom Type",
         slug="custom-type",
@@ -66,7 +65,10 @@ def test_products_query_with_filter_attributes(
     second_product.product_type = product_type
     second_product.slug = "second-product"
     second_product.save()
-    associate_attribute_values_to_instance(second_product, attribute, attr_value)
+    associate_attribute_values_to_instance(
+        second_product,
+        {attribute.id: [attr_value]},
+    )
 
     variables = {
         "filter": {
@@ -75,8 +77,12 @@ def test_products_query_with_filter_attributes(
     }
 
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     second_product_id = graphene.Node.to_global_id("Product", second_product.id)
     products = content["data"]["products"]["edges"]
 
@@ -103,16 +109,17 @@ def test_products_query_with_filter_numeric_attributes(
     gte,
     lte,
     expected_products_index,
-    query_products_with_filter,
     staff_api_client,
     product,
     category,
     numeric_attribute,
     permission_manage_products,
 ):
+    # given
     product.product_type.product_attributes.add(numeric_attribute)
     associate_attribute_values_to_instance(
-        product, numeric_attribute, *numeric_attribute.values.all()
+        product,
+        {numeric_attribute.id: list(numeric_attribute.values.all())},
     )
 
     product_type = ProductType.objects.create(
@@ -135,7 +142,8 @@ def test_products_query_with_filter_numeric_attributes(
     )
 
     associate_attribute_values_to_instance(
-        second_product, numeric_attribute, attr_value
+        second_product,
+        {numeric_attribute.id: [attr_value]},
     )
 
     third_product = Product.objects.create(
@@ -148,7 +156,10 @@ def test_products_query_with_filter_numeric_attributes(
         attribute=numeric_attribute, name="5", slug="5_X"
     )
 
-    associate_attribute_values_to_instance(third_product, numeric_attribute, attr_value)
+    associate_attribute_values_to_instance(
+        third_product,
+        {numeric_attribute.id: [attr_value]},
+    )
 
     second_product.refresh_from_db()
     third_product.refresh_from_db()
@@ -170,15 +181,19 @@ def test_products_query_with_filter_numeric_attributes(
     }
 
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == len(expected_products_index)
-    assert set(product["node"]["id"] for product in products) == {
+    assert {product["node"]["id"] for product in products} == {
         products_ids[index] for index in expected_products_index
     }
-    assert set(product["node"]["name"] for product in products) == {
+    assert {product["node"]["name"] for product in products} == {
         products_instances[index].name for index in expected_products_index
     }
 
@@ -193,17 +208,18 @@ def test_products_query_with_filter_numeric_attributes(
 def test_products_query_with_filter_boolean_attributes(
     filter_value,
     expected_products_index,
-    query_products_with_filter,
     staff_api_client,
     product,
     category,
     boolean_attribute,
     permission_manage_products,
 ):
+    # given
     product.product_type.product_attributes.add(boolean_attribute)
 
     associate_attribute_values_to_instance(
-        product, boolean_attribute, boolean_attribute.values.get(boolean=filter_value)
+        product,
+        {boolean_attribute.id: [boolean_attribute.values.get(boolean=filter_value)]},
     )
 
     product_type = ProductType.objects.create(
@@ -222,7 +238,8 @@ def test_products_query_with_filter_boolean_attributes(
         category=category,
     )
     associate_attribute_values_to_instance(
-        second_product, boolean_attribute, boolean_attribute.values.get(boolean=False)
+        second_product,
+        {boolean_attribute.id: [boolean_attribute.values.get(boolean=False)]},
     )
 
     second_product.refresh_from_db()
@@ -238,32 +255,103 @@ def test_products_query_with_filter_boolean_attributes(
     }
 
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == len(expected_products_index)
-    assert set(product["node"]["id"] for product in products) == {
+    assert {product["node"]["id"] for product in products} == {
         products_ids[index] for index in expected_products_index
     }
-    assert set(product["node"]["name"] for product in products) == {
+    assert {product["node"]["name"] for product in products} == {
         products_instances[index].name for index in expected_products_index
     }
 
 
+@pytest.mark.parametrize(
+    "filter_value",
+    [
+        False,
+        True,
+    ],
+)
+def test_products_query_with_filter_non_existing_boolean_attributes(
+    filter_value,
+    staff_api_client,
+    product,
+    permission_manage_products,
+):
+    # given
+    variables = {
+        "filter": {
+            "attributes": [{"slug": "non-existing-atr", "boolean": filter_value}]
+        }
+    }
+
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
+
+    # then
+    content = get_graphql_content(response)
+    products = content["data"]["products"]["edges"]
+    assert len(products) == 0
+
+
+@pytest.mark.parametrize(
+    "filter_value",
+    [
+        False,
+        True,
+    ],
+)
+def test_products_query_with_filter_boolean_attributes_not_assigned_to_product(
+    filter_value,
+    staff_api_client,
+    product,
+    category,
+    boolean_attribute,
+    permission_manage_products,
+):
+    # given
+    boolean_attribute.values.all().delete()
+    product.product_type.product_attributes.add(boolean_attribute)
+
+    variables = {
+        "filter": {
+            "attributes": [{"slug": boolean_attribute.slug, "boolean": filter_value}]
+        }
+    }
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
+
+    # then
+    content = get_graphql_content(response)
+    products = content["data"]["products"]["edges"]
+    assert len(products) == 0
+
+
 def test_products_query_with_filter_by_attributes_values_and_range(
-    query_products_with_filter,
     staff_api_client,
     product,
     category,
     numeric_attribute,
     permission_manage_products,
 ):
-    product_attr = product.attributes.first()
-    attr_value_1 = product_attr.values.first()
+    # given
+    product_attr = get_product_attributes(product).first()
+    attr_value_1 = get_product_attribute_values(product, product_attr).first()
     product.product_type.product_attributes.add(numeric_attribute)
     associate_attribute_values_to_instance(
-        product, numeric_attribute, *numeric_attribute.values.all()
+        product,
+        {numeric_attribute.id: list(numeric_attribute.values.all())},
     )
 
     product_type = ProductType.objects.create(
@@ -286,7 +374,8 @@ def test_products_query_with_filter_by_attributes_values_and_range(
     )
 
     associate_attribute_values_to_instance(
-        second_product, numeric_attribute, attr_value_2
+        second_product,
+        {numeric_attribute.id: [attr_value_2]},
     )
 
     second_product.refresh_from_db()
@@ -301,8 +390,12 @@ def test_products_query_with_filter_by_attributes_values_and_range(
     }
 
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
@@ -313,16 +406,17 @@ def test_products_query_with_filter_by_attributes_values_and_range(
 
 
 def test_products_query_with_filter_swatch_attributes(
-    query_products_with_filter,
     staff_api_client,
     product,
     category,
     swatch_attribute,
     permission_manage_products,
 ):
+    # given
     product.product_type.product_attributes.add(swatch_attribute)
     associate_attribute_values_to_instance(
-        product, swatch_attribute, *swatch_attribute.values.all()
+        product,
+        {swatch_attribute.id: list(swatch_attribute.values.all())},
     )
 
     product_type = ProductType.objects.create(
@@ -343,7 +437,10 @@ def test_products_query_with_filter_swatch_attributes(
         attribute=swatch_attribute, name="Dark", slug="dark"
     )
 
-    associate_attribute_values_to_instance(second_product, swatch_attribute, attr_value)
+    associate_attribute_values_to_instance(
+        second_product,
+        {swatch_attribute.id: [attr_value]},
+    )
 
     second_product.refresh_from_db()
 
@@ -356,8 +453,12 @@ def test_products_query_with_filter_swatch_attributes(
     }
 
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     second_product_id = graphene.Node.to_global_id("Product", second_product.id)
     products = content["data"]["products"]["edges"]
 
@@ -367,7 +468,6 @@ def test_products_query_with_filter_swatch_attributes(
 
 
 def test_products_query_with_filter_date_range_date_attributes(
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -388,17 +488,20 @@ def test_products_query_with_filter_date_range_date_attributes(
         attribute=date_attribute,
         name="Third",
         slug="third",
-        date_time=date_value - timedelta(days=1),
+        date_time=date_value - datetime.timedelta(days=1),
     )
 
     associate_attribute_values_to_instance(
-        product_list[0], date_attribute, attr_value_1
+        product_list[0],
+        {date_attribute.id: [attr_value_1]},
     )
     associate_attribute_values_to_instance(
-        product_list[1], date_attribute, attr_value_2
+        product_list[1],
+        {date_attribute.id: [attr_value_2]},
     )
     associate_attribute_values_to_instance(
-        product_list[2], date_attribute, attr_value_3
+        product_list[2],
+        {date_attribute.id: [attr_value_3]},
     )
 
     variables = {
@@ -415,7 +518,7 @@ def test_products_query_with_filter_date_range_date_attributes(
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
     # when
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -428,7 +531,6 @@ def test_products_query_with_filter_date_range_date_attributes(
 
 
 def test_products_query_with_filter_date_range_date_variant_attributes(
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -443,7 +545,7 @@ def test_products_query_with_filter_date_range_date_variant_attributes(
         attribute=date_attribute,
         name="First",
         slug="first",
-        date_time=date_value - timedelta(days=1),
+        date_time=date_value - datetime.timedelta(days=1),
     )
     attr_value_2 = AttributeValue.objects.create(
         attribute=date_attribute, name="Second", slug="second", date_time=date_value
@@ -453,13 +555,16 @@ def test_products_query_with_filter_date_range_date_variant_attributes(
     )
 
     associate_attribute_values_to_instance(
-        product_list[0].variants.first(), date_attribute, attr_value_1
+        product_list[0].variants.first(),
+        {date_attribute.id: [attr_value_1]},
     )
     associate_attribute_values_to_instance(
-        product_list[1].variants.first(), date_attribute, attr_value_2
+        product_list[1].variants.first(),
+        {date_attribute.id: [attr_value_2]},
     )
     associate_attribute_values_to_instance(
-        product_list[2].variants.first(), date_attribute, attr_value_3
+        product_list[2].variants.first(),
+        {date_attribute.id: [attr_value_3]},
     )
 
     variables = {
@@ -476,7 +581,7 @@ def test_products_query_with_filter_date_range_date_variant_attributes(
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
     # when
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -489,7 +594,6 @@ def test_products_query_with_filter_date_range_date_variant_attributes(
 
 
 def test_products_query_with_filter_date_range_date_time_attributes(
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -513,17 +617,20 @@ def test_products_query_with_filter_date_range_date_time_attributes(
         attribute=date_time_attribute,
         name="Third",
         slug="third",
-        date_time=date_value - timedelta(days=1),
+        date_time=date_value - datetime.timedelta(days=1),
     )
 
     associate_attribute_values_to_instance(
-        product_list[0], date_time_attribute, attr_value_1
+        product_list[0],
+        {date_time_attribute.id: [attr_value_1]},
     )
     associate_attribute_values_to_instance(
-        product_list[1], date_time_attribute, attr_value_2
+        product_list[1],
+        {date_time_attribute.id: [attr_value_2]},
     )
     associate_attribute_values_to_instance(
-        product_list[2], date_time_attribute, attr_value_3
+        product_list[2],
+        {date_time_attribute.id: [attr_value_3]},
     )
 
     variables = {
@@ -540,7 +647,7 @@ def test_products_query_with_filter_date_range_date_time_attributes(
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
     # when
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -553,7 +660,6 @@ def test_products_query_with_filter_date_range_date_time_attributes(
 
 
 def test_products_query_with_filter_date_range_date_time_variant_attributes(
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -568,7 +674,7 @@ def test_products_query_with_filter_date_range_date_time_variant_attributes(
         attribute=date_time_attribute,
         name="First",
         slug="first",
-        date_time=date_value - timedelta(days=1),
+        date_time=date_value - datetime.timedelta(days=1),
     )
     attr_value_2 = AttributeValue.objects.create(
         attribute=date_time_attribute,
@@ -581,13 +687,16 @@ def test_products_query_with_filter_date_range_date_time_variant_attributes(
     )
 
     associate_attribute_values_to_instance(
-        product_list[0].variants.first(), date_time_attribute, attr_value_1
+        product_list[0].variants.first(),
+        {date_time_attribute.id: [attr_value_1]},
     )
     associate_attribute_values_to_instance(
-        product_list[1].variants.first(), date_time_attribute, attr_value_2
+        product_list[1].variants.first(),
+        {date_time_attribute.id: [attr_value_2]},
     )
     associate_attribute_values_to_instance(
-        product_list[2].variants.first(), date_time_attribute, attr_value_3
+        product_list[2].variants.first(),
+        {date_time_attribute.id: [attr_value_3]},
     )
 
     variables = {
@@ -604,7 +713,7 @@ def test_products_query_with_filter_date_range_date_time_variant_attributes(
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
     # when
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -617,7 +726,6 @@ def test_products_query_with_filter_date_range_date_time_variant_attributes(
 
 
 def test_products_query_with_filter_date_time_range_date_time_attributes(
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -626,36 +734,39 @@ def test_products_query_with_filter_date_time_range_date_time_attributes(
 ):
     # given
     product_type = product_list[0].product_type
-    date_value = datetime.now(tz=pytz.utc)
+    date_value = datetime.datetime.now(tz=datetime.UTC)
     product_type.product_attributes.add(date_time_attribute)
     product_type.variant_attributes.add(date_time_attribute)
     attr_value_1 = AttributeValue.objects.create(
         attribute=date_time_attribute,
         name="First",
         slug="first",
-        date_time=date_value - timedelta(hours=2),
+        date_time=date_value - datetime.timedelta(hours=2),
     )
     attr_value_2 = AttributeValue.objects.create(
         attribute=date_time_attribute,
         name="Second",
         slug="second",
-        date_time=date_value + timedelta(hours=3),
+        date_time=date_value + datetime.timedelta(hours=3),
     )
     attr_value_3 = AttributeValue.objects.create(
         attribute=date_time_attribute,
         name="Third",
         slug="third",
-        date_time=date_value - timedelta(hours=6),
+        date_time=date_value - datetime.timedelta(hours=6),
     )
 
     associate_attribute_values_to_instance(
-        product_list[0], date_time_attribute, attr_value_1
+        product_list[0],
+        {date_time_attribute.id: [attr_value_1]},
     )
     associate_attribute_values_to_instance(
-        product_list[1].variants.first(), date_time_attribute, attr_value_2
+        product_list[1].variants.first(),
+        {date_time_attribute.id: [attr_value_2]},
     )
     associate_attribute_values_to_instance(
-        product_list[2].variants.first(), date_time_attribute, attr_value_3
+        product_list[2].variants.first(),
+        {date_time_attribute.id: [attr_value_3]},
     )
 
     variables = {
@@ -664,8 +775,8 @@ def test_products_query_with_filter_date_time_range_date_time_attributes(
                 {
                     "slug": date_time_attribute.slug,
                     "dateTime": {
-                        "gte": date_value - timedelta(hours=4),
-                        "lte": date_value + timedelta(hours=4),
+                        "gte": date_value - datetime.timedelta(hours=4),
+                        "lte": date_value + datetime.timedelta(hours=4),
                     },
                 }
             ],
@@ -675,7 +786,7 @@ def test_products_query_with_filter_date_time_range_date_time_attributes(
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
     # when
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -688,21 +799,22 @@ def test_products_query_with_filter_date_time_range_date_time_attributes(
 
 
 def test_products_query_filter_by_non_existing_attribute(
-    query_products_with_filter, api_client, product_list, channel_USD
+    api_client, product_list, channel_USD
 ):
     variables = {
         "channel": channel_USD.slug,
         "filter": {"attributes": [{"slug": "i-do-not-exist", "values": ["red"]}]},
     }
-    response = api_client.post_graphql(query_products_with_filter, variables)
+    response = api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
     products = content["data"]["products"]["edges"]
     assert len(products) == 0
 
 
 def test_products_query_with_filter_category(
-    query_products_with_filter, staff_api_client, product, permission_manage_products
+    staff_api_client, product, permission_manage_products
 ):
+    # given
     category = Category.objects.create(name="Custom", slug="custom")
     second_product = product
     second_product.id = None
@@ -712,8 +824,12 @@ def test_products_query_with_filter_category(
 
     category_id = graphene.Node.to_global_id("Category", category.id)
     variables = {"filter": {"categories": [category_id]}}
+
+    # when
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
+
+    # then
     content = get_graphql_content(response)
     second_product_id = graphene.Node.to_global_id("Product", second_product.id)
     products = content["data"]["products"]["edges"]
@@ -724,8 +840,9 @@ def test_products_query_with_filter_category(
 
 
 def test_products_query_with_filter_has_category_false(
-    query_products_with_filter, staff_api_client, product, permission_manage_products
+    staff_api_client, product, permission_manage_products
 ):
+    # given
     second_product = product
     second_product.category = None
     second_product.id = None
@@ -734,8 +851,12 @@ def test_products_query_with_filter_has_category_false(
 
     variables = {"filter": {"hasCategory": False}}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     second_product_id = graphene.Node.to_global_id("Product", second_product.id)
     products = content["data"]["products"]["edges"]
 
@@ -745,11 +866,11 @@ def test_products_query_with_filter_has_category_false(
 
 
 def test_products_query_with_filter_has_category_true(
-    query_products_with_filter,
     staff_api_client,
     product_without_category,
     permission_manage_products,
 ):
+    # given
     category = Category.objects.create(name="Custom", slug="custom")
     second_product = product_without_category
     second_product.category = category
@@ -759,8 +880,12 @@ def test_products_query_with_filter_has_category_true(
 
     variables = {"filter": {"hasCategory": True}}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     second_product_id = graphene.Node.to_global_id("Product", second_product.id)
     products = content["data"]["products"]["edges"]
 
@@ -770,12 +895,12 @@ def test_products_query_with_filter_has_category_true(
 
 
 def test_products_query_with_filter_collection(
-    query_products_with_filter,
     staff_api_client,
     product,
     collection,
     permission_manage_products,
 ):
+    # given
     second_product = product
     second_product.id = None
     second_product.slug = "second-product"
@@ -785,8 +910,12 @@ def test_products_query_with_filter_collection(
     collection_id = graphene.Node.to_global_id("Collection", collection.id)
     variables = {"filter": {"collections": [collection_id]}}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     second_product_id = graphene.Node.to_global_id("Product", second_product.id)
     products = content["data"]["products"]["edges"]
 
@@ -796,11 +925,11 @@ def test_products_query_with_filter_collection(
 
 
 def test_products_query_with_filter_category_and_search(
-    query_products_with_filter,
     staff_api_client,
     product,
     permission_manage_products,
 ):
+    # given
     category = Category.objects.create(name="Custom", slug="custom")
     second_product = product
     second_product.id = None
@@ -819,8 +948,12 @@ def test_products_query_with_filter_category_and_search(
     category_id = graphene.Node.to_global_id("Category", category.id)
     variables = {"filter": {"categories": [category_id], "search": product.name}}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     product_id = graphene.Node.to_global_id("Product", product.id)
     products = content["data"]["products"]["edges"]
 
@@ -830,7 +963,6 @@ def test_products_query_with_filter_category_and_search(
 
 
 def test_products_query_with_filter_gift_card_false(
-    query_products_with_filter,
     staff_api_client,
     product,
     shippable_gift_card_product,
@@ -841,7 +973,7 @@ def test_products_query_with_filter_gift_card_false(
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
     # when
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -854,7 +986,6 @@ def test_products_query_with_filter_gift_card_false(
 
 
 def test_products_query_with_filter_gift_card_true(
-    query_products_with_filter,
     staff_api_client,
     product,
     shippable_gift_card_product,
@@ -865,7 +996,7 @@ def test_products_query_with_filter_gift_card_true(
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
     # when
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -887,12 +1018,12 @@ def test_products_query_with_filter_gift_card_true(
 )
 def test_products_query_with_filter(
     products_filter,
-    query_products_with_filter,
     staff_api_client,
     product,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     assert "Juice1" not in product.name
 
     second_product = product
@@ -923,8 +1054,12 @@ def test_products_query_with_filter(
     second_product.save(update_fields=["search_vector"])
     variables = {"filter": products_filter, "channel": channel_USD.slug}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     second_product_id = graphene.Node.to_global_id("Product", second_product.id)
     products = content["data"]["products"]["edges"]
 
@@ -934,12 +1069,12 @@ def test_products_query_with_filter(
 
 
 def test_products_query_with_price_filter_as_staff(
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     product = product_list[0]
     product.variants.first().channel_listings.filter().update(price_amount=None)
 
@@ -948,20 +1083,24 @@ def test_products_query_with_price_filter_as_staff(
         "channel": channel_USD.slug,
     }
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 3
 
 
 def test_products_query_with_price_filter_as_user(
-    query_products_with_filter,
     user_api_client,
     product_list,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     product = product_list[0]
     product.variants.first().channel_listings.filter().update(price_amount=None)
     second_product_id = graphene.Node.to_global_id("Product", product_list[1].id)
@@ -970,8 +1109,12 @@ def test_products_query_with_price_filter_as_user(
         "filter": {"price": {"gte": 9, "lte": 31}},
         "channel": channel_USD.slug,
     }
-    response = user_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = user_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 2
@@ -982,20 +1125,24 @@ def test_products_query_with_price_filter_as_user(
 @pytest.mark.parametrize("is_published", [(True), (False)])
 def test_products_query_with_filter_search_by_sku(
     is_published,
-    query_products_with_filter,
     staff_api_client,
     product_with_two_variants,
     product_with_default_variant,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     ProductChannelListing.objects.filter(
         product=product_with_default_variant, channel=channel_USD
     ).update(is_published=is_published)
     variables = {"filter": {"search": "1234"}}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     product_id = graphene.Node.to_global_id("Product", product_with_default_variant.id)
     products = content["data"]["products"]["edges"]
 
@@ -1007,7 +1154,6 @@ def test_products_query_with_filter_search_by_sku(
 @pytest.mark.parametrize("search_value", ["new", "NEW color", "Color"])
 def test_products_query_with_filter_search_by_dropdown_attribute_value(
     search_value,
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -1025,7 +1171,8 @@ def test_products_query_with_filter_search_by_dropdown_attribute_value(
     dropdown_attr_value.save(update_fields=["name"])
 
     associate_attribute_values_to_instance(
-        product_with_dropdown_attr, color_attribute, dropdown_attr_value
+        product_with_dropdown_attr,
+        {color_attribute.id: [dropdown_attr_value]},
     )
 
     product_with_dropdown_attr.refresh_from_db()
@@ -1037,12 +1184,13 @@ def test_products_query_with_filter_search_by_dropdown_attribute_value(
 
     variables = {"filter": {"search": search_value}, "channel": channel_USD.slug}
 
-    # when
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
-    # then
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
@@ -1058,7 +1206,6 @@ def test_products_query_with_filter_search_by_dropdown_attribute_value(
 )
 def test_products_query_with_filter_search_by_multiselect_attribute_value(
     search_value,
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -1086,9 +1233,7 @@ def test_products_query_with_filter_search_by_multiselect_attribute_value(
 
     associate_attribute_values_to_instance(
         product_with_multiselect_attr,
-        multiselect_attribute,
-        multiselect_attr_val_1,
-        multiselect_attr_val_2,
+        {multiselect_attribute.id: [multiselect_attr_val_1, multiselect_attr_val_2]},
     )
 
     product_with_multiselect_attr.refresh_from_db()
@@ -1099,13 +1244,13 @@ def test_products_query_with_filter_search_by_multiselect_attribute_value(
     product_with_multiselect_attr.save(update_fields=["search_vector"])
 
     variables = {"filter": {"search": search_value}, "channel": channel_USD.slug}
-
-    # when
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
-    # then
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
@@ -1118,7 +1263,6 @@ def test_products_query_with_filter_search_by_multiselect_attribute_value(
 @pytest.mark.parametrize("search_value", ["rich", "test rich", "RICH text"])
 def test_products_query_with_filter_search_by_rich_text_attribute(
     search_value,
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -1136,7 +1280,8 @@ def test_products_query_with_filter_search_by_rich_text_attribute(
     rich_text_value.save(update_fields=["rich_text"])
 
     associate_attribute_values_to_instance(
-        product_with_rich_text_attr, rich_text_attribute, rich_text_value
+        product_with_rich_text_attr,
+        {rich_text_attribute.id: [rich_text_value]},
     )
 
     product_with_rich_text_attr.refresh_from_db()
@@ -1148,12 +1293,13 @@ def test_products_query_with_filter_search_by_rich_text_attribute(
 
     variables = {"filter": {"search": search_value}, "channel": channel_USD.slug}
 
-    # when
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
-    # then
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
@@ -1166,7 +1312,6 @@ def test_products_query_with_filter_search_by_rich_text_attribute(
 @pytest.mark.parametrize("search_value", ["plain", "test plain", "PLAIN text"])
 def test_products_query_with_filter_search_by_plain_text_attribute(
     search_value,
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -1184,7 +1329,8 @@ def test_products_query_with_filter_search_by_plain_text_attribute(
     plain_text_value.save(update_fields=["plain_text"])
 
     associate_attribute_values_to_instance(
-        product_with_plain_text_attr, plain_text_attribute, plain_text_value
+        product_with_plain_text_attr,
+        {plain_text_attribute.id: [plain_text_value]},
     )
 
     product_with_plain_text_attr.refresh_from_db()
@@ -1196,12 +1342,13 @@ def test_products_query_with_filter_search_by_plain_text_attribute(
 
     variables = {"filter": {"search": search_value}, "channel": channel_USD.slug}
 
-    # when
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
-    # then
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
@@ -1214,7 +1361,6 @@ def test_products_query_with_filter_search_by_plain_text_attribute(
 @pytest.mark.parametrize("search_value", ["13456", "13456 cm"])
 def test_products_query_with_filter_search_by_numeric_attribute_value(
     search_value,
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -1235,7 +1381,8 @@ def test_products_query_with_filter_search_by_numeric_attribute_value(
     numeric_attr_value.save(update_fields=["name"])
 
     associate_attribute_values_to_instance(
-        product_with_numeric_attr, numeric_attribute, numeric_attr_value
+        product_with_numeric_attr,
+        {numeric_attribute.id: [numeric_attr_value]},
     )
 
     product_with_numeric_attr.refresh_from_db()
@@ -1247,12 +1394,13 @@ def test_products_query_with_filter_search_by_numeric_attribute_value(
 
     variables = {"filter": {"search": search_value}, "channel": channel_USD.slug}
 
-    # when
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
-    # then
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
@@ -1263,7 +1411,6 @@ def test_products_query_with_filter_search_by_numeric_attribute_value(
 
 
 def test_products_query_with_filter_search_by_numeric_attribute_value_without_unit(
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -1282,7 +1429,8 @@ def test_products_query_with_filter_search_by_numeric_attribute_value_without_un
     numeric_attr_value.save(update_fields=["name"])
 
     associate_attribute_values_to_instance(
-        product_with_numeric_attr, numeric_attribute, numeric_attr_value
+        product_with_numeric_attr,
+        {numeric_attribute.id: [numeric_attr_value]},
     )
 
     product_with_numeric_attr.refresh_from_db()
@@ -1294,12 +1442,13 @@ def test_products_query_with_filter_search_by_numeric_attribute_value_without_un
 
     variables = {"filter": {"search": "13456"}, "channel": channel_USD.slug}
 
-    # when
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
-    # then
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
@@ -1312,7 +1461,6 @@ def test_products_query_with_filter_search_by_numeric_attribute_value_without_un
 @pytest.mark.parametrize("search_value", ["2020", "2020-10-10"])
 def test_products_query_with_filter_search_by_date_attribute_value(
     search_value,
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -1326,11 +1474,12 @@ def test_products_query_with_filter_search_by_date_attribute_value(
     product_type.product_attributes.add(date_attribute)
 
     date_attr_value = date_attribute.values.first()
-    date_attr_value.date_time = datetime(2020, 10, 10, tzinfo=pytz.utc)
+    date_attr_value.date_time = datetime.datetime(2020, 10, 10, tzinfo=datetime.UTC)
     date_attr_value.save(update_fields=["date_time"])
 
     associate_attribute_values_to_instance(
-        product_with_date_attr, date_attribute, date_attr_value
+        product_with_date_attr,
+        {date_attribute.id: [date_attr_value]},
     )
 
     product_with_date_attr.refresh_from_db()
@@ -1342,12 +1491,13 @@ def test_products_query_with_filter_search_by_date_attribute_value(
 
     variables = {"filter": {"search": search_value}, "channel": channel_USD.slug}
 
-    # when
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
-    # then
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
@@ -1360,7 +1510,6 @@ def test_products_query_with_filter_search_by_date_attribute_value(
 @pytest.mark.parametrize("search_value", ["2020", "2020-10-10", "22:20"])
 def test_products_query_with_filter_search_by_date_time_attribute_value(
     search_value,
-    query_products_with_filter,
     staff_api_client,
     product_list,
     permission_manage_products,
@@ -1374,11 +1523,14 @@ def test_products_query_with_filter_search_by_date_time_attribute_value(
     product_type.product_attributes.add(date_time_attribute)
 
     date_time_attr_value = date_time_attribute.values.first()
-    date_time_attr_value.date_time = datetime(2020, 10, 10, 22, 20, tzinfo=pytz.utc)
+    date_time_attr_value.date_time = datetime.datetime(
+        2020, 10, 10, 22, 20, tzinfo=datetime.UTC
+    )
     date_time_attr_value.save(update_fields=["date_time"])
 
     associate_attribute_values_to_instance(
-        product_with_date_time_attr, date_time_attribute, date_time_attr_value
+        product_with_date_time_attr,
+        {date_time_attribute.id: [date_time_attr_value]},
     )
 
     product_with_date_time_attr.refresh_from_db()
@@ -1390,12 +1542,13 @@ def test_products_query_with_filter_search_by_date_time_attribute_value(
 
     variables = {"filter": {"search": search_value}, "channel": channel_USD.slug}
 
-    # when
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
-    # then
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
@@ -1406,59 +1559,67 @@ def test_products_query_with_filter_search_by_date_time_attribute_value(
 
 
 def test_products_query_with_is_published_filter_variants_without_prices(
-    query_products_with_filter,
     staff_api_client,
     variant,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     ProductVariantChannelListing.objects.filter(
         variant__product=variant.product
     ).update(price_amount=None)
 
     variables = {"channel": channel_USD.slug, "filter": {"isPublished": True}}
+
+    # when
     response = staff_api_client.post_graphql(
-        query_products_with_filter,
+        QUERY_PRODUCTS_WITH_FILTER,
         variables,
         permissions=[permission_manage_products],
         check_no_permissions=False,
     )
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 0
 
 
 def test_products_query_with_is_published_filter_one_variant_without_price(
-    query_products_with_filter,
     staff_api_client,
     variant,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     variant.channel_listings.update(price_amount=None)
 
     variables = {"channel": channel_USD.slug, "filter": {"isPublished": True}}
+
+    # when
     response = staff_api_client.post_graphql(
-        query_products_with_filter,
+        QUERY_PRODUCTS_WITH_FILTER,
         variables,
         permissions=[permission_manage_products],
         check_no_permissions=False,
     )
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 1
 
 
 def test_products_query_with_filter_stock_availability_as_staff(
-    query_products_with_filter,
     staff_api_client,
     product_list,
     order_line,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     for product in product_list:
         stock = product.variants.first().stocks.first()
         Allocation.objects.create(
@@ -1473,15 +1634,18 @@ def test_products_query_with_filter_stock_availability_as_staff(
         "channel": channel_USD.slug,
     }
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 3
 
 
 def test_products_query_with_filter_stock_availability_including_reservations(
-    query_products_with_filter,
     staff_api_client,
     product_list,
     order_line,
@@ -1507,19 +1671,19 @@ def test_products_query_with_filter_stock_availability_including_reservations(
                 checkout_line=checkout_line,
                 stock=stocks[0],
                 quantity_reserved=50,
-                reserved_until=timezone.now() + timedelta(minutes=5),
+                reserved_until=timezone.now() + datetime.timedelta(minutes=5),
             ),
             Reservation(
                 checkout_line=checkout_line,
                 stock=stocks[1],
                 quantity_reserved=100,
-                reserved_until=timezone.now() - timedelta(minutes=5),
+                reserved_until=timezone.now() - datetime.timedelta(minutes=5),
             ),
             Reservation(
                 checkout_line=checkout_line,
                 stock=stocks[2],
                 quantity_reserved=50,
-                reserved_until=timezone.now() + timedelta(minutes=5),
+                reserved_until=timezone.now() + datetime.timedelta(minutes=5),
             ),
         ]
     )
@@ -1530,7 +1694,7 @@ def test_products_query_with_filter_stock_availability_including_reservations(
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
     # when
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -1542,13 +1706,13 @@ def test_products_query_with_filter_stock_availability_including_reservations(
 
 
 def test_products_query_with_filter_stock_availability_as_user(
-    query_products_with_filter,
     user_api_client,
     product_list,
     order_line,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     for product in product_list:
         stock = product.variants.first().stocks.first()
         Allocation.objects.create(
@@ -1562,8 +1726,12 @@ def test_products_query_with_filter_stock_availability_as_user(
         "filter": {"stockAvailability": "OUT_OF_STOCK"},
         "channel": channel_USD.slug,
     }
-    response = user_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = user_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     product_id = graphene.Node.to_global_id("Product", product_list[1].id)
     second_product_id = graphene.Node.to_global_id("Product", product_list[2].id)
 
@@ -1577,20 +1745,24 @@ def test_products_query_with_filter_stock_availability_as_user(
 
 
 def test_products_query_with_filter_stock_availability_channel_without_shipping_zones(
-    query_products_with_filter,
     staff_api_client,
     product,
     permission_manage_products,
     channel_USD,
 ):
+    # given
     channel_USD.shipping_zones.clear()
     variables = {
         "filter": {"stockAvailability": "OUT_OF_STOCK"},
         "channel": channel_USD.slug,
     }
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
     product_id = graphene.Node.to_global_id("Product", product.id)
 
@@ -1599,7 +1771,6 @@ def test_products_query_with_filter_stock_availability_channel_without_shipping_
 
 
 def test_products_query_with_filter_stock_availability_only_stock_in_cc_warehouse(
-    query_products_with_filter,
     user_api_client,
     product,
     order_line,
@@ -1620,7 +1791,7 @@ def test_products_query_with_filter_stock_availability_only_stock_in_cc_warehous
     }
 
     # when
-    response = user_api_client.post_graphql(query_products_with_filter, variables)
+    response = user_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -1652,13 +1823,13 @@ def test_products_query_with_filter_stocks(
     warehouse_indexes,
     count,
     indexes_of_products_in_result,
-    query_products_with_filter,
     staff_api_client,
     product_with_single_variant,
     product_with_two_variants,
     warehouse,
     channel_USD,
 ):
+    # given
     product1 = product_with_single_variant
     product2 = product_with_two_variants
     products = [product1, product2]
@@ -1710,10 +1881,14 @@ def test_products_query_with_filter_stocks(
         },
         "channel": channel_USD.slug,
     }
+
+    # when
     response = staff_api_client.post_graphql(
-        query_products_with_filter, variables, check_no_permissions=False
+        QUERY_PRODUCTS_WITH_FILTER, variables, check_no_permissions=False
     )
     content = get_graphql_content(response)
+
+    # then
     products_data = content["data"]["products"]["edges"]
 
     product_ids = {
@@ -1725,9 +1900,7 @@ def test_products_query_with_filter_stocks(
     assert {node["node"]["id"] for node in products_data} == product_ids
 
 
-def test_query_products_with_filter_ids(
-    api_client, product_list, query_products_with_filter, channel_USD
-):
+def test_query_products_with_filter_ids(api_client, product_list, channel_USD):
     # given
     product_ids = [
         graphene.Node.to_global_id("Product", product.id) for product in product_list
@@ -1738,7 +1911,7 @@ def test_query_products_with_filter_ids(
     }
 
     # when
-    response = api_client.post_graphql(query_products_with_filter, variables)
+    response = api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
 
     # then
     content = get_graphql_content(response)
@@ -1749,17 +1922,21 @@ def test_query_products_with_filter_ids(
 
 
 def test_products_query_with_filter_has_preordered_variants_false(
-    query_products_with_filter,
     staff_api_client,
     preorder_variant_global_threshold,
     product_without_shipping,
     permission_manage_products,
 ):
+    # given
     product = product_without_shipping
     variables = {"filter": {"hasPreorderedVariants": False}}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     product_id = graphene.Node.to_global_id("Product", product.id)
     products = content["data"]["products"]["edges"]
 
@@ -1769,17 +1946,21 @@ def test_products_query_with_filter_has_preordered_variants_false(
 
 
 def test_products_query_with_filter_has_preordered_variants_true(
-    query_products_with_filter,
     staff_api_client,
     preorder_variant_global_threshold,
     product_without_shipping,
     permission_manage_products,
 ):
+    # given
     product = preorder_variant_global_threshold.product
     variables = {"filter": {"hasPreorderedVariants": True}}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     product_id = graphene.Node.to_global_id("Product", product.id)
     products = content["data"]["products"]["edges"]
 
@@ -1789,20 +1970,24 @@ def test_products_query_with_filter_has_preordered_variants_true(
 
 
 def test_products_query_with_filter_has_preordered_variants_before_end_date(
-    query_products_with_filter,
     staff_api_client,
     preorder_variant_global_threshold,
     permission_manage_products,
 ):
+    # given
     variant = preorder_variant_global_threshold
-    variant.preorder_end_date = timezone.now() + timedelta(days=3)
+    variant.preorder_end_date = timezone.now() + datetime.timedelta(days=3)
     variant.save(update_fields=["preorder_end_date"])
 
     product = preorder_variant_global_threshold.product
     variables = {"filter": {"hasPreorderedVariants": True}}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     product_id = graphene.Node.to_global_id("Product", product.id)
     products = content["data"]["products"]["edges"]
 
@@ -1812,19 +1997,23 @@ def test_products_query_with_filter_has_preordered_variants_before_end_date(
 
 
 def test_products_query_with_filter_has_preordered_variants_after_end_date(
-    query_products_with_filter,
     staff_api_client,
     preorder_variant_global_threshold,
     permission_manage_products,
 ):
+    # given
     variant = preorder_variant_global_threshold
-    variant.preorder_end_date = timezone.now() - timedelta(days=3)
+    variant.preorder_end_date = timezone.now() - datetime.timedelta(days=3)
     variant.save(update_fields=["preorder_end_date"])
 
     variables = {"filter": {"hasPreorderedVariants": True}}
     staff_api_client.user.user_permissions.add(permission_manage_products)
-    response = staff_api_client.post_graphql(query_products_with_filter, variables)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
     content = get_graphql_content(response)
+
+    # then
     products = content["data"]["products"]["edges"]
 
     assert len(products) == 0

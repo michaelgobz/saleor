@@ -29,13 +29,15 @@ class CsvQueries(graphene.ObjectType):
         permissions=[ProductPermissions.MANAGE_PRODUCTS],
     )
 
-    def resolve_export_file(self, _info: ResolveInfo, *, id):
+    def resolve_export_file(self, info: ResolveInfo, *, id):
         _, id = from_global_id_or_error(id, ExportFile)
-        return resolve_export_file(id)
+        return resolve_export_file(info, id)
 
     def resolve_export_files(self, info: ResolveInfo, **kwargs):
-        qs = resolve_export_files()
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = resolve_export_files(info)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, ExportFileCountableConnection)
 
 

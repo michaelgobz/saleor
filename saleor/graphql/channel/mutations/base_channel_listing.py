@@ -2,7 +2,6 @@ import datetime
 from collections import defaultdict
 from collections.abc import Iterable
 
-import pytz
 from django.core.exceptions import ValidationError
 
 from ....channel import models
@@ -80,7 +79,7 @@ class BaseChannelListingMutation(BaseMutation):
         )
         if errors:
             return {}
-        channels_to_add: list["models.Channel"] = []
+        channels_to_add: list[models.Channel] = []
         if add_channels_ids:
             channels_to_add = cls.get_nodes_or_error(
                 add_channels_ids, "channel_id", Channel
@@ -117,7 +116,7 @@ class BaseChannelListingMutation(BaseMutation):
             )
             is_published = add_channel.get("is_published")
             if is_published and not publication_date:
-                add_channel["published_at"] = datetime.datetime.now(pytz.UTC)
+                add_channel["published_at"] = datetime.datetime.now(tz=datetime.UTC)
             elif "publication_date" in add_channel or "published_at" in add_channel:
                 add_channel["published_at"] = publication_date
         if invalid_channels:

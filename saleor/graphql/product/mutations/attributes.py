@@ -17,7 +17,6 @@ from ...attribute.mutations import (
 from ...attribute.types import Attribute
 from ...channel import ChannelContext
 from ...core import ResolveInfo
-from ...core.descriptions import ADDED_IN_31
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
 from ...core.inputs import ReorderInput
 from ...core.mutations import BaseMutation
@@ -37,7 +36,6 @@ class ProductAttributeAssignInput(BaseInputObjectType):
         description=(
             "Whether attribute is allowed in variant selection. "
             f"Allowed types are: {AttributeInputType.ALLOWED_IN_VARIANT_SELECTION}."
-            + ADDED_IN_31
         ),
     )
 
@@ -52,7 +50,6 @@ class ProductAttributeAssignmentUpdateInput(BaseInputObjectType):
         description=(
             "Whether attribute is allowed in variant selection. "
             f"Allowed types are: {AttributeInputType.ALLOWED_IN_VARIANT_SELECTION}."
-            + ADDED_IN_31
         ),
     )
 
@@ -267,7 +264,7 @@ class ProductAttributeAssign(BaseMutation, VariantAssignmentValidationMixin):
                     variant_selection=variant_selection,
                 )
         else:
-            for pk, variant_selection, _ in pks:
+            for pk, _variant_selection, _ in pks:
                 model.objects.create(
                     product_type=product_type,
                     attribute_id=pk,
@@ -378,7 +375,6 @@ class ProductAttributeAssignmentUpdate(BaseMutation, VariantAssignmentValidation
     class Meta:
         description = (
             "Update attributes assigned to product variant for given product type."
-            + ADDED_IN_31
         )
         doc_category = DOC_CATEGORY_PRODUCTS
         error_type_class = ProductError
@@ -414,9 +410,9 @@ class ProductAttributeAssignmentUpdate(BaseMutation, VariantAssignmentValidation
         )
 
         if len(variant_attrs_pks) != len(assigned_attributes):
-            invalid_attrs = set(variant_attrs_pks) - set(
+            invalid_attrs = set(variant_attrs_pks) - {
                 str(pk) for pk in assigned_attributes
-            )
+            }
             invalid_attrs = [
                 graphene.Node.to_global_id("Attribute", pk) for pk in invalid_attrs
             ]
@@ -438,9 +434,9 @@ class ProductAttributeAssignmentUpdate(BaseMutation, VariantAssignmentValidation
         ).values_list("attribute_id", flat=True)
 
         if len(variant_attrs_pks) != len(assigned_attributes):
-            invalid_attrs = set(variant_attrs_pks) - set(
+            invalid_attrs = set(variant_attrs_pks) - {
                 str(pk) for pk in assigned_attributes
-            )
+            }
             invalid_attrs = [
                 graphene.Node.to_global_id("Attribute", pk) for pk in invalid_attrs
             ]
@@ -482,7 +478,7 @@ class ProductAttributeAssignmentUpdate(BaseMutation, VariantAssignmentValidation
             id__in=variant_attrs_pks
         ).values_list("pk", flat=True)
         if len(variant_attrs_pks) != len(attributes):
-            invalid_attrs = set(variant_attrs_pks) - set(str(pk) for pk in attributes)
+            invalid_attrs = set(variant_attrs_pks) - {str(pk) for pk in attributes}
             invalid_attrs = [
                 graphene.Node.to_global_id("Attribute", pk) for pk in invalid_attrs
             ]
@@ -596,7 +592,7 @@ class ProductTypeReorderAttributes(BaseReorderAttributesMutation):
             product_type = models.ProductType.objects.prefetch_related(m2m_field).get(
                 pk=pk
             )
-        except ObjectDoesNotExist:
+        except ObjectDoesNotExist as e:
             raise ValidationError(
                 {
                     "product_type_id": ValidationError(
@@ -604,15 +600,15 @@ class ProductTypeReorderAttributes(BaseReorderAttributesMutation):
                         code=ProductErrorCode.NOT_FOUND.value,
                     )
                 }
-            )
+            ) from e
 
         attributes_m2m = getattr(product_type, m2m_field)
 
         try:
             operations = cls.prepare_operations(moves, attributes_m2m)
-        except ValidationError as error:
-            error.code = ProductErrorCode.NOT_FOUND.value
-            raise ValidationError({"moves": error})
+        except ValidationError as e:
+            e.code = ProductErrorCode.NOT_FOUND.value
+            raise ValidationError({"moves": e}) from e
 
         with traced_atomic_transaction():
             perform_reordering(attributes_m2m, operations)
@@ -646,10 +642,39 @@ class ProductReorderAttributeValues(BaseReorderAttributeValuesMutation):
         )
 
     @classmethod
+    def perform(
+        cls,
+        instance_id: str,
+        instance_type: str,
+        data: dict,
+        assignment_lookup: str,
+        error_code_enum,
+    ):
+        attribute_id = data["attribute_id"]
+        moves = data["moves"]
+
+        instance = cls.get_instance(instance_id)
+        cls.validate_attribute_assignment(
+            instance, instance_type, attribute_id, error_code_enum
+        )
+        values_m2m = getattr(instance, assignment_lookup)
+
+        try:
+            operations = cls.prepare_operations(moves, values_m2m)
+        except ValidationError as e:
+            e.code = error_code_enum.NOT_FOUND.value
+            raise ValidationError({"moves": e}) from e
+
+        with traced_atomic_transaction():
+            perform_reordering(values_m2m, operations)
+
+        return instance
+
+    @classmethod
     def perform_mutation(cls, _root, _info: ResolveInfo, /, **data):
         product_id = data["product_id"]
         product = cls.perform(
-            product_id, "product", data, "productvalueassignment", ProductErrorCode
+            product_id, "product", data, "attributevalues", ProductErrorCode
         )
 
         return ProductReorderAttributeValues(
@@ -663,8 +688,8 @@ class ProductReorderAttributeValues(BaseReorderAttributeValuesMutation):
         )
 
         try:
-            product = models.Product.objects.prefetched_for_webhook().get(pk=pk)
-        except ObjectDoesNotExist:
+            product = models.Product.objects.get(pk=pk)
+        except ObjectDoesNotExist as e:
             raise ValidationError(
                 {
                     "product_id": ValidationError(
@@ -672,8 +697,33 @@ class ProductReorderAttributeValues(BaseReorderAttributeValuesMutation):
                         code=ProductErrorCode.NOT_FOUND.value,
                     )
                 }
-            )
+            ) from e
         return product
+
+    @classmethod
+    def validate_attribute_assignment(
+        cls, instance, instance_type, attribute_id: str, error_code_enum
+    ):
+        """Validate if this attribute_id is assigned to this product."""
+        attribute_pk = cls.get_global_id_or_error(
+            attribute_id, only_type=Attribute, field="attribute_id"
+        )
+
+        attribute_assignment = attribute_models.AttributeProduct.objects.filter(
+            attribute_id=attribute_pk, product_type_id=instance.product_type_id
+        ).exists()
+
+        if not attribute_assignment:
+            raise ValidationError(
+                {
+                    "attribute_id": ValidationError(
+                        f"Couldn't resolve to a {instance_type} "
+                        f"attribute: {attribute_id}.",
+                        code=error_code_enum.NOT_FOUND.value,
+                    )
+                }
+            )
+        return attribute_assignment
 
 
 class ProductVariantReorderAttributeValues(BaseReorderAttributeValuesMutation):
@@ -723,7 +773,7 @@ class ProductVariantReorderAttributeValues(BaseReorderAttributeValuesMutation):
             variant = models.ProductVariant.objects.prefetch_related("attributes").get(
                 pk=pk
             )
-        except ObjectDoesNotExist:
+        except ObjectDoesNotExist as e:
             raise ValidationError(
                 {
                     "variant_id": ValidationError(
@@ -731,5 +781,5 @@ class ProductVariantReorderAttributeValues(BaseReorderAttributeValuesMutation):
                         code=ProductErrorCode.NOT_FOUND.value,
                     )
                 }
-            )
+            ) from e
         return variant

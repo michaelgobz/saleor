@@ -38,7 +38,7 @@ class VariantMediaUnassign(BaseMutation):
         media = cls.get_node_or_error(
             info, media_id, field="image_id", only_type=ProductMedia
         )
-        qs = models.ProductVariant.objects.prefetched_for_webhook()
+        qs = models.ProductVariant.objects.all()
         variant = cls.get_node_or_error(
             info, variant_id, field="variant_id", only_type=ProductVariant, qs=qs
         )
@@ -47,7 +47,7 @@ class VariantMediaUnassign(BaseMutation):
             variant_media = models.VariantMedia.objects.get(
                 media=media, variant=variant
             )
-        except models.VariantMedia.DoesNotExist:
+        except models.VariantMedia.DoesNotExist as e:
             raise ValidationError(
                 {
                     "media_id": ValidationError(
@@ -55,7 +55,7 @@ class VariantMediaUnassign(BaseMutation):
                         code=ProductErrorCode.NOT_PRODUCTS_IMAGE.value,
                     )
                 }
-            )
+            ) from e
         else:
             variant_media.delete()
 

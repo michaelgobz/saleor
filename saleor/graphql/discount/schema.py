@@ -4,10 +4,8 @@ from ...permission.enums import DiscountPermissions
 from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
 from ..core.descriptions import (
-    ADDED_IN_317,
     DEPRECATED_IN_3X_FIELD,
     DEPRECATED_IN_3X_INPUT,
-    PREVIEW_FEATURE,
 )
 from ..core.doc_category import DOC_CATEGORY_DISCOUNTS
 from ..core.fields import FilterConnectionField, PermissionsField
@@ -150,7 +148,7 @@ class DiscountQueries(graphene.ObjectType):
         id=graphene.Argument(
             graphene.ID, description="ID of the promotion.", required=True
         ),
-        description="Look up a promotion by ID." + ADDED_IN_317 + PREVIEW_FEATURE,
+        description="Look up a promotion by ID.",
         permissions=[
             DiscountPermissions.MANAGE_DISCOUNTS,
         ],
@@ -160,44 +158,50 @@ class DiscountQueries(graphene.ObjectType):
         PromotionCountableConnection,
         where=PromotionWhereInput(description="Where filtering options."),
         sort_by=PromotionSortingInput(description="Sort promotions."),
-        description="List of the promotions." + ADDED_IN_317 + PREVIEW_FEATURE,
+        description="List of the promotions.",
         permissions=[DiscountPermissions.MANAGE_DISCOUNTS],
         doc_category=DOC_CATEGORY_DISCOUNTS,
     )
 
     @staticmethod
-    def resolve_sale(_root, _info, *, id, channel=None):
+    def resolve_sale(_root, info, *, id, channel=None):
         _, id = from_global_id_or_error(id, Sale)
-        return resolve_sale(id, channel)
+        return resolve_sale(info, id, channel)
 
     @staticmethod
     def resolve_sales(_root, info: ResolveInfo, *, channel=None, **kwargs):
         qs = resolve_sales(info, channel_slug=channel, **kwargs)
         kwargs["channel"] = channel
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, SaleCountableConnection)
 
     @staticmethod
-    def resolve_voucher(_root, _info: ResolveInfo, *, id, channel=None):
+    def resolve_voucher(_root, info: ResolveInfo, *, id, channel=None):
         _, id = from_global_id_or_error(id, Voucher)
-        return resolve_voucher(id, channel)
+        return resolve_voucher(info, id, channel)
 
     @staticmethod
     def resolve_vouchers(_root, info: ResolveInfo, *, channel=None, **kwargs):
         qs = resolve_vouchers(info, channel_slug=channel, **kwargs)
         kwargs["channel"] = channel
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, VoucherCountableConnection)
 
     @staticmethod
-    def resolve_promotion(_root, _info, *, id, channel=None):
+    def resolve_promotion(_root, info, *, id, channel=None):
         _, id = from_global_id_or_error(id, Promotion)
-        return resolve_promotion(id)
+        return resolve_promotion(info, id)
 
     @staticmethod
     def resolve_promotions(_root, info: ResolveInfo, **kwargs):
-        qs = resolve_promotions()
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = resolve_promotions(info)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, PromotionCountableConnection)
 
 

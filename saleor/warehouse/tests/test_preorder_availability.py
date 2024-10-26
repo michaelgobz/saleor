@@ -1,4 +1,4 @@
-from datetime import timedelta
+import datetime
 from unittest.mock import patch
 
 import pytest
@@ -56,7 +56,7 @@ def test_check_stock_and_preorder_quantity_bulk(
     global_quantity_limit = 50
 
     with freeze_time(
-        preorder_variant_with_end_date.preorder_end_date + timedelta(days=3)
+        preorder_variant_with_end_date.preorder_end_date + datetime.timedelta(days=3)
     ):
         check_stock_and_preorder_quantity_bulk(
             [
@@ -164,6 +164,8 @@ def test_check_preorder_reserved_threshold_bulk_channel_threshold(
                 discounts=[],
                 rules_info=[],
                 channel=channel_USD,
+                voucher=None,
+                voucher_code=None,
             )
         ],
         check_reservations=True,
@@ -172,7 +174,7 @@ def test_check_preorder_reserved_threshold_bulk_channel_threshold(
 
     # Check excludes expired reservations
     PreorderReservation.objects.update(
-        reserved_until=timezone.now() - timedelta(minutes=1)
+        reserved_until=timezone.now() - datetime.timedelta(minutes=1)
     )
 
     check_preorder_threshold_bulk(
@@ -234,6 +236,8 @@ def test_check_preorder_reserved_threshold_bulk_global_threshold(
                 discounts=[],
                 rules_info=[],
                 channel=channel_USD,
+                voucher=None,
+                voucher_code=None,
             )
         ],
         check_reservations=True,
@@ -242,7 +246,7 @@ def test_check_preorder_reserved_threshold_bulk_global_threshold(
 
     # Check excludes expired reservations
     PreorderReservation.objects.update(
-        reserved_until=timezone.now() - timedelta(minutes=1)
+        reserved_until=timezone.now() - datetime.timedelta(minutes=1)
     )
 
     check_preorder_threshold_bulk(

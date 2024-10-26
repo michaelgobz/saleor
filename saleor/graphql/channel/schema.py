@@ -2,7 +2,6 @@ import graphene
 
 from ...permission.auth_filters import AuthorizationFilters
 from ..core import ResolveInfo
-from ..core.descriptions import ADDED_IN_36
 from ..core.doc_category import DOC_CATEGORY_CHANNELS
 from ..core.fields import BaseField, PermissionsField
 from ..core.types import NonNullList
@@ -26,7 +25,7 @@ class ChannelQueries(graphene.ObjectType):
         ),
         slug=graphene.Argument(
             graphene.String,
-            description="Slug of the channel." + ADDED_IN_36,
+            description="Slug of the channel.",
             required=False,
         ),
         description="Look up a channel by ID or slug.",
@@ -47,8 +46,8 @@ class ChannelQueries(graphene.ObjectType):
         return resolve_channel(info, id, slug)
 
     @staticmethod
-    def resolve_channels(_root, _info: ResolveInfo, **kwargs):
-        return resolve_channels()
+    def resolve_channels(_root, info: ResolveInfo, **kwargs):
+        return resolve_channels(info)
 
 
 class ChannelMutations(graphene.ObjectType):

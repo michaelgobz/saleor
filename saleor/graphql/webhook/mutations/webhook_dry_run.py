@@ -1,12 +1,12 @@
 import graphene
 from graphene.utils.str_converters import to_camel_case
 
+from ....app.models import App
 from ....discount import models as discount_models
 from ....permission.auth_filters import AuthorizationFilters
 from ....webhook.error_codes import WebhookDryRunErrorCode
 from ....webhook.event_types import WebhookEventAsyncType
 from ...core import ResolveInfo
-from ...core.descriptions import ADDED_IN_311, PREVIEW_FEATURE
 from ...core.doc_category import DOC_CATEGORY_WEBHOOKS
 from ...core.fields import JSONString
 from ...core.mutations import BaseMutation
@@ -37,8 +37,6 @@ class WebhookDryRun(BaseMutation):
             "Performs a dry run of a webhook event. "
             "Supports a single event (the first, if multiple provided in the `query`). "
             "Requires permission relevant to processed event."
-            + ADDED_IN_311
-            + PREVIEW_FEATURE
         )
         doc_category = DOC_CATEGORY_WEBHOOKS
         permissions = (AuthorizationFilters.AUTHENTICATED_STAFF_USER,)
@@ -103,7 +101,6 @@ class WebhookDryRun(BaseMutation):
         event_type = cls.validate_query(query)
         cls.validate_event_type(event_type, object_id)
         cls.validate_permissions(info, event_type)
-
         object = cls.get_instance(info, object_id)
 
         return event_type, object, query
@@ -114,6 +111,9 @@ class WebhookDryRun(BaseMutation):
         if type == "Sale":
             object_id = cls.get_global_id_or_error(object_id, "Sale")
             return discount_models.Promotion.objects.get(old_sale_id=object_id)
+        if type == "App":
+            qs = App.objects.filter(removed_at__isnull=True)
+            return cls.get_node_or_error(info, object_id, field="objectId", qs=qs)
         return cls.get_node_or_error(info, object_id, field="objectId")
 
     @classmethod
@@ -122,6 +122,12 @@ class WebhookDryRun(BaseMutation):
         payload = None
         if all([event_type, object, query]):
             request = info.context
+            if event_type in [
+                WebhookEventAsyncType.VOUCHER_CODES_CREATED,
+                WebhookEventAsyncType.VOUCHER_CODES_DELETED,
+            ]:
+                object = [object]
+
             payload = generate_payload_from_subscription(
                 event_type, object, query, request
             )

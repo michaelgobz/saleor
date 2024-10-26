@@ -13,6 +13,8 @@ mutation checkoutDeliveryMethodUpdate($checkoutId: ID!, $deliveryMethodId: ID) {
     }
     checkout {
       id
+      chargeStatus
+      authorizeStatus
       totalPrice {
         gross {
           amount
@@ -28,10 +30,8 @@ mutation checkoutDeliveryMethodUpdate($checkoutId: ID!, $deliveryMethodId: ID) {
         gross {
           amount
         }
-      }
-      shippingPrice{
-        gross {
-        amount
+        tax {
+          amount
         }
       }
       shippingMethods {

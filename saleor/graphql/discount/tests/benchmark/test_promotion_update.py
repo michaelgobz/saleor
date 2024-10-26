@@ -1,4 +1,4 @@
-from datetime import timedelta
+import datetime
 
 import graphene
 import pytest
@@ -14,16 +14,16 @@ def test_promotion_update(
     staff_api_client,
     description_json,
     permission_group_manage_discounts,
-    promotion,
+    catalogue_promotion,
     count_queries,
 ):
     # given
     staff_api_client.user.groups.add(permission_group_manage_discounts)
-    start_date = timezone.now() - timedelta(days=30)
-    end_date = timezone.now() + timedelta(days=30)
+    start_date = timezone.now() - datetime.timedelta(days=30)
+    end_date = timezone.now() + datetime.timedelta(days=30)
 
     variables = {
-        "id": graphene.Node.to_global_id("Promotion", promotion.id),
+        "id": graphene.Node.to_global_id("Promotion", catalogue_promotion.id),
         "input": {
             "name": "Promotion",
             "description": description_json,

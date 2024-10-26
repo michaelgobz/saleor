@@ -35,6 +35,7 @@ from . import (
     OrderAuthorizeStatus,
     OrderChargeStatus,
     OrderEvents,
+    OrderGrantedRefundStatus,
     OrderOrigin,
     OrderStatus,
 )
@@ -208,6 +209,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         amount_field="shipping_price_gross_amount", currency_field="currency"
     )
 
+    # Price with applied shipping voucher discount
     shipping_price = TaxedMoneyField(
         net_amount_field="shipping_price_net_amount",
         gross_amount_field="shipping_price_gross_amount",
@@ -218,8 +220,19 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
         default=Decimal("0.0"),
     )
+    # Shipping price with applied shipping voucher discount, without tax
     base_shipping_price = MoneyField(
         amount_field="base_shipping_price_amount", currency_field="currency"
+    )
+    undiscounted_base_shipping_price_amount = models.DecimalField(
+        max_digits=settings.DEFAULT_MAX_DIGITS,
+        decimal_places=settings.DEFAULT_DECIMAL_PLACES,
+        default=Decimal("0.0"),
+    )
+    # Shipping price before applying any discounts
+    undiscounted_base_shipping_price = MoneyField(
+        amount_field="undiscounted_base_shipping_price_amount",
+        currency_field="currency",
     )
     shipping_tax_rate = models.DecimalField(
         max_digits=5, decimal_places=4, blank=True, null=True
@@ -302,6 +315,20 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     total_charged = MoneyField(
         amount_field="total_charged_amount", currency_field="currency"
     )
+    subtotal_net_amount = models.DecimalField(
+        max_digits=settings.DEFAULT_MAX_DIGITS,
+        decimal_places=settings.DEFAULT_DECIMAL_PLACES,
+        default=Decimal(0),
+    )
+    subtotal_gross_amount = models.DecimalField(
+        max_digits=settings.DEFAULT_MAX_DIGITS,
+        decimal_places=settings.DEFAULT_DECIMAL_PLACES,
+        default=Decimal(0),
+    )
+    subtotal = TaxedMoneyField(
+        net_amount_field="subtotal_net_amount",
+        gross_amount_field="subtotal_gross_amount",
+    )
 
     voucher = models.ForeignKey(
         Voucher, blank=True, null=True, related_name="+", on_delete=models.SET_NULL
@@ -324,6 +351,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     # this field is used only for draft/unconfirmed orders
     should_refresh_prices = models.BooleanField(default=True)
     tax_exemption = models.BooleanField(default=False)
+    tax_error = models.CharField(max_length=255, null=True, blank=True)
 
     objects = OrderManager()
 
@@ -353,6 +381,11 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
             ),
             models.Index(fields=["created_at"], name="idx_order_created_at"),
             GinIndex(fields=["voucher_code"], name="order_voucher_code_idx"),
+            GinIndex(
+                fields=["user_email", "user_id"],
+                name="order_user_email_user_id_idx",
+            ),
+            BTreeIndex(fields=["checkout_token"], name="checkout_token_btree_idx"),
         ]
 
     def is_fully_paid(self):
@@ -404,11 +437,11 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
             .exists()
         )
 
-    def is_shipping_required(self):
-        return any(line.is_shipping_required for line in self.lines.all())
-
     def get_subtotal(self):
         return get_subtotal(self.lines.all(), self.currency)
+
+    def is_shipping_required(self):
+        return any(line.is_shipping_required for line in self.lines.all())
 
     def get_total_quantity(self):
         return sum([line.quantity for line in self.lines.all()])
@@ -479,9 +512,6 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     def total_balance(self):
         return self.total_charged - self.total.gross
 
-    def get_total_weight(self, _lines=None):
-        return self.weight
-
 
 class OrderLineQueryset(models.QuerySet["OrderLine"]):
     def digital(self):
@@ -531,6 +561,7 @@ class OrderLine(ModelWithMetadata):
     quantity_fulfilled = models.IntegerField(
         validators=[MinValueValidator(0)], default=0
     )
+    is_gift = models.BooleanField(default=False)
 
     currency = models.CharField(
         max_length=settings.DEFAULT_CURRENCY_CODE_LENGTH,
@@ -547,7 +578,8 @@ class OrderLine(ModelWithMetadata):
     unit_discount_type = models.CharField(
         max_length=10,
         choices=DiscountValueType.CHOICES,
-        default=DiscountValueType.FIXED,
+        null=True,
+        blank=True,
     )
     unit_discount_reason = models.TextField(blank=True, null=True)
 
@@ -669,6 +701,8 @@ class OrderLine(ModelWithMetadata):
     tax_class_metadata = JSONField(
         blank=True, null=True, default=dict, encoder=CustomJsonEncoder
     )
+
+    is_price_overridden = models.BooleanField(null=True, blank=True)
 
     # Fulfilled when voucher code was used for product in the line
     voucher_code = models.CharField(max_length=255, null=True, blank=True)
@@ -821,7 +855,8 @@ class OrderEvent(models.Model):
     class Meta:
         ordering = ("date",)
         indexes = [
-            BTreeIndex(fields=["related"], name="order_orderevent_related_id_idx")
+            BTreeIndex(fields=["related"], name="order_orderevent_related_id_idx"),
+            models.Index(fields=["type"]),
         ]
 
     def __repr__(self):
@@ -858,6 +893,20 @@ class OrderGrantedRefund(models.Model):
         Order, related_name="granted_refunds", on_delete=models.CASCADE
     )
     shipping_costs_included = models.BooleanField(default=False)
+
+    transaction_item = models.ForeignKey(
+        "payment.TransactionItem",
+        related_name="granted_refund",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+
+    status = models.CharField(
+        choices=OrderGrantedRefundStatus.CHOICES,
+        default=OrderGrantedRefundStatus.NONE,
+        max_length=128,
+    )
 
     class Meta:
         ordering = ("created_at", "id")

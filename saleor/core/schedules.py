@@ -1,14 +1,15 @@
-from collections import namedtuple
-from datetime import datetime, timedelta
-from typing import cast
+import datetime
+from typing import NamedTuple, cast
 
-import pytz
 from celery.utils.time import maybe_timedelta, remaining
 from django.db.models import F, Q
 
 from ..schedulers.customschedule import CustomSchedule
 
-schedstate = namedtuple("schedstate", ("is_due", "next"))
+
+class schedstate(NamedTuple):
+    is_due: bool
+    next: float
 
 
 class promotion_webhook_schedule(CustomSchedule):
@@ -28,16 +29,18 @@ class promotion_webhook_schedule(CustomSchedule):
     """
 
     def __init__(self, initial_timedelta=60, nowfun=None, app=None):
-        self.initial_timedelta: timedelta = cast(
-            timedelta, maybe_timedelta(initial_timedelta)
+        self.initial_timedelta: datetime.timedelta = cast(
+            datetime.timedelta, maybe_timedelta(initial_timedelta)
         )
-        self.next_run: timedelta = self.initial_timedelta
+        self.next_run: datetime.timedelta = self.initial_timedelta
         super().__init__(
             schedule=self,
             nowfun=nowfun,
             app=app,
-            import_path="saleor.core.schedules.promotion_webhook_schedule",
+            import_path="saleor.core.schedules.initiated_promotion_webhook_schedule",
         )
+        # Seconds left to next batch processing
+        self.NEXT_BATCH_RUN_TIME = 5
 
     def remaining_estimate(self, last_run_at):
         """Estimate of next run time.
@@ -58,20 +61,30 @@ class promotion_webhook_schedule(CustomSchedule):
 
         """
         from ..discount.models import Promotion
-        from ..discount.tasks import get_ending_promotions, get_starting_promotions
+        from ..discount.tasks import (
+            PROMOTION_TOGGLE_BATCH_SIZE,
+            get_ending_promotions,
+            get_starting_promotions,
+        )
 
-        now = datetime.now(pytz.UTC)
+        now = datetime.datetime.now(tz=datetime.UTC)
 
         # remaining time must be calculated as the next call is overridden with 0
         # when is_due was True (/celery/beat.py Scheduler.populate_heap)
         rem_delta = self.remaining_estimate(last_run_at)
         remaining = max(rem_delta.total_seconds(), 0)
 
+        staring_promotions = get_starting_promotions()
+        ending_promotions = get_ending_promotions()
+
+        # if task needs to be handled in batches, schedule next run with const value
+        if len(staring_promotions | ending_promotions) > PROMOTION_TOGGLE_BATCH_SIZE:
+            self.next_run = datetime.timedelta(seconds=self.NEXT_BATCH_RUN_TIME)
+            is_due = remaining == 0
+            return schedstate(is_due, self.NEXT_BATCH_RUN_TIME)
+
         # is_due is True when there is at least one sale to notify about
         # and the remaining time from previous call is 0
-        staring_promotions = get_starting_promotions().order_by("start_date")
-        ending_promotions = get_ending_promotions().order_by("end_date")
-
         is_due = remaining == 0 and (
             staring_promotions.exists() or ending_promotions.exists()
         )
@@ -95,7 +108,7 @@ class promotion_webhook_schedule(CustomSchedule):
         nearest_end_date = upcoming_end_dates.first()
 
         # calculate the earliest incoming date of starting or ending sale
-        next_upcoming_date: datetime
+        next_upcoming_date: datetime.datetime
         if nearest_start_date and nearest_end_date and nearest_end_date.end_date:
             next_upcoming_date = min(
                 nearest_start_date.start_date, nearest_end_date.end_date

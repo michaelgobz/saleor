@@ -1,12 +1,11 @@
 import graphene
 
 from .....attribute import models as attribute_models
+from .....discount.utils.promotion import mark_active_catalogue_promotion_rules_as_dirty
 from .....permission.enums import ProductPermissions
 from .....product import models
-from .....product.tasks import update_products_discounted_prices_for_promotion_task
-from ....attribute.utils import AttributeAssignmentMixin, AttrValuesInput
+from ....attribute.utils import AttrValuesInput, ProductAttributeAssignmentMixin
 from ....core import ResolveInfo
-from ....core.descriptions import ADDED_IN_310
 from ....core.mutations import ModelWithExtRefMutation
 from ....core.types.common import ProductError
 from ....plugins.dataloaders import get_plugin_manager_promise
@@ -21,7 +20,7 @@ class ProductUpdate(ProductCreate, ModelWithExtRefMutation):
         id = graphene.ID(required=False, description="ID of a product to update.")
         external_reference = graphene.String(
             required=False,
-            description=f"External ID of a product to update. {ADDED_IN_310}",
+            description="External ID of a product to update.",
         )
         input = ProductInput(
             required=True, description="Fields required to update a product."
@@ -42,16 +41,19 @@ class ProductUpdate(ProductCreate, ModelWithExtRefMutation):
         cls, attributes: dict, product_type: models.ProductType
     ) -> T_INPUT_MAP:
         attributes_qs = product_type.product_attributes.all()
-        attributes = AttributeAssignmentMixin.clean_input(
+        attributes = ProductAttributeAssignmentMixin.clean_input(
             attributes, attributes_qs, creation=False
         )
         return attributes
 
     @classmethod
     def post_save_action(cls, info: ResolveInfo, instance, cleaned_input):
-        product = models.Product.objects.prefetched_for_webhook().get(pk=instance.pk)
-        if "category" in cleaned_input or "collections" in cleaned_input:
-            update_products_discounted_prices_for_promotion_task.delay([instance.id])
+        product = models.Product.objects.get(pk=instance.pk)
+        channel_ids = set(
+            product.channel_listings.all().values_list("channel_id", flat=True)
+        )
+        cls.call_event(mark_active_catalogue_promotion_rules_as_dirty, channel_ids)
+
         manager = get_plugin_manager_promise(info.context).get()
         cls.call_event(manager.product_updated, product)
 
@@ -62,7 +64,7 @@ class ProductUpdate(ProductCreate, ModelWithExtRefMutation):
         # prefetch them.
         object_id = cls.get_object_id(**data)
         if object_id and data.get("attributes"):
-            # Prefetches needed by AttributeAssignmentMixin and
+            # Prefetches needed by ProductAttributeAssignmentMixin and
             # associate_attribute_values_to_instance
             qs = cls.Meta.model.objects.prefetch_related(
                 "product_type__product_attributes__values",

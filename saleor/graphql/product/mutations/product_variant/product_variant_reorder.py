@@ -48,8 +48,8 @@ class ProductVariantReorder(BaseMutation):
         pk = cls.get_global_id_or_error(product_id, only_type=Product)
 
         try:
-            product = models.Product.objects.prefetched_for_webhook().get(pk=pk)
-        except ObjectDoesNotExist:
+            product = models.Product.objects.get(pk=pk)
+        except ObjectDoesNotExist as e:
             raise ValidationError(
                 {
                     "product_id": ValidationError(
@@ -57,9 +57,9 @@ class ProductVariantReorder(BaseMutation):
                         code=ProductErrorCode.NOT_FOUND.value,
                     )
                 }
-            )
+            ) from e
 
-        variants_m2m = product.variants
+        variants_m2m = product.variants.all()
         operations = {}
 
         for move_info in moves:
@@ -69,7 +69,7 @@ class ProductVariantReorder(BaseMutation):
 
             try:
                 m2m_info = variants_m2m.get(id=int(variant_pk))
-            except ObjectDoesNotExist:
+            except ObjectDoesNotExist as e:
                 raise ValidationError(
                     {
                         "moves": ValidationError(
@@ -77,12 +77,12 @@ class ProductVariantReorder(BaseMutation):
                             code=ProductErrorCode.NOT_FOUND.value,
                         )
                     }
-                )
+                ) from e
             operations[m2m_info.pk] = move_info.sort_order
         manager = get_plugin_manager_promise(info.context).get()
         with traced_atomic_transaction():
             perform_reordering(variants_m2m, operations)
             product.save(update_fields=["updated_at"])
             cls.call_event(manager.product_updated, product)
-            product = ChannelContext(node=product, channel_slug=None)
-        return ProductVariantReorder(product=product)
+            context = ChannelContext(node=product, channel_slug=None)
+        return ProductVariantReorder(product=context)

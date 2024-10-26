@@ -1,5 +1,3 @@
-from collections.abc import Iterable
-
 import graphene
 from django.core.exceptions import ValidationError
 
@@ -23,7 +21,7 @@ from ....webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
 from ...account.i18n import I18nMixin
 from ...app.dataloaders import get_app_promise
 from ...core import ResolveInfo
-from ...core.descriptions import ADDED_IN_34, ADDED_IN_38, DEPRECATED_IN_3X_INPUT
+from ...core.descriptions import DEPRECATED_IN_3X_INPUT
 from ...core.doc_category import DOC_CATEGORY_CHECKOUT
 from ...core.fields import JSONString
 from ...core.mutations import BaseMutation
@@ -59,7 +57,7 @@ class CheckoutComplete(BaseMutation, I18nMixin):
 
     class Arguments:
         id = graphene.ID(
-            description="The checkout's ID." + ADDED_IN_34,
+            description="The checkout's ID.",
             required=False,
         )
         token = UUID(
@@ -94,9 +92,7 @@ class CheckoutComplete(BaseMutation, I18nMixin):
         )
         metadata = NonNullList(
             MetadataInput,
-            description=(
-                "Fields required to update the checkout metadata." + ADDED_IN_38
-            ),
+            description=("Fields required to update the checkout metadata."),
             required=False,
         )
 
@@ -174,7 +170,7 @@ class CheckoutComplete(BaseMutation, I18nMixin):
     def validate_checkout_addresses(
         cls,
         checkout_info: CheckoutInfo,
-        lines: Iterable[CheckoutLineInfo],
+        lines: list[CheckoutLineInfo],
     ):
         """Validate checkout addresses.
 
@@ -191,14 +187,15 @@ class CheckoutComplete(BaseMutation, I18nMixin):
             clean_checkout_shipping(checkout_info, lines, CheckoutErrorCode)
             if shipping_address:
                 shipping_address_data = shipping_address.as_data()
-                cls.validate_address(
-                    shipping_address_data,
-                    address_type=AddressType.SHIPPING,
-                    format_check=True,
-                    required_check=True,
-                    enable_normalization=True,
-                    instance=shipping_address,
-                )
+                if not shipping_address.validation_skipped:
+                    cls.validate_address(
+                        shipping_address_data,
+                        address_type=AddressType.SHIPPING,
+                        format_check=True,
+                        required_check=True,
+                        enable_normalization=True,
+                        instance=shipping_address,
+                    )
                 if shipping_address_data != shipping_address.as_data():
                     shipping_address.save()
 
@@ -212,14 +209,15 @@ class CheckoutComplete(BaseMutation, I18nMixin):
                 }
             )
         billing_address_data = billing_address.as_data()
-        cls.validate_address(
-            billing_address_data,
-            address_type=AddressType.BILLING,
-            format_check=True,
-            required_check=True,
-            enable_normalization=True,
-            instance=billing_address,
-        )
+        if not billing_address.validation_skipped:
+            cls.validate_address(
+                billing_address_data,
+                address_type=AddressType.BILLING,
+                format_check=True,
+                required_check=True,
+                enable_normalization=True,
+                instance=billing_address,
+            )
         if billing_address_data != billing_address.as_data():
             billing_address.save()
 
@@ -265,7 +263,7 @@ class CheckoutComplete(BaseMutation, I18nMixin):
                                 code=CheckoutErrorCode.CHANNEL_INACTIVE.value,
                             )
                         }
-                    )
+                    ) from e
                 # The order is already created. We return it as a success
                 # checkoutComplete response. Order is anonymized for not logged in
                 # user

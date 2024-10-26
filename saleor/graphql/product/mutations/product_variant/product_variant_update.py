@@ -6,11 +6,12 @@ from django.utils.text import slugify
 
 from .....attribute import AttributeInputType
 from .....attribute import models as attribute_models
+from .....discount.utils.promotion import mark_active_catalogue_promotion_rules_as_dirty
 from .....permission.enums import ProductPermissions
 from .....product import models
+from .....product.models import ProductChannelListing
 from ....attribute.utils import AttributeAssignmentMixin, AttrValuesInput
 from ....core import ResolveInfo
-from ....core.descriptions import ADDED_IN_38, ADDED_IN_310
 from ....core.mutations import ModelWithExtRefMutation
 from ....core.types import ProductError
 from ....core.utils import ext_ref_to_global_id_or_error
@@ -27,11 +28,11 @@ class ProductVariantUpdate(ProductVariantCreate, ModelWithExtRefMutation):
         id = graphene.ID(required=False, description="ID of a product to update.")
         external_reference = graphene.String(
             required=False,
-            description=f"External ID of a product variant to update. {ADDED_IN_310}",
+            description="External ID of a product variant to update.",
         )
         sku = graphene.String(
             required=False,
-            description="SKU of a product variant to update." + ADDED_IN_38,
+            description="SKU of a product variant to update.",
         )
         input = ProductVariantInput(
             required=True, description="Fields required to update a product variant."
@@ -85,7 +86,7 @@ class ProductVariantUpdate(ProductVariantCreate, ModelWithExtRefMutation):
         )
 
     @classmethod
-    def get_instance(cls, info: ResolveInfo, **data):
+    def get_instance(cls, info: ResolveInfo, **data) -> models.ProductVariant | None:
         """Prefetch related fields that are needed to process the mutation.
 
         If we are updating an instance and want to update its attributes, prefetch them.
@@ -98,7 +99,7 @@ class ProductVariantUpdate(ProductVariantCreate, ModelWithExtRefMutation):
         if attributes:
             # Prefetches needed by AttributeAssignmentMixin and
             # associate_attribute_values_to_instance
-            qs = cls.Meta.model.objects.prefetch_related(
+            qs = models.ProductVariant.objects.prefetch_related(
                 "product__product_type__variant_attributes__values",
                 "product__product_type__attributevariant",
             )
@@ -111,9 +112,9 @@ class ProductVariantUpdate(ProductVariantCreate, ModelWithExtRefMutation):
 
         if object_id:
             return cls.get_node_or_error(
-                info, object_id, only_type="ProductVariant", qs=qs
+                info, object_id, only_type=ProductVariant, qs=qs
             )
-        elif object_sku:
+        if object_sku:
             instance = qs.filter(sku=object_sku).first()
             if not instance:
                 raise ValidationError(
@@ -125,12 +126,21 @@ class ProductVariantUpdate(ProductVariantCreate, ModelWithExtRefMutation):
                     }
                 )
             return instance
+        return None
 
     @classmethod
     def set_track_inventory(cls, _info, instance, cleaned_input):
         track_inventory = cleaned_input.get("track_inventory")
         if track_inventory is not None:
             instance.track_inventory = track_inventory
+
+    @classmethod
+    def post_save_action(cls, info: ResolveInfo, instance, cleaned_input):
+        super().post_save_action(info, instance, cleaned_input)
+        channel_ids = ProductChannelListing.objects.filter(
+            product_id=instance.product_id
+        ).values_list("channel_id", flat=True)
+        cls.call_event(mark_active_catalogue_promotion_rules_as_dirty, channel_ids)
 
     @classmethod
     def perform_mutation(  # type: ignore[override]

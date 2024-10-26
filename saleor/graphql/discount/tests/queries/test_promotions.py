@@ -1,4 +1,4 @@
-from datetime import timedelta
+import datetime
 
 from django.utils import timezone
 
@@ -109,7 +109,7 @@ QUERY_PROMOTIONS_PAGINATION = """
 
 
 def test_query_promotions_pagination(
-    promotion_list, promotion, staff_api_client, permission_manage_discounts
+    promotion_list, catalogue_promotion, staff_api_client, permission_manage_discounts
 ):
     # given
     end_cursor = None
@@ -128,7 +128,7 @@ def test_query_promotions_pagination(
         "where": {
             "endDate": {
                 "range": {
-                    "gte": timezone.now() + timedelta(days=15),
+                    "gte": timezone.now() + datetime.timedelta(days=15),
                 }
             }
         },

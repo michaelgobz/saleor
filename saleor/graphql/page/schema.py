@@ -2,7 +2,9 @@ import graphene
 
 from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
+from ..core.descriptions import ADDED_IN_321
 from ..core.doc_category import DOC_CATEGORY_PAGES
+from ..core.enums import LanguageCodeEnum
 from ..core.fields import BaseField, FilterConnectionField
 from ..core.utils import from_global_id_or_error
 from ..translations.mutations import PageTranslate
@@ -35,6 +37,11 @@ class PageQueries(graphene.ObjectType):
         Page,
         id=graphene.Argument(graphene.ID, description="ID of the page."),
         slug=graphene.String(description="The slug of the page."),
+        slug_language_code=graphene.Argument(
+            LanguageCodeEnum,
+            description="Language code of the page slug, omit to use primary slug."
+            + ADDED_IN_321,
+        ),
         description="Look up a page by ID or slug.",
         doc_category=DOC_CATEGORY_PAGES,
     )
@@ -62,24 +69,30 @@ class PageQueries(graphene.ObjectType):
     )
 
     @staticmethod
-    def resolve_page(_root, info: ResolveInfo, *, id=None, slug=None):
-        return resolve_page(info, id, slug)
+    def resolve_page(
+        _root, info: ResolveInfo, *, id=None, slug=None, slug_language_code=None
+    ):
+        return resolve_page(info, id, slug, slug_language_code)
 
     @staticmethod
     def resolve_pages(_root, info: ResolveInfo, **kwargs):
         qs = resolve_pages(info)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, PageCountableConnection)
 
     @staticmethod
-    def resolve_page_type(_root, _info: ResolveInfo, *, id):
+    def resolve_page_type(_root, info: ResolveInfo, *, id):
         _, id = from_global_id_or_error(id, PageType)
-        return resolve_page_type(id)
+        return resolve_page_type(info, id)
 
     @staticmethod
     def resolve_page_types(_root, info: ResolveInfo, **kwargs):
         qs = resolve_page_types(info)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, PageTypeCountableConnection)
 
 

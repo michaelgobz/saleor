@@ -1,39 +1,18 @@
 from decimal import Decimal
 
-import graphene
 import pytest
 
 from ...checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from ...checkout.utils import add_variant_to_checkout
+from ...discount.models import PromotionRule
 from ...plugins.manager import get_plugins_manager
 from ...product.models import Product, ProductVariantChannelListing
 from ...product.utils.variant_prices import update_discounted_prices_for_promotion
-from .. import DiscountValueType, RewardValueType
-from ..models import Promotion
-from ..utils import create_or_update_discount_objects_from_promotion_for_checkout
-
-
-@pytest.fixture
-def promotion_10_percentage(channel_USD, product_list, product):
-    promotion = Promotion.objects.create(
-        name="Promotion",
-    )
-    product_list.append(product)
-    rule = promotion.rules.create(
-        name="10% promotion rule",
-        catalogue_predicate={
-            "productPredicate": {
-                "ids": [
-                    graphene.Node.to_global_id("Product", product.id)
-                    for product in product_list
-                ]
-            }
-        },
-        reward_value_type=RewardValueType.PERCENTAGE,
-        reward_value=Decimal("10"),
-    )
-    rule.channels.add(channel_USD)
-    return promotion
+from ...product.utils.variants import fetch_variants_for_promotion_rules
+from .. import DiscountValueType
+from ..utils.checkout import (
+    create_or_update_discount_objects_from_promotion_for_checkout,
+)
 
 
 @pytest.mark.parametrize(
@@ -97,9 +76,12 @@ def test_rounding_issue_with_percentage_promotion(
         variant_channel_listings, ["price_amount"]
     )
 
+    fetch_variants_for_promotion_rules(PromotionRule.objects.all())
     update_discounted_prices_for_promotion(Product.objects.all())
 
-    checkout_info = fetch_checkout_info(checkout, [], get_plugins_manager())
+    checkout_info = fetch_checkout_info(
+        checkout, [], get_plugins_manager(allow_replica=False)
+    )
 
     for variant in variants:
         add_variant_to_checkout(checkout_info, variant, 1)
@@ -108,6 +90,7 @@ def test_rounding_issue_with_percentage_promotion(
 
     # when
     create_or_update_discount_objects_from_promotion_for_checkout(
+        checkout_info,
         lines_info,
     )
 

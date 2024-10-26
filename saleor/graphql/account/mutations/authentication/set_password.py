@@ -6,12 +6,13 @@ from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from .....account import events as account_events
 from .....account import models
 from .....account.error_codes import AccountErrorCode
+from .....core.db.connection import allow_writer
+from .....order.utils import match_orders_with_new_user
 from ....core import ResolveInfo
 from ....core.context import disallow_replica_in_context
 from ....core.doc_category import DOC_CATEGORY_USERS
 from ....core.mutations import validation_error_to_error_type
 from ....core.types import AccountError
-from ....plugins.dataloaders import get_plugin_manager_promise
 from ..base import INVALID_TOKEN
 from . import CreateToken
 
@@ -34,19 +35,11 @@ class SetPassword(CreateToken):
         error_type_field = "account_errors"
 
     @classmethod
+    @allow_writer()
     def mutate(  # type: ignore[override]
         cls, root, info: ResolveInfo, /, *, email, password, token
     ):
         disallow_replica_in_context(info.context)
-        manager = get_plugin_manager_promise(info.context).get()
-        result = manager.perform_mutation(
-            mutation_cls=cls,
-            root=root,
-            info=info,
-            data={"email": email, "password": password, "token": token},
-        )
-        if result is not None:
-            return result
 
         try:
             cls._set_password_for_user(email, password, token)
@@ -59,14 +52,14 @@ class SetPassword(CreateToken):
     def _set_password_for_user(cls, email, password, token):
         try:
             user = models.User.objects.get(email=email)
-        except ObjectDoesNotExist:
+        except ObjectDoesNotExist as e:
             raise ValidationError(
                 {
                     "email": ValidationError(
                         "User doesn't exist", code=AccountErrorCode.NOT_FOUND.value
                     )
                 }
-            )
+            ) from e
         if not default_token_generator.check_token(user, token):
             raise ValidationError(
                 {
@@ -77,8 +70,16 @@ class SetPassword(CreateToken):
             )
         try:
             password_validation.validate_password(password, user)
-        except ValidationError as error:
-            raise ValidationError({"password": error})
+        except ValidationError as e:
+            raise ValidationError({"password": e}) from e
+        fields_to_save = ["password", "updated_at"]
         user.set_password(password)
-        user.save(update_fields=["password", "updated_at"])
+        # To reset the password user need to process the token sent separately by email,
+        # so we can be sure that the user has access to email account and can be
+        # confirmed.
+        if not user.is_confirmed:
+            user.is_confirmed = True
+            match_orders_with_new_user(user)
+            fields_to_save.append("is_confirmed")
+        user.save(update_fields=fields_to_save)
         account_events.customer_password_reset_event(user=user)

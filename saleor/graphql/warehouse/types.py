@@ -10,9 +10,9 @@ from ..account.dataloaders import AddressByIdLoader
 from ..channel import ChannelContext
 from ..core import ResolveInfo
 from ..core.connection import CountableConnection, create_connection_slice
+from ..core.context import get_database_connection_name
 from ..core.descriptions import (
-    ADDED_IN_31,
-    ADDED_IN_310,
+    ADDED_IN_320,
     DEPRECATED_IN_3X_FIELD,
     DEPRECATED_IN_3X_INPUT,
 )
@@ -27,7 +27,7 @@ from ..core.types import (
 from ..meta.types import ObjectWithMetadata
 from ..product.dataloaders import ProductVariantByIdLoader
 from ..site.dataloaders import load_site_callback
-from .dataloaders import WarehouseByIdLoader
+from .dataloaders import StocksByWarehouseIdLoader, WarehouseByIdLoader
 from .enums import WarehouseClickAndCollectOptionEnum
 
 
@@ -35,7 +35,7 @@ class WarehouseInput(BaseInputObjectType):
     slug = graphene.String(description="Warehouse slug.")
     email = graphene.String(description="The email address of the warehouse.")
     external_reference = graphene.String(
-        description="External ID of the warehouse." + ADDED_IN_310, required=False
+        description="External ID of the warehouse.", required=False
     )
 
     class Meta:
@@ -68,13 +68,11 @@ class WarehouseUpdateInput(WarehouseInput):
         required=False,
     )
     click_and_collect_option = WarehouseClickAndCollectOptionEnum(
-        description=(
-            "Click and collect options: local, all or disabled." + ADDED_IN_31
-        ),
+        description=("Click and collect options: local, all or disabled."),
         required=False,
     )
     is_private = graphene.Boolean(
-        description="Visibility of warehouse stocks." + ADDED_IN_31,
+        description="Visibility of warehouse stocks.",
         required=False,
     )
 
@@ -103,9 +101,7 @@ class Warehouse(ModelObjectType[models.Warehouse]):
         ),
     )
     click_and_collect_option = WarehouseClickAndCollectOptionEnum(
-        description=(
-            "Click and collect options: local, all or disabled." + ADDED_IN_31
-        ),
+        description="Click and collect options: local, all or disabled.",
         required=True,
     )
     shipping_zones = ConnectionField(
@@ -113,8 +109,16 @@ class Warehouse(ModelObjectType[models.Warehouse]):
         required=True,
         description="Shipping zones supported by the warehouse.",
     )
+    stocks = ConnectionField(
+        "saleor.graphql.warehouse.types.StockCountableConnection",
+        description="Stocks that belong to this warehouse." + ADDED_IN_320,
+        permissions=[
+            ProductPermissions.MANAGE_PRODUCTS,
+            OrderPermissions.MANAGE_ORDERS,
+        ],
+    )
     external_reference = graphene.String(
-        description=f"External ID of this warehouse. {ADDED_IN_310}", required=False
+        description="External ID of this warehouse.", required=False
     )
 
     class Meta:
@@ -126,7 +130,9 @@ class Warehouse(ModelObjectType[models.Warehouse]):
     def resolve_shipping_zones(root, info: ResolveInfo, *_args, **kwargs):
         from ..shipping.types import ShippingZoneCountableConnection
 
-        instances = root.shipping_zones.all()
+        instances = root.shipping_zones.using(
+            get_database_connection_name(info.context)
+        ).all()
         slice = create_connection_slice(
             instances, info, kwargs, ShippingZoneCountableConnection
         )
@@ -139,6 +145,17 @@ class Warehouse(ModelObjectType[models.Warehouse]):
         slice.edges = edges_with_context
 
         return slice
+
+    @staticmethod
+    def resolve_stocks(root, info: ResolveInfo, **kwargs):
+        def _resolve_stocks(stocks):
+            return create_connection_slice(
+                stocks, info, kwargs, StockCountableConnection
+            )
+
+        return (
+            StocksByWarehouseIdLoader(info.context).load(root.id).then(_resolve_stocks)
+        )
 
     @staticmethod
     def resolve_address(root, info: ResolveInfo):
@@ -216,18 +233,22 @@ class Stock(ModelObjectType[models.Stock]):
         return root.quantity
 
     @staticmethod
-    def resolve_quantity_allocated(root, _info: ResolveInfo):
-        return root.allocations.aggregate(
-            quantity_allocated=Coalesce(Sum("quantity_allocated"), 0)
-        )["quantity_allocated"]
+    def resolve_quantity_allocated(root, info: ResolveInfo):
+        return root.allocations.using(
+            get_database_connection_name(info.context)
+        ).aggregate(quantity_allocated=Coalesce(Sum("quantity_allocated"), 0))[
+            "quantity_allocated"
+        ]
 
     @staticmethod
     @load_site_callback
-    def resolve_quantity_reserved(root, _info: ResolveInfo, site):
+    def resolve_quantity_reserved(root, info: ResolveInfo, site):
         if not is_reservation_enabled(site.settings):
             return 0
 
-        return root.reservations.aggregate(
+        return root.reservations.using(
+            get_database_connection_name(info.context)
+        ).aggregate(
             quantity_reserved=Coalesce(
                 Sum(
                     "quantity_reserved",

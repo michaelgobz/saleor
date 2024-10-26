@@ -1,7 +1,7 @@
 import graphene
 from graphene import relay
 
-from ....discount import models
+from ....discount import DiscountValueType, models
 from ....permission.enums import DiscountPermissions
 from ....product.models import Category, Collection, Product, ProductVariant
 from ...channel import ChannelQsContext
@@ -14,9 +14,11 @@ from ...channel.types import (
 )
 from ...core import ResolveInfo
 from ...core.connection import CountableConnection, create_connection_slice
-from ...core.descriptions import ADDED_IN_31, DEPRECATED_IN_3X_TYPE
+from ...core.context import get_database_connection_name
+from ...core.descriptions import DEPRECATED_IN_3X_TYPE
 from ...core.doc_category import DOC_CATEGORY_DISCOUNTS
 from ...core.fields import ConnectionField, PermissionsField
+from ...core.scalars import DateTime
 from ...core.types import BaseObjectType, ModelObjectType, NonNullList
 from ...meta.types import ObjectWithMetadata
 from ...product.types import (
@@ -66,14 +68,14 @@ class Sale(ChannelContextTypeWithMetadata, ModelObjectType[models.Promotion]):
     id = graphene.GlobalID(required=True, description="The ID of the sale.")
     name = graphene.String(required=True, description="The name of the sale.")
     type = SaleType(required=True, description="Type of the sale, fixed or percentage.")
-    start_date = graphene.DateTime(
+    start_date = DateTime(
         required=True, description="The start date and time of the sale."
     )
-    end_date = graphene.DateTime(description="The end date and time of the sale.")
-    created = graphene.DateTime(
+    end_date = DateTime(description="The end date and time of the sale.")
+    created = DateTime(
         required=True, description="The date and time when the sale was created."
     )
-    updated_at = graphene.DateTime(
+    updated_at = DateTime(
         required=True, description="The date and time when the sale was updated."
     )
     categories = ConnectionField(
@@ -96,7 +98,7 @@ class Sale(ChannelContextTypeWithMetadata, ModelObjectType[models.Promotion]):
     )
     variants = ConnectionField(
         ProductVariantCountableConnection,
-        description="List of product variants this sale applies to." + ADDED_IN_31,
+        description="List of product variants this sale applies to.",
         permissions=[
             DiscountPermissions.MANAGE_DISCOUNTS,
         ],
@@ -140,7 +142,7 @@ class Sale(ChannelContextTypeWithMetadata, ModelObjectType[models.Promotion]):
     def resolve_type(root: ChannelContext[models.Promotion], info: ResolveInfo):
         def _get_type(rules):
             # We ensure, that old sales have at least one rule associated.
-            return rules[0].reward_value_type
+            return rules[0].reward_value_type or DiscountValueType.FIXED
 
         return (
             PromotionRulesByPromotionIdLoader(info.context)
@@ -154,10 +156,13 @@ class Sale(ChannelContextTypeWithMetadata, ModelObjectType[models.Promotion]):
     ):
         def _get_categories(predicates):
             if category_ids := predicates.get("categoryPredicate"):
-                qs = Category.objects.filter(id__in=category_ids)
+                qs = Category.objects.using(
+                    get_database_connection_name(info.context)
+                ).filter(id__in=category_ids)
                 return create_connection_slice(
                     qs, info, kwargs, CategoryCountableConnection
                 )
+            return None
 
         return (
             PredicateByPromotionIdLoader(info.context)
@@ -177,11 +182,14 @@ class Sale(ChannelContextTypeWithMetadata, ModelObjectType[models.Promotion]):
     ):
         def _get_collections(predicates):
             if collection_ids := predicates.get("collectionPredicate"):
-                qs = Collection.objects.filter(id__in=collection_ids)
+                qs = Collection.objects.using(
+                    get_database_connection_name(info.context)
+                ).filter(id__in=collection_ids)
                 qs = ChannelQsContext(qs=qs, channel_slug=root.channel_slug)
                 return create_connection_slice(
                     qs, info, kwargs, CollectionCountableConnection
                 )
+            return None
 
         return (
             PredicateByPromotionIdLoader(info.context)
@@ -195,11 +203,14 @@ class Sale(ChannelContextTypeWithMetadata, ModelObjectType[models.Promotion]):
     ):
         def _get_products(predicates):
             if product_ids := predicates.get("productPredicate"):
-                qs = Product.objects.filter(id__in=product_ids)
+                qs = Product.objects.using(
+                    get_database_connection_name(info.context)
+                ).filter(id__in=product_ids)
                 qs = ChannelQsContext(qs=qs, channel_slug=root.channel_slug)
                 return create_connection_slice(
                     qs, info, kwargs, ProductCountableConnection
                 )
+            return None
 
         return (
             PredicateByPromotionIdLoader(info.context)
@@ -213,11 +224,14 @@ class Sale(ChannelContextTypeWithMetadata, ModelObjectType[models.Promotion]):
     ):
         def _get_variants(predicates):
             if variant_ids := predicates.get("variantPredicate"):
-                qs = ProductVariant.objects.filter(id__in=variant_ids)
+                qs = ProductVariant.objects.using(
+                    get_database_connection_name(info.context)
+                ).filter(id__in=variant_ids)
                 qs = ChannelQsContext(qs=qs, channel_slug=root.channel_slug)
                 return create_connection_slice(
                     qs, info, kwargs, ProductVariantCountableConnection
                 )
+            return None
 
         return (
             PredicateByPromotionIdLoader(info.context)
@@ -235,6 +249,7 @@ class Sale(ChannelContextTypeWithMetadata, ModelObjectType[models.Promotion]):
         def _get_reward_value(rules):
             if rules:
                 return rules[0].reward_value
+            return None
 
         return (
             PromotionRulesByPromotionIdAndChannelSlugLoader(info.context)
@@ -250,6 +265,7 @@ class Sale(ChannelContextTypeWithMetadata, ModelObjectType[models.Promotion]):
         def _get_currency(channel):
             if channel:
                 return channel.currency_code
+            return None
 
         return (
             ChannelBySlugLoader(info.context)

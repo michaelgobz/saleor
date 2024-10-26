@@ -133,7 +133,8 @@ class ProcessedImage:
         image_format = self.get_image_metadata_from_file(image)
         return (Image.open(image), image_format)
 
-    def get_image_metadata_from_file(self, file_like):
+    @classmethod
+    def get_image_metadata_from_file(cls, file_like):
         """Return a image format and InMemoryUploadedFile-friendly save format.
 
         Receive a valid image file and returns a 2-tuple of two strings:
@@ -143,6 +144,8 @@ class ProcessedImage:
         """
         mime_type = magic.from_buffer(file_like.read(1024), mime=True)
         file_like.seek(0)
+        if mime_type not in MIME_TYPE_TO_PIL_IDENTIFIER:
+            raise ValueError(f"Unsupported image MIME type: {mime_type}")
         image_format = MIME_TYPE_TO_PIL_IDENTIFIER[mime_type]
         return image_format
 
@@ -170,16 +173,25 @@ class ProcessedImage:
 
         # Ensuring image is properly rotated
         if hasattr(image, "_getexif"):
-            exif_datadict = image._getexif()  # returns None if no EXIF data
+            try:
+                # validation of the exif data was added in separate PR:
+                # https://github.com/saleor/saleor/pull/11224, it means that there is a
+                # possibility that we could have the file with corrupted exif data.
+                # exif data is only used to apply some optional action on the image,
+                # but without it, we are still able to create a thumbnail.
+                exif_datadict = image._getexif()  # returns None if no EXIF data
+            except SyntaxError:
+                exif_datadict = None
+
             if exif_datadict is not None:
                 exif = dict(exif_datadict.items())
                 orientation = exif.get(self.EXIF_ORIENTATION_KEY, None)
                 if orientation == 3:
-                    image = image.transpose(Image.ROTATE_180)
+                    image = image.transpose(Image.Transpose.ROTATE_180)
                 elif orientation == 6:
-                    image = image.transpose(Image.ROTATE_270)
+                    image = image.transpose(Image.Transpose.ROTATE_270)
                 elif orientation == 8:
-                    image = image.transpose(Image.ROTATE_90)
+                    image = image.transpose(Image.Transpose.ROTATE_90)
 
         # Ensure any embedded ICC profile is preserved
         save_kwargs["icc_profile"] = image.info.get("icc_profile")

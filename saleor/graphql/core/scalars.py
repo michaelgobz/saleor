@@ -1,11 +1,10 @@
+import datetime
 import decimal
 
 import graphene
 from graphene.types.generic import GenericScalar
-from graphql.error import GraphQLError
 from graphql.language import ast
 from measurement.measures import Weight
-from six import string_types
 
 from ...core.weight import (
     convert_weight_to_default_weight_unit,
@@ -21,11 +20,13 @@ class Decimal(graphene.Float):
     """
 
     @staticmethod
-    def parse_literal(node):
-        try:
-            return decimal.Decimal(node.value)
-        except decimal.DecimalException:
-            return None
+    def parse_literal(node) -> decimal.Decimal | None:
+        if isinstance(node, (ast.FloatValue, ast.IntValue)):
+            try:
+                return decimal.Decimal(node.value)
+            except decimal.DecimalException:
+                return None
+        return None
 
     @staticmethod
     def parse_value(value):
@@ -33,7 +34,14 @@ class Decimal(graphene.Float):
             # Converting the float to str before parsing it to Decimal is
             # necessary to keep the decimal places as typed
             value = str(value)
-            return decimal.Decimal(value)
+            value = decimal.Decimal(value)
+            if value.is_infinite():
+                return None
+            if value.is_nan():
+                return None
+            if value.is_subnormal():
+                return None
+            return value
         except decimal.DecimalException:
             return None
 
@@ -46,11 +54,9 @@ class PositiveDecimal(Decimal):
 
     @staticmethod
     def parse_value(value):
-        value = super(PositiveDecimal, PositiveDecimal).parse_value(value)
+        value = Decimal.parse_value(value)
         if value and value < 0:
-            raise GraphQLError(
-                f"Value cannot be lower than 0. Unsupported value: {value}"
-            )
+            return None
         return value
 
 
@@ -62,9 +68,9 @@ class JSON(GenericScalar):
                 field.name.value: GenericScalar.parse_literal(field.value)
                 for field in node.fields
             }
-        elif isinstance(node, ast.ListValue):
+        if isinstance(node, ast.ListValue):
             return [GenericScalar.parse_literal(value) for value in node.values]
-        raise GraphQLError("JSON scalar needs to receive a correct JSON structure.")
+        return None
 
     @staticmethod
     def parse_value(value):
@@ -72,7 +78,7 @@ class JSON(GenericScalar):
             return value
         if isinstance(value, list):
             return [GenericScalar.parse_value(v) for v in value]
-        raise GraphQLError("JSON scalar needs to receive a correct JSON structure.")
+        return None
 
 
 class WeightScalar(graphene.Scalar):
@@ -82,8 +88,6 @@ class WeightScalar(graphene.Scalar):
             weight = Weight(**{value["unit"]: value["value"]})
         else:
             weight = WeightScalar.parse_decimal(value)
-        if weight is None:
-            raise GraphQLError(f"Unsupported value: {value}")
         return weight
 
     @staticmethod
@@ -99,8 +103,6 @@ class WeightScalar(graphene.Scalar):
             weight = WeightScalar.parse_literal_object(node)
         else:
             weight = WeightScalar.parse_decimal(node.value)
-        if weight is None:
-            raise GraphQLError(f"Unsupported value: {node.value}")
         return weight
 
     @staticmethod
@@ -122,7 +124,7 @@ class WeightScalar(graphene.Scalar):
                 try:
                     value = decimal.Decimal(field.value.value)
                 except decimal.DecimalException:
-                    raise GraphQLError(f"Unsupported value: {field.value.value}")
+                    return None
             if field.name.value == "unit":
                 unit = field.value.value
         return Weight(**{unit: value})
@@ -131,21 +133,42 @@ class WeightScalar(graphene.Scalar):
 class UUID(graphene.UUID):
     @staticmethod
     def serialize(uuid):
-        return super(UUID, UUID).serialize(uuid)
+        return graphene.UUID.serialize(uuid)
 
     @staticmethod
     def parse_literal(node):
         try:
-            return super(UUID, UUID).parse_literal(node)
-        except ValueError as e:
-            raise GraphQLError(str(e))
+            return graphene.UUID.parse_literal(node)
+        except ValueError:
+            return None
 
     @staticmethod
     def parse_value(value):
         try:
-            return super(UUID, UUID).parse_value(value)
-        except ValueError as e:
-            raise GraphQLError(str(e))
+            return graphene.UUID.parse_value(value)
+        except ValueError:
+            return None
+
+
+# The custom DateTime scalar is needed as graphene.DateTime allows to save the date-time
+# value in format that is not supported by datetime module.
+# The custom validation makes additional check to confirm that the value is correct
+# Value like this `0001-01-01T00:00:01+07:00` will generate the BC date, which without
+# additional check will be saved in the database as UTC BC time:
+# `0001-12-31 17:00:01+00 BC`.
+class DateTime(graphene.DateTime):
+    __doc__ = graphene.DateTime.__doc__
+
+    @staticmethod
+    def parse_value(value):
+        parsed_value = graphene.DateTime.parse_value(value)
+        if parsed_value is not None and isinstance(parsed_value, datetime.datetime):
+            if parsed_value.year in [datetime.MINYEAR, datetime.MAXYEAR]:
+                try:
+                    parsed_value.astimezone(tz=datetime.UTC)
+                except OverflowError:
+                    return None
+        return parsed_value
 
 
 # The custom Date scalar is needed as the currently used graphene 2 version is not
@@ -160,9 +183,9 @@ class Date(graphene.Date):
     def parse_value(value):
         # The parse_value method is overridden to handle the empty string.
         # The current graphene version returning unhandled `IndexError`.
-        if isinstance(value, string_types) and not value:
+        if isinstance(value, str) and not value:
             return None
-        return super(Date, Date).parse_value(value)
+        return graphene.Date.parse_value(value)
 
 
 class Minute(graphene.Int):

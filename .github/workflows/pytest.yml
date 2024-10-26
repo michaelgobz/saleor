@@ -30,7 +30,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: python:3.9
+    container: python:3.12
 
     services:
       postgres:
@@ -53,18 +53,18 @@ jobs:
 
       - name: Install and configure poetry
         run: |
-          pip install poetry==1.5.0
+          pip install poetry==1.7.0
 
       - name: Cache the venv
         id: cached-poetry-dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
-          path: ~/.venv
+          path: ~/.cache/pypoetry/virtualenvs
           key: ${{ runner.os }}-venv-${{ hashFiles('**/poetry.lock') }}
 
       - name: Install dependencies
         run: |
-          poetry env use python3.9
+          poetry env use python3.12
           poetry install --no-root
         if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
 
@@ -92,7 +92,7 @@ jobs:
             --junitxml=junit/test-results.xml \
             --django-db-bench=${{ env.BENCH_PATH }}
 
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         with:
           path: ~/.cache/pre-commit
           key: ${{ runner.os }}-pre-commit-${{ hashFiles('**/.pre-commit-config.yaml') }}
@@ -100,9 +100,11 @@ jobs:
             ${{ runner.os }}-pre-commit-
 
       # Publish coverage and test results
-      - uses: codecov/codecov-action@v3
+      - uses: codecov/codecov-action@v4
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: pytest-results
           path: junit/test-results.xml
@@ -123,7 +125,3 @@ jobs:
           upload_endpoint: ${{ secrets.QUERIES_UPLOAD_ENDPOINT_URL }}
           upload_secret_key: ${{ secrets.QUERIES_UPLOAD_SECRET }}
         if: github.event_name == 'push' && github.repository == 'saleor/saleor'
-
-      - name: Run E2E tests
-        run: |
-          pytest -m "e2e"

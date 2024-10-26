@@ -10,6 +10,7 @@ from ....attribute.models import AttributeValue
 from ....attribute.utils import associate_attribute_values_to_instance
 from ....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from ....checkout.utils import add_variant_to_checkout, calculate_checkout_quantity
+from ....discount.utils.promotion import get_active_catalogue_promotion_rules
 from ....order import OrderEvents, OrderStatus
 from ....order.models import OrderEvent, OrderLine
 from ....plugins.manager import get_plugins_manager
@@ -25,7 +26,6 @@ from ....product.models import (
     ProductVariantChannelListing,
     VariantMedia,
 )
-from ....tests.utils import flush_post_commit_hooks
 from ....thumbnail.models import Thumbnail
 from ...tests.utils import get_graphql_content
 
@@ -38,11 +38,7 @@ MUTATION_CATEGORY_BULK_DELETE = """
 """
 
 
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 def test_delete_categories(
-    update_products_discounted_price_task_mock,
     staff_api_client,
     category_list,
     product_list,
@@ -75,9 +71,38 @@ def test_delete_categories(
     assert not Category.objects.filter(
         id__in=[category.id for category in category_list]
     ).exists()
-    update_products_discounted_price_task_mock.assert_called_once()
-    args, kwargs = update_products_discounted_price_task_mock.call_args
-    assert set(kwargs["product_ids"]) == {product.id for product in product_list}
+
+
+def test_delete_categories_invalidate_active_promotion_rules(
+    staff_api_client,
+    category_list,
+    product_list,
+    permission_manage_products,
+    catalogue_promotion,
+):
+    # given
+    for product, category in zip(product_list, category_list):
+        product.category = category
+
+    Product.objects.bulk_update(product_list, ["category"])
+
+    variables = {
+        "ids": [
+            graphene.Node.to_global_id("Category", category.id)
+            for category in category_list
+        ]
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        MUTATION_CATEGORY_BULK_DELETE,
+        variables,
+        permissions=[permission_manage_products],
+    )
+
+    # then
+    get_graphql_content(response)
+    assert not catalogue_promotion.rules.filter(variants_dirty=True).exists()
 
 
 @patch("saleor.product.utils.get_webhooks_for_event")
@@ -204,9 +229,7 @@ def test_delete_categories_trigger_product_updated_webhook(
     assert product_updated_mock.call_count == 2
 
 
-@patch("saleor.product.utils.update_products_discounted_prices_for_promotion_task")
 def test_delete_categories_with_subcategories_and_products(
-    mock_update_products_discounted_prices_for_promotion_task,
     staff_api_client,
     category_list,
     permission_manage_products,
@@ -259,14 +282,6 @@ def test_delete_categories_with_subcategories_and_products(
         id__in=[category.id for category in category_list]
     ).exists()
 
-    mock_update_products_discounted_prices_for_promotion_task.delay.assert_called_once()
-    (
-        _call_args,
-        call_kwargs,
-    ) = mock_update_products_discounted_prices_for_promotion_task.delay.call_args
-
-    assert set(call_kwargs["product_ids"]) == set([p.pk for p in product_list])
-
     for product in product_list:
         product.refresh_from_db()
         assert not product.category
@@ -277,6 +292,7 @@ def test_delete_categories_with_subcategories_and_products(
     for product_channel_listing in product_channel_listings:
         assert product_channel_listing.is_published is False
         assert not product_channel_listing.published_at
+        assert product_channel_listing.discounted_price_dirty is False
     assert product_channel_listings.count() == 3
 
 
@@ -289,11 +305,7 @@ MUTATION_COLLECTION_BULK_DELETE = """
 """
 
 
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 def test_delete_collections(
-    update_products_discounted_price_task_mock,
     staff_api_client,
     collection_list,
     product_list,
@@ -324,9 +336,9 @@ def test_delete_collections(
     assert not Collection.objects.filter(
         id__in=[collection.id for collection in collection_list]
     ).exists()
-    update_products_discounted_price_task_mock.assert_called_once()
-    args = set(update_products_discounted_price_task_mock.call_args.args[0])
-    assert args == {product.id for product in product_list}
+
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty
 
 
 def test_delete_collections_with_images(
@@ -724,12 +736,14 @@ def test_delete_products_with_file_attributes(
     # given
     query = DELETE_PRODUCTS_MUTATION
 
-    values = [value for value in file_attribute.values.all()]
+    values = list(file_attribute.values.all())
     for i, product in enumerate(product_list[: len(values)]):
         product_type = product.product_type
         product_type.product_attributes.add(file_attribute)
         existing_value = values[i]
-        associate_attribute_values_to_instance(product, file_attribute, existing_value)
+        associate_attribute_values_to_instance(
+            product, {file_attribute.pk: [existing_value]}
+        )
 
     variables = {
         "ids": [
@@ -894,14 +908,16 @@ def test_delete_product_types_with_file_attributes(
 ):
     query = PRODUCT_TYPE_BULK_DELETE_MUTATION
 
-    values = [value for value in file_attribute.values.all()]
+    values = list(file_attribute.values.all())
     for i, product_type in enumerate(product_type_list[: len(values)]):
         product_type.product_attributes.add(file_attribute)
         product = product_list[i]
         product.product_type = product_type
         product.save()
         existing_value = values[i]
-        associate_attribute_values_to_instance(product, file_attribute, existing_value)
+        associate_attribute_values_to_instance(
+            product, {file_attribute.pk: [existing_value]}
+        )
 
     variables = {
         "ids": [
@@ -973,7 +989,6 @@ def test_delete_product_variants_by_sku(
         permissions=[permission_manage_products],
     )
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
 
     # then
     assert content["data"]["productVariantBulkDelete"]["count"] == 4
@@ -991,15 +1006,11 @@ def test_delete_product_variants_by_sku(
     "saleor.graphql.product.bulk_mutations."
     "product_variant_bulk_delete.get_webhooks_for_event"
 )
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 @patch("saleor.plugins.manager.PluginsManager.product_variant_deleted")
 @patch("saleor.order.tasks.recalculate_orders_task.delay")
 def test_delete_product_variants_by_sku_task_for_recalculate_product_prices_called(
     mocked_recalculate_orders_task,
     product_variant_deleted_webhook_mock,
-    update_products_discounted_price_task_mock,
     mocked_get_webhooks_for_event,
     staff_api_client,
     product_list,
@@ -1024,7 +1035,6 @@ def test_delete_product_variants_by_sku_task_for_recalculate_product_prices_call
         permissions=[permission_manage_products],
     )
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
 
     # then
     assert content["data"]["productVariantBulkDelete"]["count"] == len(variants)
@@ -1036,9 +1046,8 @@ def test_delete_product_variants_by_sku_task_for_recalculate_product_prices_call
         == content["data"]["productVariantBulkDelete"]["count"]
     )
     mocked_recalculate_orders_task.assert_not_called()
-    update_products_discounted_price_task_mock.assert_called_once()
-    args = set(update_products_discounted_price_task_mock.call_args.args[0])
-    assert args == {product.id for product in product_list}
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty
 
 
 PRODUCT_VARIANT_BULK_DELETE_MUTATION = """
@@ -1095,7 +1104,6 @@ def test_delete_product_variants(
         query, variables, permissions=[permission_manage_products]
     )
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
 
     assert content["data"]["productVariantBulkDelete"]["count"] == 4
     assert not ProductVariant.objects.filter(
@@ -1112,15 +1120,11 @@ def test_delete_product_variants(
     "saleor.graphql.product.bulk_mutations."
     "product_variant_bulk_delete.get_webhooks_for_event"
 )
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 @patch("saleor.plugins.manager.PluginsManager.product_variant_deleted")
 @patch("saleor.order.tasks.recalculate_orders_task.delay")
 def test_delete_product_variants_task_for_recalculate_product_prices_called(
     mocked_recalculate_orders_task,
     product_variant_deleted_webhook_mock,
-    update_products_discounted_price_task_mock,
     mocked_get_webhooks_for_event,
     staff_api_client,
     product_list,
@@ -1148,7 +1152,6 @@ def test_delete_product_variants_task_for_recalculate_product_prices_called(
         query, variables, permissions=[permission_manage_products]
     )
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
 
     assert content["data"]["productVariantBulkDelete"]["count"] == len(variants)
     assert not ProductVariant.objects.filter(
@@ -1159,20 +1162,16 @@ def test_delete_product_variants_task_for_recalculate_product_prices_called(
         == content["data"]["productVariantBulkDelete"]["count"]
     )
     mocked_recalculate_orders_task.assert_not_called()
-    update_products_discounted_price_task_mock.assert_called_once()
-    args = set(update_products_discounted_price_task_mock.call_args.args[0])
-    assert args == {product.id for product in product_list}
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty
 
 
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 def test_delete_product_variants_invalid_object_typed_of_given_ids(
-    update_products_discounted_price_task_mock,
     staff_api_client,
     product_variant_list,
     permission_manage_products,
     staff_user,
+    catalogue_promotion,
 ):
     query = PRODUCT_VARIANT_BULK_DELETE_MUTATION
     staff_user.user_permissions.add(permission_manage_products)
@@ -1191,7 +1190,7 @@ def test_delete_product_variants_invalid_object_typed_of_given_ids(
     assert errors[0]["code"] == ProductErrorCode.GRAPHQL_ERROR.name
     assert errors[0]["field"] == "ids"
     assert data["count"] == 0
-    update_products_discounted_price_task_mock.assert_not_called()
+    assert not catalogue_promotion.rules.filter(variants_dirty=True).exists()
 
 
 def test_delete_product_variants_removes_checkout_lines(
@@ -1202,7 +1201,9 @@ def test_delete_product_variants_removes_checkout_lines(
 ):
     query = PRODUCT_VARIANT_BULK_DELETE_MUTATION
 
-    checkout_info = fetch_checkout_info(checkout, [], get_plugins_manager())
+    checkout_info = fetch_checkout_info(
+        checkout, [], get_plugins_manager(allow_replica=False)
+    )
     variant_list = [product.variants.first() for product in product_list][:2]
     for variant in variant_list:
         add_variant_to_checkout(checkout_info, variant, 1)
@@ -1225,7 +1226,6 @@ def test_delete_product_variants_removes_checkout_lines(
         query, variables, permissions=[permission_manage_products]
     )
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
 
     assert content["data"]["productVariantBulkDelete"]["count"] == 2
     assert not ProductVariant.objects.filter(
@@ -1287,7 +1287,6 @@ def test_delete_product_variants_with_images(
         query, variables, permissions=[permission_manage_products]
     )
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
 
     assert content["data"]["productVariantBulkDelete"]["count"] == 4
     assert not ProductVariant.objects.filter(
@@ -1322,7 +1321,7 @@ def test_product_delete_removes_reference_to_product(
         reference_product=product_ref,
     )
     associate_attribute_values_to_instance(
-        product, product_type_product_reference_attribute, attr_value
+        product, {product_type_product_reference_attribute.id: [attr_value]}
     )
 
     reference_id = graphene.Node.to_global_id("Product", product_ref.pk)
@@ -1362,9 +1361,7 @@ def test_product_delete_removes_variant_reference_to_product(
     )
 
     associate_attribute_values_to_instance(
-        variant,
-        product_type_product_reference_attribute,
-        attr_value,
+        variant, {product_type_product_reference_attribute.id: [attr_value]}
     )
     reference_id = graphene.Node.to_global_id("Product", product_list[0].pk)
 
@@ -1405,7 +1402,7 @@ def test_product_delete_removes_reference_to_variant(
         reference_variant=variant_ref,
     )
     associate_attribute_values_to_instance(
-        product, product_type_variant_reference_attribute, attr_value
+        product, {product_type_variant_reference_attribute.id: [attr_value]}
     )
 
     product_id = graphene.Node.to_global_id("Product", product.pk)
@@ -1448,7 +1445,7 @@ def test_product_delete_removes_reference_to_page(
         reference_product=product,
     )
     associate_attribute_values_to_instance(
-        page, page_type_product_reference_attribute, attr_value
+        page, {page_type_product_reference_attribute.id: [attr_value]}
     )
 
     reference_id = graphene.Node.to_global_id("Product", product.pk)
@@ -1495,12 +1492,14 @@ def test_delete_product_variants_with_file_attribute(
         variant_id__in=[variant.id for variant in product_variant_list]
     ).exists()
 
-    values = [value for value in file_attribute.values.all()]
+    values = list(file_attribute.values.all())
     for i, variant in enumerate(product_variant_list[: len(values)]):
         product_type = variant.product.product_type
         product_type.variant_attributes.add(file_attribute)
         existing_value = values[i]
-        associate_attribute_values_to_instance(variant, file_attribute, existing_value)
+        associate_attribute_values_to_instance(
+            variant, {file_attribute.id: [existing_value]}
+        )
 
     variables = {
         "ids": [
@@ -1512,7 +1511,6 @@ def test_delete_product_variants_with_file_attribute(
         query, variables, permissions=[permission_manage_products]
     )
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
 
     assert content["data"]["productVariantBulkDelete"]["count"] == 4
     assert not ProductVariant.objects.filter(

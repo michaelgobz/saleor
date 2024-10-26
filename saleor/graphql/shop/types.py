@@ -7,19 +7,19 @@ from phonenumbers import COUNTRY_CODE_TO_REGION_CODE
 
 from ... import __version__, schema_version
 from ...account import models as account_models
+from ...app.utils import get_active_tax_apps
 from ...channel import models as channel_models
 from ...core.models import ModelWithMetadata
 from ...core.utils import build_absolute_uri, get_domain, is_ssl_enabled
 from ...permission.auth_filters import AuthorizationFilters
-from ...permission.enums import SitePermissions, get_permissions
+from ...permission.enums import AppPermission, SitePermissions, get_permissions
 from ...site import models as site_models
 from ..account.types import Address, AddressInput, StaffNotificationRecipient
+from ..app.types import App
 from ..core import ResolveInfo
+from ..core.context import get_database_connection_name
 from ..core.descriptions import (
-    ADDED_IN_31,
-    ADDED_IN_35,
-    ADDED_IN_314,
-    ADDED_IN_315,
+    ADDED_IN_319,
     DEPRECATED_IN_3X_FIELD,
     DEPRECATED_IN_3X_INPUT,
 )
@@ -186,9 +186,7 @@ class Shop(graphene.ObjectType):
     )
     channel_currencies = PermissionsField(
         NonNullList(graphene.String),
-        description=(
-            "List of all currencies supported by shop's channels." + ADDED_IN_31
-        ),
+        description="List of all currencies supported by shop's channels.",
         required=True,
         permissions=[
             AuthorizationFilters.AUTHENTICATED_STAFF_USER,
@@ -240,11 +238,11 @@ class Shop(graphene.ObjectType):
     )
     header_text = graphene.String(description="Header text.")
     fulfillment_auto_approve = graphene.Boolean(
-        description="Automatically approve all new fulfillments." + ADDED_IN_31,
+        description="Automatically approve all new fulfillments.",
         required=True,
     )
     fulfillment_allow_unpaid = graphene.Boolean(
-        description="Allow to approve fulfillments which are unpaid." + ADDED_IN_31,
+        description="Allow to approve fulfillments which are unpaid.",
         required=True,
     )
     track_inventory_by_default = graphene.Boolean(
@@ -265,7 +263,6 @@ class Shop(graphene.ObjectType):
         description=(
             "Default number of minutes stock will be reserved for "
             "anonymous checkout or null when stock reservation is disabled."
-            + ADDED_IN_31
         ),
         permissions=[SitePermissions.MANAGE_SETTINGS],
     )
@@ -274,7 +271,6 @@ class Shop(graphene.ObjectType):
         description=(
             "Default number of minutes stock will be reserved for "
             "authenticated checkout or null when stock reservation is disabled."
-            + ADDED_IN_31
         ),
         permissions=[SitePermissions.MANAGE_SETTINGS],
     )
@@ -282,7 +278,7 @@ class Shop(graphene.ObjectType):
         graphene.Int,
         description=(
             "Default number of maximum line quantity in single checkout "
-            "(per single checkout line)." + ADDED_IN_31
+            "(per single checkout line)."
         ),
         permissions=[SitePermissions.MANAGE_SETTINGS],
     )
@@ -311,16 +307,14 @@ class Shop(graphene.ObjectType):
     )
     enable_account_confirmation_by_email = PermissionsField(
         graphene.Boolean,
-        description=(
-            "Determines if account confirmation by email is enabled." + ADDED_IN_314
-        ),
+        description="Determines if account confirmation by email is enabled.",
         permissions=[SitePermissions.MANAGE_SETTINGS],
     )
     allow_login_without_confirmation = PermissionsField(
         graphene.Boolean,
         description=(
             "Determines if user can login without confirmation when "
-            "`enableAccountConfrimation` is enabled." + ADDED_IN_315
+            "`enableAccountConfirmation` is enabled."
         ),
         permissions=[SitePermissions.MANAGE_SETTINGS],
     )
@@ -328,6 +322,7 @@ class Shop(graphene.ObjectType):
         LimitInfo,
         required=True,
         description="Resource limitations and current usage if any set for a shop",
+        deprecation_reason=(f"{DEPRECATED_IN_3X_FIELD}"),
         permissions=[AuthorizationFilters.AUTHENTICATED_STAFF_USER],
     )
     version = PermissionsField(
@@ -340,8 +335,22 @@ class Shop(graphene.ObjectType):
         ],
     )
     schema_version = graphene.String(
-        description="Minor Saleor API version." + ADDED_IN_35,
+        description="Minor Saleor API version.",
         required=True,
+    )
+    available_tax_apps = PermissionsField(
+        NonNullList(App),
+        description=(
+            "List of tax apps that can be assigned to the channel. "
+            "The list will be calculated by Saleor based on the apps "
+            "that are subscribed to webhooks related to tax calculations: "
+            "CHECKOUT_CALCULATE_TAXES" + ADDED_IN_319
+        ),
+        required=True,
+        permissions=[
+            AuthorizationFilters.AUTHENTICATED_STAFF_USER,
+            AppPermission.MANAGE_APPS,
+        ],
     )
 
     # deprecated
@@ -415,14 +424,16 @@ class Shop(graphene.ObjectType):
         )
 
     @staticmethod
-    def resolve_channel_currencies(_, _info):
+    def resolve_channel_currencies(_, info):
         return set(
-            channel_models.Channel.objects.values_list("currency_code", flat=True)
+            channel_models.Channel.objects.using(
+                get_database_connection_name(info.context)
+            ).values_list("currency_code", flat=True)
         )
 
     @staticmethod
-    def resolve_countries(_, _info, **kwargs):
-        return resolve_countries(**kwargs)
+    def resolve_countries(_, info, **kwargs):
+        return resolve_countries(info, **kwargs)
 
     @staticmethod
     @load_site_callback
@@ -454,8 +465,9 @@ class Shop(graphene.ObjectType):
 
     @staticmethod
     @traced_resolver
-    def resolve_permissions(_, _info):
-        permissions = get_permissions()
+    def resolve_permissions(_, info):
+        database_connection_name = get_database_connection_name(info.context)
+        permissions = get_permissions(database_connection_name=database_connection_name)
         return format_permissions_for_display(permissions)
 
     @staticmethod
@@ -494,7 +506,7 @@ class Shop(graphene.ObjectType):
 
     @staticmethod
     @traced_resolver
-    def resolve_default_country(_, _info):
+    def resolve_default_country(_, info):
         default_country_code = settings.DEFAULT_COUNTRY
         default_country_name = countries.countries.get(default_country_code)
         if default_country_name:
@@ -561,8 +573,10 @@ class Shop(graphene.ObjectType):
         return site.settings.default_digital_url_valid_days
 
     @staticmethod
-    def resolve_staff_notification_recipients(_, _info):
-        return account_models.StaffNotificationRecipient.objects.all()
+    def resolve_staff_notification_recipients(_, info):
+        return account_models.StaffNotificationRecipient.objects.using(
+            get_database_connection_name(info.context)
+        ).all()
 
     @staticmethod
     @load_site_callback
@@ -585,6 +599,10 @@ class Shop(graphene.ObjectType):
     @staticmethod
     def resolve_schema_version(_, _info):
         return schema_version
+
+    @staticmethod
+    def resolve_available_tax_apps(_, _info):
+        return get_active_tax_apps()
 
     # deprecated
 

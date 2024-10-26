@@ -15,6 +15,10 @@ class GatewayError(IOError):
     pass
 
 
+class TransactionItemIdempotencyUniqueError(Exception):
+    pass
+
+
 class CustomPaymentChoices:
     MANUAL = "manual"
 
@@ -233,6 +237,38 @@ class TransactionEventType:
         (CANCEL_REQUEST, "Represents cancel request"),
         (INFO, "Represents an info event"),
     ]
+    REFUND_RELATED_EVENT_TYPES = [
+        REFUND_SUCCESS,
+        REFUND_FAILURE,
+        REFUND_REVERSE,
+        REFUND_REQUEST,
+    ]
+
+
+FAILED_TRANSACTION_EVENTS = [
+    TransactionEventType.AUTHORIZATION_FAILURE,
+    TransactionEventType.CHARGE_FAILURE,
+    TransactionEventType.REFUND_FAILURE,
+    TransactionEventType.CANCEL_FAILURE,
+]
+
+
+OPTIONAL_PSP_REFERENCE_EVENTS = [
+    TransactionEventType.CHARGE_ACTION_REQUIRED,
+    TransactionEventType.AUTHORIZATION_ACTION_REQUIRED,
+    TransactionEventType.CHARGE_FAILURE,
+    TransactionEventType.AUTHORIZATION_FAILURE,
+    TransactionEventType.REFUND_FAILURE,
+    TransactionEventType.CHARGE_FAILURE,
+    TransactionEventType.CANCEL_FAILURE,
+]
+
+OPTIONAL_AMOUNT_EVENTS = [
+    *FAILED_TRANSACTION_EVENTS,
+    TransactionEventType.REFUND_REVERSE,
+    TransactionEventType.CHARGE_BACK,
+    TransactionEventType.INFO,
+]
 
 
 class TokenizedPaymentFlow:

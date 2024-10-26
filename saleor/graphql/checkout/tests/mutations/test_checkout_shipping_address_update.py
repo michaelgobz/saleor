@@ -1,23 +1,27 @@
 import datetime
 from unittest import mock
+from unittest.mock import patch
 
 import pytest
 from django.test import override_settings
 from django.utils import timezone
 
+from .....checkout.actions import call_checkout_info_event
 from .....checkout.error_codes import CheckoutErrorCode
 from .....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from .....checkout.models import Checkout
 from .....checkout.utils import (
     add_variant_to_checkout,
     add_voucher_to_checkout,
-    invalidate_checkout_prices,
+    invalidate_checkout,
 )
+from .....core.models import EventDelivery
 from .....plugins.base_plugin import ExcludedShippingMethod
 from .....plugins.manager import get_plugins_manager
 from .....warehouse.models import Reservation, Stock
+from .....webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
 from ....core.utils import to_global_id_or_none
-from ....tests.utils import get_graphql_content
+from ....tests.utils import assert_no_permission, get_graphql_content
 from ...mutations.utils import update_checkout_shipping_method_if_invalid
 
 MUTATION_CHECKOUT_SHIPPING_ADDRESS_UPDATE = """
@@ -91,11 +95,11 @@ MUTATION_CHECKOUT_SHIPPING_ADDRESS_WITH_METADATA_UPDATE = """
 )
 @mock.patch(
     "saleor.graphql.checkout.mutations.checkout_shipping_address_update."
-    "invalidate_checkout_prices",
-    wraps=invalidate_checkout_prices,
+    "invalidate_checkout",
+    wraps=invalidate_checkout,
 )
 def test_checkout_shipping_address_with_metadata_update(
-    mocked_invalidate_checkout_prices,
+    mocked_invalidate_checkout,
     mocked_update_shipping_method,
     user_api_client,
     checkout_with_item,
@@ -132,12 +136,13 @@ def test_checkout_shipping_address_with_metadata_update(
     assert checkout.shipping_address.postal_code == shipping_address["postalCode"]
     assert checkout.shipping_address.country == shipping_address["country"]
     assert checkout.shipping_address.city == shipping_address["city"].upper()
-    manager = get_plugins_manager()
+    assert checkout.shipping_address.validation_skipped is False
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     mocked_update_shipping_method.assert_called_once_with(checkout_info, lines)
     assert checkout.last_change != previous_last_change
-    assert mocked_invalidate_checkout_prices.call_count == 1
+    assert mocked_invalidate_checkout.call_count == 1
 
 
 @mock.patch(
@@ -156,7 +161,9 @@ def test_checkout_shipping_address_update_changes_checkout_country(
     variant = variant_with_many_stocks_different_shipping_zones
     checkout = Checkout.objects.create(channel=channel_USD, currency="USD")
     checkout.set_country("PL", commit=True)
-    checkout_info = fetch_checkout_info(checkout, [], get_plugins_manager())
+    checkout_info = fetch_checkout_info(
+        checkout, [], get_plugins_manager(allow_replica=False)
+    )
     add_variant_to_checkout(checkout_info, variant, 1)
     assert checkout.shipping_address is None
     previous_last_change = checkout.last_change
@@ -189,7 +196,7 @@ def test_checkout_shipping_address_update_changes_checkout_country(
     assert checkout.shipping_address.postal_code == shipping_address["postalCode"]
     assert checkout.shipping_address.country == shipping_address["country"]
     assert checkout.shipping_address.city == shipping_address["city"].upper()
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     mocked_update_shipping_method.assert_called_once_with(checkout_info, lines)
@@ -213,7 +220,9 @@ def test_checkout_shipping_address_update_insufficient_stocks(
     variant = variant_with_many_stocks_different_shipping_zones
     checkout = Checkout.objects.create(channel=channel_USD, currency="USD")
     checkout.set_country("PL", commit=True)
-    checkout_info = fetch_checkout_info(checkout, [], get_plugins_manager())
+    checkout_info = fetch_checkout_info(
+        checkout, [], get_plugins_manager(allow_replica=False)
+    )
     add_variant_to_checkout(checkout_info, variant, 1)
     Stock.objects.filter(
         warehouse__shipping_zones__countries__contains="US", product_variant=variant
@@ -261,7 +270,9 @@ def test_checkout_shipping_address_update_doesnt_raise_error(
     Stock.objects.filter(product_variant=variant_b).update(quantity=1)
     checkout = Checkout.objects.create(channel=channel_USD, currency="USD")
     checkout.set_country("PL", commit=True)
-    checkout_info = fetch_checkout_info(checkout, [], get_plugins_manager())
+    checkout_info = fetch_checkout_info(
+        checkout, [], get_plugins_manager(allow_replica=False)
+    )
     add_variant_to_checkout(checkout_info, variant_b, 1)
     add_variant_to_checkout(checkout_info, variant_a, 4)
     assert checkout.shipping_address is None
@@ -300,7 +311,9 @@ def test_checkout_shipping_address_update_with_reserved_stocks(
     variant = variant_with_many_stocks_different_shipping_zones
     checkout = Checkout.objects.create(channel=channel_USD, currency="USD")
     checkout.set_country("PL", commit=True)
-    checkout_info = fetch_checkout_info(checkout, [], get_plugins_manager())
+    checkout_info = fetch_checkout_info(
+        checkout, [], get_plugins_manager(allow_replica=False)
+    )
     add_variant_to_checkout(checkout_info, variant, 2)
     assert checkout.shipping_address is None
 
@@ -351,7 +364,9 @@ def test_checkout_shipping_address_update_against_reserved_stocks(
     variant = variant_with_many_stocks_different_shipping_zones
     checkout = Checkout.objects.create(channel=channel_USD, currency="USD")
     checkout.set_country("PL", commit=True)
-    checkout_info = fetch_checkout_info(checkout, [], get_plugins_manager())
+    checkout_info = fetch_checkout_info(
+        checkout, [], get_plugins_manager(allow_replica=False)
+    )
     add_variant_to_checkout(checkout_info, variant, 2)
     Stock.objects.filter(
         warehouse__shipping_zones__countries__contains="US", product_variant=variant
@@ -930,7 +945,7 @@ def test_checkout_shipping_address_update_with_not_applicable_voucher(
     code = voucher.codes.first()
     assert voucher.countries[0].code == address_other_country.country
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
     add_voucher_to_checkout(manager, checkout_info, lines, voucher, code)
@@ -979,3 +994,172 @@ def test_with_active_problems_flow(
 
     # then
     assert not content["data"]["checkoutShippingAddressUpdate"]["errors"]
+
+
+def test_checkout_shipping_address_update_with_collection_point_already_set(
+    user_api_client,
+    checkout_with_item,
+    graphql_address_data,
+    warehouse_for_cc,
+):
+    checkout = checkout_with_item
+    checkout.collection_point_id = warehouse_for_cc.id
+    checkout.save(update_fields=["collection_point_id"])
+
+    shipping_address = graphql_address_data
+    variables = {
+        "id": to_global_id_or_none(checkout),
+        "shippingAddress": shipping_address,
+    }
+
+    response = user_api_client.post_graphql(
+        MUTATION_CHECKOUT_SHIPPING_ADDRESS_UPDATE, variables
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["checkoutShippingAddressUpdate"]
+    errors = data["errors"]
+    assert errors[0]["code"] == CheckoutErrorCode.SHIPPING_CHANGE_FORBIDDEN.name
+    assert errors[0]["field"] == "shippingAddress"
+
+
+def test_checkout_shipping_address_skip_validation_by_customer(
+    checkout_with_items, user_api_client, graphql_address_data_skipped_validation
+):
+    # given
+    address_data = graphql_address_data_skipped_validation
+    invalid_postal_code = "invalid_postal_code"
+    address_data["postalCode"] = invalid_postal_code
+
+    variables = {
+        "id": to_global_id_or_none(checkout_with_items),
+        "shippingAddress": address_data,
+    }
+
+    # when
+    response = user_api_client.post_graphql(
+        MUTATION_CHECKOUT_SHIPPING_ADDRESS_UPDATE, variables
+    )
+
+    # then
+    assert_no_permission(response)
+
+
+def test_checkout_shipping_address_skip_validation_by_app(
+    checkout_with_items,
+    app_api_client,
+    graphql_address_data_skipped_validation,
+    permission_handle_checkouts,
+):
+    # given
+    checkout = checkout_with_items
+    address_data = graphql_address_data_skipped_validation
+    invalid_postal_code = "invalid_postal_code"
+    address_data["postalCode"] = invalid_postal_code
+
+    variables = {
+        "id": to_global_id_or_none(checkout_with_items),
+        "shippingAddress": address_data,
+    }
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_CHECKOUT_SHIPPING_ADDRESS_UPDATE,
+        variables,
+        permissions=[permission_handle_checkouts],
+    )
+    content = get_graphql_content(response)
+
+    # then
+    data = content["data"]["checkoutShippingAddressUpdate"]
+    assert not data["errors"]
+    checkout.refresh_from_db()
+    assert checkout.shipping_address.postal_code == invalid_postal_code
+    assert checkout.shipping_address.validation_skipped is True
+
+
+@patch(
+    "saleor.graphql.checkout.mutations.checkout_shipping_address_update.call_checkout_info_event",
+    wraps=call_checkout_info_event,
+)
+@patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
+@patch(
+    "saleor.webhook.transport.asynchronous.transport.send_webhook_request_async.apply_async"
+)
+@override_settings(PLUGINS=["saleor.plugins.webhook.plugin.WebhookPlugin"])
+def test_checkout_shipping_address_update_triggers_webhooks(
+    mocked_send_webhook_request_async,
+    mocked_send_webhook_request_sync,
+    wrapped_call_checkout_info_event,
+    setup_checkout_webhooks,
+    settings,
+    user_api_client,
+    checkout_with_item,
+    graphql_address_data,
+):
+    # given
+    mocked_send_webhook_request_sync.return_value = []
+    (
+        tax_webhook,
+        shipping_webhook,
+        shipping_filter_webhook,
+        checkout_updated_webhook,
+    ) = setup_checkout_webhooks(WebhookEventAsyncType.CHECKOUT_UPDATED)
+
+    checkout = checkout_with_item
+    assert checkout.shipping_address is None
+
+    variables = {
+        "id": to_global_id_or_none(checkout),
+        "shippingAddress": graphql_address_data,
+    }
+
+    # when
+    response = user_api_client.post_graphql(
+        MUTATION_CHECKOUT_SHIPPING_ADDRESS_UPDATE, variables
+    )
+
+    # then
+    content = get_graphql_content(response)
+    assert not content["data"]["checkoutShippingAddressUpdate"]["errors"]
+
+    assert wrapped_call_checkout_info_event.called
+
+    # confirm that event delivery was generated for each async webhook.
+    checkout_update_delivery = EventDelivery.objects.get(
+        webhook_id=checkout_updated_webhook.id
+    )
+    mocked_send_webhook_request_async.assert_called_once_with(
+        kwargs={"event_delivery_id": checkout_update_delivery.id},
+        queue=settings.CHECKOUT_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
+        bind=True,
+        retry_backoff=10,
+        retry_kwargs={"max_retries": 5},
+    )
+
+    # confirm each sync webhook was called without saving event delivery
+    assert mocked_send_webhook_request_sync.call_count == 3
+    assert not EventDelivery.objects.exclude(
+        webhook_id=checkout_updated_webhook.id
+    ).exists()
+
+    shipping_methods_call, filter_shipping_call, tax_delivery_call = (
+        mocked_send_webhook_request_sync.mock_calls
+    )
+    shipping_methods_delivery = shipping_methods_call.args[0]
+    assert shipping_methods_delivery.webhook_id == shipping_webhook.id
+    assert (
+        shipping_methods_delivery.event_type
+        == WebhookEventSyncType.SHIPPING_LIST_METHODS_FOR_CHECKOUT
+    )
+    assert shipping_methods_call.kwargs["timeout"] == settings.WEBHOOK_SYNC_TIMEOUT
+
+    filter_shipping_delivery = filter_shipping_call.args[0]
+    assert filter_shipping_delivery.webhook_id == shipping_filter_webhook.id
+    assert (
+        filter_shipping_delivery.event_type
+        == WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS
+    )
+    assert filter_shipping_call.kwargs["timeout"] == settings.WEBHOOK_SYNC_TIMEOUT
+
+    tax_delivery = tax_delivery_call.args[0]
+    assert tax_delivery.webhook_id == tax_webhook.id

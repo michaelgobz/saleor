@@ -1,8 +1,8 @@
 from collections import defaultdict
+from typing import Optional
 
 import graphene
 from django.core.exceptions import ValidationError
-from django.db.models import Exists, OuterRef
 
 from ....account.models import User
 from ....checkout import AddressType
@@ -10,7 +10,14 @@ from ....core.taxes import TaxError
 from ....core.tracing import traced_atomic_transaction
 from ....core.utils.url import validate_storefront_url
 from ....discount.models import Voucher, VoucherCode
+from ....discount.utils.voucher import (
+    get_active_voucher_code,
+    get_voucher_code_instance,
+    increase_voucher_usage,
+    release_voucher_code_usage,
+)
 from ....order import OrderOrigin, OrderStatus, events, models
+from ....order.actions import call_order_event
 from ....order.error_codes import OrderErrorCode
 from ....order.search import update_order_search_vector
 from ....order.utils import (
@@ -21,6 +28,7 @@ from ....order.utils import (
 )
 from ....permission.enums import OrderPermissions
 from ....shipping.utils import convert_to_shipping_method_data
+from ....webhook.event_types import WebhookEventAsyncType
 from ...account.i18n import I18nMixin
 from ...account.mixins import AddressMetadataMixin
 from ...account.types import AddressInput
@@ -28,12 +36,8 @@ from ...app.dataloaders import get_app_promise
 from ...channel.types import Channel
 from ...core import ResolveInfo
 from ...core.descriptions import (
-    ADDED_IN_36,
-    ADDED_IN_310,
-    ADDED_IN_314,
     ADDED_IN_318,
     DEPRECATED_IN_3X_FIELD,
-    PREVIEW_FEATURE,
 )
 from ...core.doc_category import DOC_CATEGORY_ORDERS
 from ...core.mutations import ModelWithRestrictedChannelAccessMutation
@@ -74,7 +78,7 @@ class OrderLineCreateInput(OrderLineInput):
         default_value=False,
         description=(
             "Flag that allow force splitting the same variant into multiple lines "
-            "by skipping the matching logic. " + ADDED_IN_36
+            "by skipping the matching logic. "
         ),
     )
     price = PositiveDecimal(
@@ -83,8 +87,6 @@ class OrderLineCreateInput(OrderLineInput):
             "Custom price of the item."
             "When the line with the same variant "
             "will be provided multiple times, the last price will be used."
-            + ADDED_IN_314
-            + PREVIEW_FEATURE
         ),
     )
 
@@ -124,7 +126,7 @@ class DraftOrderInput(BaseInputObjectType):
         ),
     )
     external_reference = graphene.String(
-        description="External ID of this order." + ADDED_IN_310, required=False
+        description="External ID of this order.", required=False
     )
 
     class Meta:
@@ -192,7 +194,8 @@ class DraftOrderCreate(
         shipping_method_input = {}
         if "shipping_method" in data:
             shipping_method_input["shipping_method"] = get_shipping_model_by_object_id(
-                object_id=data.pop("shipping_method", None), raise_error=False
+                object_id=data.pop("shipping_method", None),
+                error_field="shipping_method",
             )
 
         if email := data.get("user_email", None):
@@ -209,9 +212,9 @@ class DraftOrderCreate(
         voucher = cleaned_input.get("voucher", None)
         voucher_code = cleaned_input.get("voucher_code", None)
         cls.clean_voucher_and_voucher_code(voucher, voucher_code)
-        if voucher:
+        if "voucher" in cleaned_input:
             cls.clean_voucher(voucher, channel, cleaned_input)
-        if voucher_code:
+        elif "voucher_code" in cleaned_input:
             cls.clean_voucher_code(voucher_code, channel, cleaned_input)
 
         if channel:
@@ -244,60 +247,10 @@ class DraftOrderCreate(
                         )
                     }
                 )
-            else:
-                channel = cls.get_node_or_error(info, channel_id, only_type=Channel)
-                cleaned_input["channel"] = channel
-                return channel
-
-        else:
-            return instance.channel if hasattr(instance, "channel") else None
-
-    @classmethod
-    def clean_voucher(cls, voucher, channel, cleaned_input):
-        if not voucher.channel_listings.filter(channel=channel).exists():
-            raise ValidationError(
-                {
-                    "voucher": ValidationError(
-                        "Voucher not available for this order.",
-                        code=OrderErrorCode.NOT_AVAILABLE_IN_CHANNEL.value,
-                    )
-                }
-            )
-        first_code = voucher.codes.first()
-        if first_code:
-            cleaned_input["voucher_code"] = first_code.code
-
-    @classmethod
-    def clean_voucher_code(
-        cls, voucher_code: str, channel: Channel, cleaned_input: dict
-    ):
-        voucher = Voucher.objects.filter(
-            Exists(
-                VoucherCode.objects.filter(code=voucher_code, voucher_id=OuterRef("pk"))
-            )
-        ).first()
-
-        if not voucher:
-            raise ValidationError(
-                {
-                    "voucher": ValidationError(
-                        "Invalid voucher code.",
-                        code=OrderErrorCode.INVALID_VOUCHER_CODE.value,
-                    )
-                }
-            )
-        else:
-            if not voucher.channel_listings.filter(channel=channel).exists():
-                raise ValidationError(
-                    {
-                        "voucher": ValidationError(
-                            "Voucher not available for this order.",
-                            code=OrderErrorCode.NOT_AVAILABLE_IN_CHANNEL.value,
-                        )
-                    }
-                )
-            cleaned_input["voucher"] = voucher
-            cleaned_input["voucher_code"] = voucher_code
+            channel = cls.get_node_or_error(info, channel_id, only_type=Channel)
+            cleaned_input["channel"] = channel
+            return channel
+        return instance.channel if hasattr(instance, "channel") else None
 
     @classmethod
     def clean_voucher_and_voucher_code(cls, voucher, voucher_code):
@@ -308,6 +261,97 @@ class DraftOrderCreate(
                         "You cannot use both a voucher and a voucher code for the same "
                         "order. Please choose one.",
                         code=OrderErrorCode.INVALID.value,
+                    )
+                }
+            )
+
+    @classmethod
+    def clean_voucher(cls, voucher, channel, cleaned_input):
+        # We need to clean voucher_code as well
+        if voucher is None:
+            cleaned_input["voucher_code"] = None
+            return
+
+        if isinstance(voucher, VoucherCode):
+            raise ValidationError(
+                {
+                    "voucher": ValidationError(
+                        "You cannot use voucherCode in the voucher input. "
+                        "Please use voucherCode input instead with a valid voucher code.",
+                        code=OrderErrorCode.INVALID_VOUCHER.value,
+                    )
+                }
+            )
+
+        code_instance = None
+        if channel.include_draft_order_in_voucher_usage:
+            # Validate voucher when it's included in voucher usage calculation
+            try:
+                code_instance = get_active_voucher_code(voucher, channel.slug)
+            except ValidationError as e:
+                raise ValidationError(
+                    {
+                        "voucher": ValidationError(
+                            "Voucher is invalid.",
+                            code=OrderErrorCode.INVALID_VOUCHER.value,
+                        )
+                    }
+                ) from e
+        else:
+            cls.clean_voucher_listing(voucher, channel, "voucher")
+        if not code_instance:
+            code_instance = voucher.codes.first()
+        if code_instance:
+            cleaned_input["voucher_code"] = code_instance.code
+            cleaned_input["voucher_code_instance"] = code_instance
+
+    @classmethod
+    def clean_voucher_code(
+        cls, voucher_code: Optional[str], channel: Channel, cleaned_input: dict
+    ):
+        # We need to clean voucher instance as well
+        if voucher_code is None:
+            cleaned_input["voucher"] = None
+            return
+        if channel.include_draft_order_in_voucher_usage:
+            # Validate voucher when it's included in voucher usage calculation
+            try:
+                code_instance = get_voucher_code_instance(voucher_code, channel.slug)
+            except ValidationError as e:
+                raise ValidationError(
+                    {
+                        "voucher_code": ValidationError(
+                            "Voucher code is invalid.",
+                            code=OrderErrorCode.INVALID_VOUCHER_CODE.value,
+                        )
+                    }
+                ) from e
+            voucher = code_instance.voucher
+        else:
+            code_instance = VoucherCode.objects.filter(code=voucher_code).first()
+            if not code_instance:
+                raise ValidationError(
+                    {
+                        "voucher": ValidationError(
+                            "Invalid voucher code.",
+                            code=OrderErrorCode.INVALID_VOUCHER_CODE.value,
+                        )
+                    }
+                )
+            voucher = code_instance.voucher
+            cls.clean_voucher_listing(voucher, channel, "voucher_code")
+        cleaned_input["voucher"] = voucher
+        cleaned_input["voucher_code"] = voucher_code
+        cleaned_input["voucher_code_instance"] = code_instance
+
+    @classmethod
+    def clean_voucher_listing(cls, voucher: "Voucher", channel: "Channel", field: str):
+        if not voucher.channel_listings.filter(channel=channel).exists():
+            raise ValidationError(
+                {
+                    field: ValidationError(
+                        "Voucher not available for this order.",
+                        code=OrderErrorCode.NOT_AVAILABLE_IN_CHANNEL.value,
                     )
                 }
             )
@@ -401,9 +445,9 @@ class DraftOrderCreate(
     def clean_redirect_url(cls, redirect_url):
         try:
             validate_storefront_url(redirect_url)
-        except ValidationError as error:
-            error.code = OrderErrorCode.INVALID.value
-            raise ValidationError({"redirect_url": error})
+        except ValidationError as e:
+            e.code = OrderErrorCode.INVALID.value
+            raise ValidationError({"redirect_url": e}) from e
 
     @staticmethod
     def _save_addresses(instance: models.Order, cleaned_input):
@@ -449,7 +493,7 @@ class DraftOrderCreate(
             )
 
     @classmethod
-    def should_invalidate_prices(cls, instance, cleaned_input, is_new_instance) -> bool:
+    def should_invalidate_prices(cls, cleaned_input, is_new_instance) -> bool:
         # Force price recalculation for all new instances
         return is_new_instance
 
@@ -476,6 +520,8 @@ class DraftOrderCreate(
         is_new_instance,
         app,
         manager,
+        old_voucher=None,
+        old_voucher_code=None,
     ):
         updated_fields = []
         with traced_atomic_transaction():
@@ -488,11 +534,11 @@ class DraftOrderCreate(
                 cls._save_lines(
                     info, instance, cleaned_input.get("lines_data"), app, manager
                 )
-            except TaxError as tax_error:
+            except TaxError as e:
                 raise ValidationError(
-                    f"Unable to calculate taxes - {str(tax_error)}",
+                    f"Unable to calculate taxes - {str(e)}",
                     code=OrderErrorCode.TAX_ERROR.value,
-                )
+                ) from e
 
             if "shipping_method" in cleaned_input:
                 method = cleaned_input["shipping_method"]
@@ -510,16 +556,25 @@ class DraftOrderCreate(
                     cls._update_shipping_price(instance, shipping_channel_listing)
                 updated_fields.extend(SHIPPING_METHOD_UPDATE_FIELDS)
 
+            if instance.undiscounted_base_shipping_price_amount is None:
+                instance.undiscounted_base_shipping_price_amount = (
+                    instance.base_shipping_price_amount
+                )
+                updated_fields.append("undiscounted_base_shipping_price_amount")
+
+            if "voucher" in cleaned_input:
+                cls.handle_order_voucher(
+                    cleaned_input,
+                    instance,
+                    is_new_instance,
+                    old_voucher,
+                    old_voucher_code,
+                )
+
             # Save any changes create/update the draft
             cls._commit_changes(info, instance, cleaned_input, is_new_instance, app)
 
             update_order_display_gross_prices(instance)
-
-            if is_new_instance:
-                cls.call_event(manager.draft_order_created, instance)
-
-            else:
-                cls.call_event(manager.draft_order_updated, instance)
 
             # Post-process the results
             updated_fields.extend(
@@ -530,10 +585,44 @@ class DraftOrderCreate(
                     "display_gross_prices",
                 ]
             )
-            if cls.should_invalidate_prices(instance, cleaned_input, is_new_instance):
+            if cls.should_invalidate_prices(cleaned_input, is_new_instance):
                 invalidate_order_prices(instance)
                 updated_fields.extend(["should_refresh_prices"])
             recalculate_order_weight(instance)
             update_order_search_vector(instance, save=False)
 
             instance.save(update_fields=updated_fields)
+            if is_new_instance:
+                call_order_event(
+                    manager,
+                    WebhookEventAsyncType.DRAFT_ORDER_CREATED,
+                    instance,
+                )
+            else:
+                call_order_event(
+                    manager,
+                    WebhookEventAsyncType.DRAFT_ORDER_UPDATED,
+                    instance,
+                )
+
+    @classmethod
+    def handle_order_voucher(
+        cls, cleaned_input, instance, is_new_instance, old_voucher, old_voucher_code
+    ):
+        user_email = instance.user_email or instance.user and instance.user.email
+        channel = instance.channel
+        if not channel.include_draft_order_in_voucher_usage:
+            return
+
+        if voucher := cleaned_input["voucher"]:
+            code_instance = cleaned_input.pop("voucher_code_instance", None)
+            increase_voucher_usage(
+                voucher,
+                code_instance,
+                user_email,
+                increase_voucher_customer_usage=False,
+            )
+        elif not is_new_instance and old_voucher:
+            # handle removing voucher
+            voucher_code = VoucherCode.objects.filter(code=old_voucher_code).first()
+            release_voucher_code_usage(voucher_code, old_voucher, user_email)

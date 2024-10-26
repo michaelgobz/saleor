@@ -1,6 +1,6 @@
 from collections import defaultdict
 from collections.abc import Iterable
-from typing import Optional, cast
+from typing import Generic, Optional, TypeVar, cast
 
 from ...account.models import Address, CustomerEvent, Group, User
 from ...channel.models import Channel
@@ -10,7 +10,7 @@ from ...thumbnail.utils import get_thumbnail_format
 from ..core.dataloaders import DataLoader
 
 
-class AddressByIdLoader(DataLoader):
+class AddressByIdLoader(DataLoader[int, Address]):
     context_key = "address_by_id"
 
     def batch_load(self, keys):
@@ -18,7 +18,7 @@ class AddressByIdLoader(DataLoader):
         return [address_map.get(address_id) for address_id in keys]
 
 
-class UserByUserIdLoader(DataLoader):
+class UserByUserIdLoader(DataLoader[str, User]):
     context_key = "user_by_id"
 
     def batch_load(self, keys):
@@ -26,7 +26,7 @@ class UserByUserIdLoader(DataLoader):
         return [user_map.get(user_id) for user_id in keys]
 
 
-class CustomerEventsByUserLoader(DataLoader):
+class CustomerEventsByUserLoader(DataLoader[str, list[CustomerEvent]]):
     context_key = "customer_events_by_user"
 
     def batch_load(self, keys):
@@ -60,7 +60,7 @@ class ThumbnailByUserIdSizeAndFormatLoader(
         return [thumbnails_by_user_size_and_format_map.get(key) for key in keys]
 
 
-class UserByEmailLoader(DataLoader):
+class UserByEmailLoader(DataLoader[str, User]):
     context_key = "user_by_email"
 
     def batch_load(self, keys):
@@ -72,7 +72,7 @@ class UserByEmailLoader(DataLoader):
         return [user_map.get(email) for email in keys]
 
 
-class PermissionByCodenameLoader(DataLoader):
+class PermissionByCodenameLoader(DataLoader[str, Permission]):
     context_key = "permission_by_codename"
 
     def batch_load(self, keys):
@@ -84,7 +84,10 @@ class PermissionByCodenameLoader(DataLoader):
         return [permission_map.get(codename) for codename in keys]
 
 
-class BaseAccessibleChannels(DataLoader):
+K = TypeVar("K")
+
+
+class BaseAccessibleChannels(DataLoader[K, list[Channel]], Generic[K]):
     def get_group_to_channels_map(self, group_ids):
         groups_with_no_channel_restriction = Group.objects.using(
             self.database_connection_name
@@ -93,7 +96,7 @@ class BaseAccessibleChannels(DataLoader):
             self.database_connection_name
         ).filter(id__in=group_ids, restricted_access_to_channels=True)
 
-        group_to_channels: defaultdict[int, list["Channel"]] = defaultdict(list)
+        group_to_channels: defaultdict[int, list[Channel]] = defaultdict(list)
         if groups_with_channel_restriction:
             group_to_channels = self.get_group_channels(
                 groups_with_channel_restriction.values("id"),
@@ -126,7 +129,7 @@ class BaseAccessibleChannels(DataLoader):
         return group_to_channels
 
 
-class AccessibleChannelsByGroupIdLoader(BaseAccessibleChannels):
+class AccessibleChannelsByGroupIdLoader(BaseAccessibleChannels[int]):
     context_key = "accessiblechannels_by_group"
 
     def batch_load(self, keys):
@@ -134,7 +137,7 @@ class AccessibleChannelsByGroupIdLoader(BaseAccessibleChannels):
         return [group_to_channels.get(group_id, []) for group_id in keys]
 
 
-class AccessibleChannelsByUserIdLoader(BaseAccessibleChannels):
+class AccessibleChannelsByUserIdLoader(BaseAccessibleChannels[str]):
     context_key = "accessiblechannels_by_user"
 
     def batch_load(self, keys):
@@ -150,14 +153,14 @@ class AccessibleChannelsByUserIdLoader(BaseAccessibleChannels):
             groups.values_list("id", flat=True)
         )
 
-        user_to_channels: defaultdict[int, set["Channel"]] = defaultdict(set)
+        user_to_channels: defaultdict[int, set[Channel]] = defaultdict(set)
         for user_id, group_id in user_groups.values_list("user_id", "group_id"):
             user_to_channels[user_id].update(group_to_channels[group_id])
 
         return [list(user_to_channels[user_id]) for user_id in keys]
 
 
-class RestrictedChannelAccessByUserIdLoader(DataLoader):
+class RestrictedChannelAccessByUserIdLoader(DataLoader[int, bool]):
     context_key = "restrictedchannelaccess_by_user"
 
     def batch_load(self, keys):
@@ -169,12 +172,9 @@ class RestrictedChannelAccessByUserIdLoader(DataLoader):
             id__in=user_groups.values("group_id")
         )
 
-        group_id_to_restricted_access = {
-            group_id: restricted_access
-            for group_id, restricted_access in groups.values_list(
-                "id", "restricted_access_to_channels"
-            )
-        }
+        group_id_to_restricted_access = dict(
+            groups.values_list("id", "restricted_access_to_channels")
+        )
 
         user_to_restricted_access: defaultdict[int, bool] = defaultdict(lambda: True)
         for user_id, group_id in user_groups.values_list("user_id", "group_id"):

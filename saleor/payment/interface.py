@@ -1,5 +1,5 @@
+import datetime
 from dataclasses import InitVar, dataclass, field
-from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from functools import cached_property
@@ -122,7 +122,7 @@ class TransactionRequestEventResponse:
     psp_reference: Optional[str]
     type: str
     amount: Decimal
-    time: Optional[datetime] = None
+    time: Optional[datetime.datetime] = None
     external_url: Optional[str] = ""
     message: Optional[str] = ""
 
@@ -164,6 +164,7 @@ class TransactionSessionData:
     action: TransactionProcessActionData
     payment_gateway_data: PaymentGatewayData
     customer_ip_address: Optional[str]
+    idempotency_key: Optional[str] = None
 
 
 @dataclass
@@ -316,6 +317,7 @@ class AddressData:
     phone: str
     metadata: Optional[dict]
     private_metadata: Optional[dict]
+    validation_skipped: bool = False
 
 
 class StorePaymentMethodEnum(str, Enum):

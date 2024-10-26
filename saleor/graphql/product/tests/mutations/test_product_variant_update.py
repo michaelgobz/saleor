@@ -1,11 +1,10 @@
+import datetime
 import json
-from datetime import datetime, timedelta
 from unittest.mock import ANY, patch
 from uuid import uuid4
 
 import graphene
 import pytest
-import pytz
 from django.conf import settings
 from django.utils.text import slugify
 
@@ -13,7 +12,6 @@ from .....attribute import AttributeInputType
 from .....attribute.models import AttributeValue
 from .....attribute.utils import associate_attribute_values_to_instance
 from .....product.error_codes import ProductErrorCode
-from .....tests.utils import flush_post_commit_hooks
 from ....tests.utils import get_graphql_content
 
 
@@ -154,7 +152,6 @@ def test_update_product_variant_by_id(
     )
     variant.refresh_from_db()
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
     data = content["data"]["productVariantUpdate"]["productVariant"]
 
     assert data["name"] == variant.name
@@ -165,6 +162,50 @@ def test_update_product_variant_by_id(
         product.variants.last()
     )
     product_variant_created_webhook_mock.assert_not_called()
+
+
+def test_update_product_variant_marks_prices_as_dirty(
+    staff_api_client,
+    product,
+    size_attribute,
+    permission_manage_products,
+    catalogue_promotion,
+):
+    # given
+    query = """
+        mutation updateVariant (
+            $id: ID!
+            $sku: String!) {
+                productVariantUpdate(
+                    id: $id,
+                    input: {
+                        sku: $sku,
+                    }) {
+                    productVariant {
+                        name
+                        sku
+                    }
+                }
+            }
+    """
+    variant = product.variants.first()
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+    sku = "test sku"
+
+    variables = {
+        "id": variant_id,
+        "sku": sku,
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    variant.refresh_from_db()
+    get_graphql_content(response)
+    assert not catalogue_promotion.rules.filter(variants_dirty=False).exists()
 
 
 UPDATE_VARIANT_BY_SKU = """
@@ -233,9 +274,9 @@ def test_update_product_variant_by_sku(
     response = staff_api_client.post_graphql(
         UPDATE_VARIANT_BY_SKU, variables, permissions=[permission_manage_products]
     )
+
     variant.refresh_from_db()
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
     data = content["data"]["productVariantUpdate"]["productVariant"]
 
     # then
@@ -275,7 +316,6 @@ def test_update_product_variant_by_sku_return_error_when_sku_dont_exists(
     )
     variant.refresh_from_db()
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
     data = content["data"]["productVariantUpdate"]
 
     # then
@@ -337,7 +377,6 @@ def test_update_product_variant_by_external_reference(
     )
     variant.refresh_from_db()
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
     data = content["data"]["productVariantUpdate"]
 
     # then
@@ -878,7 +917,8 @@ def test_update_variant_with_boolean_attribute(
     }
 
     associate_attribute_values_to_instance(
-        variant, boolean_attribute, boolean_attribute.values.first()
+        variant,
+        {boolean_attribute.id: [boolean_attribute.values.first()]},
     )
 
     response = staff_api_client.post_graphql(
@@ -1113,7 +1153,7 @@ def test_update_variant_with_rich_text_attribute(
     rich_text_attribute_value.save()
     values_count = rich_text_attribute.values.count()
     associate_attribute_values_to_instance(
-        variant, rich_text_attribute, rich_text_attribute.values.first()
+        variant, {rich_text_attribute.id: [rich_text_attribute_value]}
     )
 
     response = staff_api_client.post_graphql(
@@ -1161,7 +1201,7 @@ def test_update_variant_with_plain_text_attribute(
     plain_text_attribute_value.save()
     values_count = plain_text_attribute.values.count()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, plain_text_attribute.values.first()
+        variant, {plain_text_attribute.id: [plain_text_attribute_value]}
     )
 
     # when
@@ -1216,7 +1256,7 @@ def test_update_variant_with_plain_text_attribute_value_required(
 
     values_count = plain_text_attribute.values.count()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, plain_text_attribute.values.first()
+        variant, {plain_text_attribute.id: [plain_text_attribute_value]}
     )
 
     # when
@@ -1259,7 +1299,7 @@ def test_update_variant_with_required_plain_text_attribute_no_value(
     plain_text_attribute_value.save()
 
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, plain_text_attribute.values.first()
+        variant, {plain_text_attribute.id: [plain_text_attribute_value]}
     )
 
     plain_text_attribute.value_required = True
@@ -1307,7 +1347,7 @@ def test_update_variant_with_date_attribute(
     variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
     sku = "123"
     date_attribute_id = graphene.Node.to_global_id("Attribute", date_attribute.id)
-    date_time_value = datetime(2025, 5, 5, 5, 5, 5, tzinfo=pytz.utc)
+    date_time_value = datetime.datetime(2025, 5, 5, 5, 5, 5, tzinfo=datetime.UTC)
     date_value = date_time_value.date()
     date_values_count = date_attribute.values.count()
 
@@ -1370,7 +1410,7 @@ def test_update_variant_with_date_time_attribute(
     date_time_attribute_id = graphene.Node.to_global_id(
         "Attribute", date_time_attribute.id
     )
-    date_time_value = datetime(2025, 5, 5, 5, 5, 5, tzinfo=pytz.utc)
+    date_time_value = datetime.datetime(2025, 5, 5, 5, 5, 5, tzinfo=datetime.UTC)
     date_time_values_count = date_time_attribute.values.count()
 
     variables = {
@@ -1439,7 +1479,9 @@ def test_update_variant_with_numeric_attribute(
     attribute_value.slug = f"{variant.id}_{numeric_attribute.id}"
     attribute_value.save()
     values_count = numeric_attribute.values.count()
-    associate_attribute_values_to_instance(variant, numeric_attribute, attribute_value)
+    associate_attribute_values_to_instance(
+        variant, {numeric_attribute.id: [attribute_value]}
+    )
 
     response = staff_api_client.post_graphql(
         query, variables, permissions=[permission_manage_products]
@@ -1557,10 +1599,11 @@ def test_update_product_variant_with_duplicated_attribute(
     variant2.sku = str(uuid4())[:12]
     variant2.save()
     associate_attribute_values_to_instance(
-        variant2, color_attribute, color_attribute.values.last()
-    )
-    associate_attribute_values_to_instance(
-        variant2, size_attribute, size_attribute.values.last()
+        variant2,
+        {
+            color_attribute.id: [color_attribute.values.last()],
+            size_attribute.id: [size_attribute.values.last()],
+        },
     )
 
     assert variant.attributes.first().values.first().slug == "red"
@@ -1660,7 +1703,9 @@ def test_update_product_variant_with_duplicated_file_attribute(
     variant2.sku = str(uuid4())[:12]
     variant2.save()
     file_attr_value = file_attribute.values.last()
-    associate_attribute_values_to_instance(variant2, file_attribute, file_attr_value)
+    associate_attribute_values_to_instance(
+        variant2, {file_attribute.id: [file_attr_value]}
+    )
 
     sku = str(uuid4())[:12]
     assert not variant.sku == sku
@@ -1952,10 +1997,13 @@ def test_update_product_variant_change_attribute_values_ordering(
 
     associate_attribute_values_to_instance(
         variant,
-        product_type_product_reference_attribute,
-        attr_value_3,
-        attr_value_2,
-        attr_value_1,
+        {
+            product_type_product_reference_attribute.id: [
+                attr_value_3,
+                attr_value_2,
+                attr_value_1,
+            ]
+        },
     )
 
     assert list(
@@ -2215,7 +2263,7 @@ def test_update_product_variant_change_preorder_data(
     new_global_threshold = variant.preorder_global_threshold + 5
     assert variant.preorder_end_date is None
     new_preorder_end_date = (
-        (datetime.now() + timedelta(days=3))
+        (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=3))
         .astimezone()
         .replace(microsecond=0)
         .isoformat()
@@ -2236,7 +2284,6 @@ def test_update_product_variant_change_preorder_data(
     )
     variant.refresh_from_db()
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
     data = content["data"]["productVariantUpdate"]["productVariant"]
 
     assert data["sku"] == sku
@@ -2263,7 +2310,6 @@ def test_update_product_variant_can_not_turn_off_preorder(
     )
     variant.refresh_from_db()
     content = get_graphql_content(response)
-    flush_post_commit_hooks()
     data = content["data"]["productVariantUpdate"]["productVariant"]
 
     assert data["sku"] == sku

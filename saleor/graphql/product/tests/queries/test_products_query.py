@@ -1,10 +1,11 @@
-from datetime import datetime
+import datetime
 from decimal import Decimal
 
 import graphene
 import pytest
 from django.utils.dateparse import parse_datetime
 
+from .....attribute.tests.model_helpers import get_product_attributes
 from .....core.postgres import FlatConcatSearchVector
 from .....product.models import (
     Product,
@@ -561,12 +562,12 @@ SORT_PRODUCTS_QUERY = """
 
 
 def test_sort_products(user_api_client, product, channel_USD):
-    product.updated_at = datetime.utcnow()
+    product.updated_at = datetime.datetime.now(tz=datetime.UTC)
     product.save()
 
     product.pk = None
     product.slug = "second-product"
-    product.updated_at = datetime.utcnow()
+    product.updated_at = datetime.datetime.now(tz=datetime.UTC)
     product.save()
     ProductChannelListing.objects.create(
         product=product,
@@ -585,7 +586,7 @@ def test_sort_products(user_api_client, product, channel_USD):
     )
     product.pk = None
     product.slug = "third-product"
-    product.updated_at = datetime.utcnow()
+    product.updated_at = datetime.datetime.now(tz=datetime.UTC)
     product.save()
     ProductChannelListing.objects.create(
         product=product,
@@ -671,13 +672,13 @@ def test_sort_products(user_api_client, product, channel_USD):
 def test_sort_products_by_price_as_staff(
     staff_api_client, product, channel_USD, permission_manage_products
 ):
-    product.updated_at = datetime.utcnow()
+    product.updated_at = datetime.datetime.now(tz=datetime.UTC)
     product.save()
     staff_api_client.user.user_permissions.add(permission_manage_products)
 
     product.pk = None
     product.slug = "second-product"
-    product.updated_at = datetime.utcnow()
+    product.updated_at = datetime.datetime.now(tz=datetime.UTC)
     product.save()
     ProductChannelListing.objects.create(
         product=product,
@@ -696,7 +697,7 @@ def test_sort_products_by_price_as_staff(
     )
     product.pk = None
     product.slug = "third-product"
-    product.updated_at = datetime.utcnow()
+    product.updated_at = datetime.datetime.now(tz=datetime.UTC)
     product.save()
     ProductChannelListing.objects.create(
         product=product,
@@ -1190,7 +1191,7 @@ def test_products_with_variants_query_as_app(
         }
     """
     product = product_with_multiple_values_attributes
-    attribute = product.attributes.first().attribute
+    attribute = get_product_attributes(product).first()
     attribute.visible_in_storefront = False
     attribute.save()
     second_product = product

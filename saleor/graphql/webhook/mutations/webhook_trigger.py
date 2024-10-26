@@ -1,20 +1,22 @@
 import graphene
 from celery.exceptions import Retry
+from django.db.models import Exists, OuterRef
 from graphene.utils.str_converters import to_camel_case
 
+from ....app.models import App
 from ....core import EventDeliveryStatus
 from ....discount import models as discount_models
 from ....permission.auth_filters import AuthorizationFilters
 from ....webhook.error_codes import WebhookTriggerErrorCode
 from ....webhook.event_types import WebhookEventAsyncType
+from ....webhook.models import Webhook
 from ...core import ResolveInfo
-from ...core.descriptions import ADDED_IN_311, PREVIEW_FEATURE
 from ...core.doc_category import DOC_CATEGORY_WEBHOOKS
 from ...core.mutations import BaseMutation
 from ...core.types.common import WebhookTriggerError
 from ...core.utils import from_global_id_or_error, raise_validation_error
 from ..subscription_query import SubscriptionQuery
-from ..subscription_types import WEBHOOK_TYPES_MAP
+from ..subscription_types import ASYNC_WEBHOOK_TYPES_MAP
 from ..types import EventDelivery
 
 
@@ -33,8 +35,6 @@ class WebhookTrigger(BaseMutation):
             "provided in the `webhook.subscription_query`). Requires permission "
             "relevant to processed event. Successfully delivered webhook returns "
             "`delivery` with status='PENDING' and empty payload."
-            + ADDED_IN_311
-            + PREVIEW_FEATURE
         )
         doc_category = DOC_CATEGORY_WEBHOOKS
         permissions = (AuthorizationFilters.AUTHENTICATED_STAFF_USER,)
@@ -62,10 +62,10 @@ class WebhookTrigger(BaseMutation):
 
     @classmethod
     def validate_event_type(cls, event_type, object_id):
-        event = WEBHOOK_TYPES_MAP[event_type] if event_type else None
+        event = cls._get_async_event_or_raise_error(event_type)
         model, _ = graphene.Node.from_global_id(object_id)
-        model_name = event._meta.root_type  # type: ignore[union-attr]
-        enable_dry_run = event._meta.enable_dry_run  # type: ignore[union-attr]
+        model_name = event._meta.root_type  # type: ignore[unused-ignore]
+        enable_dry_run = event._meta.enable_dry_run  # type: ignore[unused-ignore]
 
         if not (model_name or enable_dry_run) and event_type:
             event_name = event_type[0].upper() + to_camel_case(event_type)[1:]
@@ -80,6 +80,22 @@ class WebhookTrigger(BaseMutation):
                 message="ObjectId doesn't match event type.",
                 code=WebhookTriggerErrorCode.INVALID_ID,
             )
+
+    @classmethod
+    def _get_async_event_or_raise_error(cls, event_type):
+        if event := ASYNC_WEBHOOK_TYPES_MAP.get(event_type):
+            return event
+        event_name = (
+            event_type[0].upper() + to_camel_case(event_type)[1:] if event_type else ""
+        )
+        return raise_validation_error(
+            message=(
+                f"Event type: {event_name}, "
+                f"which was parsed from webhook's "
+                f"subscription query, is not supported."
+            ),
+            code=WebhookTriggerErrorCode.TYPE_NOT_SUPPORTED,
+        )
 
     @classmethod
     def validate_permissions(cls, info, event_type):
@@ -102,7 +118,12 @@ class WebhookTrigger(BaseMutation):
     def validate_input(cls, info, **data):
         object_id = data.get("object_id")
         webhook_id = data.get("webhook_id")
-        webhook = cls.get_node_or_error(info, webhook_id, field="webhookId")
+
+        apps = App.objects.filter(removed_at__isnull=True)
+        webhooks = Webhook.objects.filter(Exists(apps.filter(id=OuterRef("app_id"))))
+        webhook = cls.get_node_or_error(
+            info, webhook_id, field="webhookId", qs=webhooks
+        )
 
         event_type = cls.validate_subscription_query(webhook)
         cls.validate_event_type(event_type, object_id)
@@ -131,6 +152,12 @@ class WebhookTrigger(BaseMutation):
         delivery = None
 
         if all([event_type, object, webhook]):
+            if event_type in [
+                WebhookEventAsyncType.VOUCHER_CODES_CREATED,
+                WebhookEventAsyncType.VOUCHER_CODES_DELETED,
+            ]:
+                object = [object]
+
             deliveries = create_deliveries_for_subscriptions(
                 event_type, object, [webhook]
             )

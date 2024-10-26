@@ -1,7 +1,8 @@
-from datetime import timedelta
+import datetime
 from decimal import Decimal
 
 from django.utils import timezone
+from freezegun import freeze_time
 
 from .. import TransactionEventType
 from ..models import TransactionItem
@@ -232,7 +233,7 @@ def test_with_authorize_success_and_older_failure_events(
     )
     failure_event = events[1]
     assert failure_event.type == TransactionEventType.AUTHORIZATION_FAILURE
-    failure_event.created_at = timezone.now() - timedelta(minutes=5)
+    failure_event.created_at = timezone.now() - datetime.timedelta(minutes=5)
     failure_event.save()
 
     # when
@@ -274,7 +275,7 @@ def test_with_authorize_adjustment(
     # set the newest time for adjustment event
     adjustment_event = events[2]
     assert adjustment_event.type == TransactionEventType.AUTHORIZATION_ADJUSTMENT
-    adjustment_event.created_at = timezone.now() + timedelta(minutes=5)
+    adjustment_event.created_at = timezone.now() + datetime.timedelta(minutes=5)
     adjustment_event.save()
 
     # when
@@ -499,7 +500,7 @@ def test_with_charge_success_and_older_failure_events(
     )
     failure_event = events[1]
     assert failure_event.type == TransactionEventType.CHARGE_FAILURE
-    failure_event.created_at = timezone.now() - timedelta(minutes=5)
+    failure_event.created_at = timezone.now() - datetime.timedelta(minutes=5)
     failure_event.save()
 
     # when
@@ -760,7 +761,7 @@ def test_with_refund_success_and_older_failure_events(
     )
     failure_event = events[1]
     assert failure_event.type == TransactionEventType.REFUND_FAILURE
-    failure_event.created_at = timezone.now() - timedelta(minutes=5)
+    failure_event.created_at = timezone.now() - datetime.timedelta(minutes=5)
     failure_event.save()
 
     # when
@@ -1027,7 +1028,7 @@ def test_with_cancel_success_and_older_failure_events(
     )
     failure_event = events[1]
     assert failure_event.type == TransactionEventType.CANCEL_FAILURE
-    failure_event.created_at = timezone.now() - timedelta(minutes=5)
+    failure_event.created_at = timezone.now() - datetime.timedelta(minutes=5)
     failure_event.save()
 
     # when
@@ -1069,6 +1070,36 @@ def test_with_cancel_request_and_success_events_different_psp_references(
         transaction,
         cancel_pending_value=first_cancel_value,
         canceled_value=second_cancel_value,
+    )
+
+
+def test_with_authorization_success_and_refund_success_events(
+    transaction_item_generator, transaction_events_generator
+):
+    # given
+    transaction = transaction_item_generator()
+    authorization_value = Decimal("11.00")
+    refund_value = Decimal("11.00")
+    transaction_events_generator(
+        transaction=transaction,
+        psp_references=["1", "1"],
+        types=[
+            TransactionEventType.AUTHORIZATION_SUCCESS,
+            TransactionEventType.REFUND_SUCCESS,
+        ],
+        amounts=[authorization_value, refund_value],
+    )
+
+    # when
+    recalculate_transaction_amounts(transaction)
+
+    # then
+    transaction.refresh_from_db()
+    _assert_amounts(
+        transaction,
+        authorized_value=authorization_value,
+        refunded_value=authorization_value,
+        charged_value=-authorization_value,
     )
 
 
@@ -1604,3 +1635,32 @@ def test_skips_event_that_should_not_be_taken_into_account(
     _assert_amounts(
         transaction, authorized_value=first_value, authorize_pending_value=second_value
     )
+
+
+@freeze_time("2020-03-18 12:00:00")
+def test_recalculate_transaction_amounts_updates_transaction_modified_at(
+    transaction_item_generator, transaction_events_generator
+):
+    # given
+    transaction = transaction_item_generator()
+    authorized_value = Decimal("11.00")
+    transaction_events_generator(
+        transaction=transaction,
+        psp_references=[
+            "1",
+        ],
+        types=[
+            TransactionEventType.AUTHORIZATION_SUCCESS,
+        ],
+        amounts=[
+            authorized_value,
+        ],
+    )
+    # when
+    with freeze_time("2023-03-18 12:00:00"):
+        calculation_time = datetime.datetime.now(tz=datetime.UTC)
+        recalculate_transaction_amounts(transaction)
+
+    # then
+    transaction.refresh_from_db()
+    assert transaction.modified_at == calculation_time

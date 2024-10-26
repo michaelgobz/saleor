@@ -1,12 +1,18 @@
-from collections import namedtuple
-from typing import Optional
+import logging
+from typing import NamedTuple, Optional, Union
 
+from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
-from django.http import HttpResponseNotFound, HttpResponseRedirect
+from django.http import (
+    HttpResponseBadRequest,
+    HttpResponseNotFound,
+    HttpResponseRedirect,
+)
 from graphql.error import GraphQLError
 
 from ..account.models import User
 from ..app.models import App, AppInstallation
+from ..core.db.connection import allow_writer
 from ..core.utils.events import call_event
 from ..graphql.core.utils import from_global_id_or_error
 from ..plugins.manager import get_plugins_manager
@@ -20,7 +26,14 @@ from .utils import (
     prepare_thumbnail_file_name,
 )
 
-ModelData = namedtuple("ModelData", ["model", "image_field", "thumbnail_field"])
+logger = logging.getLogger(__name__)
+
+
+class ModelData(NamedTuple):
+    model: type[Union[App, AppInstallation, Category, Collection, ProductMedia, User]]
+    image_field: str
+    thumbnail_field: str
+
 
 ICON_TYPE_TO_MODEL_DATA_MAPPING = {
     "App": ModelData(App, "brand_logo_default", "app"),
@@ -75,16 +88,22 @@ def handle_thumbnail(
     else:
         instance_id_lookup = model_data.thumbnail_field + "_id"
 
-    if thumbnail := Thumbnail.objects.filter(
-        format=format, size=size_px, **{instance_id_lookup: pk}
-    ).first():
+    if (
+        thumbnail := Thumbnail.objects.using(settings.DATABASE_CONNECTION_REPLICA_NAME)
+        .filter(format=format, size=size_px, **{instance_id_lookup: pk})
+        .first()
+    ):
         return HttpResponseRedirect(thumbnail.image.url)
 
     try:
         if object_type in UUID_IDENTIFIABLE_TYPES:
-            instance = model_data.model.objects.get(uuid=pk)
+            instance = model_data.model.objects.using(  # type: ignore[misc]
+                settings.DATABASE_CONNECTION_REPLICA_NAME
+            ).get(uuid=pk)
         else:
-            instance = model_data.model.objects.get(id=pk)
+            instance = model_data.model.objects.using(  # type: ignore[misc]
+                settings.DATABASE_CONNECTION_REPLICA_NAME
+            ).get(id=pk)
     except ObjectDoesNotExist:
         return HttpResponseNotFound("Instance with the given id cannot be found.")
 
@@ -99,21 +118,29 @@ def handle_thumbnail(
         )
     else:
         processed_image = ProcessedImage(image.name, size_px, format)
-    thumbnail_file, _ = processed_image.create_thumbnail()
+    try:
+        thumbnail_file, _ = processed_image.create_thumbnail()
+    except FileNotFoundError as error:
+        logger.info(str(error))
+        return HttpResponseNotFound("Cannot found image file.")
+    except ValueError as error:
+        logger.info(str(error))
+        return HttpResponseBadRequest("Invalid image.")
 
     thumbnail_file_name = prepare_thumbnail_file_name(image.name, size_px, format)
 
     # save image thumbnail
-    thumbnail = Thumbnail(
-        size=size_px, format=format, **{model_data.thumbnail_field: instance}
-    )
-    thumbnail.image.save(thumbnail_file_name, thumbnail_file)
-    thumbnail.save()
+    with allow_writer():
+        thumbnail = Thumbnail(
+            size=size_px, format=format, **{model_data.thumbnail_field: instance}
+        )
+        thumbnail.image.save(thumbnail_file_name, thumbnail_file)
+        thumbnail.save()
 
-    # set additional `instance` attribute, to easily get instance data
-    # for ThumbnailCreated subscription type
-    setattr(thumbnail, "instance", instance)
-    manager = get_plugins_manager()
-    call_event(manager.thumbnail_created, thumbnail)
+        # set additional `instance` attribute, to easily get instance data
+        # for ThumbnailCreated subscription type
+        setattr(thumbnail, "instance", instance)
+        manager = get_plugins_manager(allow_replica=False)
+        call_event(manager.thumbnail_created, thumbnail)
 
     return HttpResponseRedirect(thumbnail.image.url)

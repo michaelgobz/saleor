@@ -33,7 +33,8 @@ class AccountRegisterInput(AccountBaseInput):
     last_name = graphene.String(description="Family name.")
     redirect_url = graphene.String(
         description=(
-            "Base of frontend URL that will be needed to create confirmation URL."
+            "Base of frontend URL that will be needed to create confirmation URL. "
+            "Required when account confirmation is enabled."
         ),
         required=False,
     )
@@ -106,10 +107,9 @@ class AccountRegister(ModelMutation):
     @classmethod
     def clean_input(cls, info: ResolveInfo, instance, data, **kwargs):
         site = get_site_promise(info.context).get()
-
         if not site.settings.enable_account_confirmation_by_email:
             return super().clean_input(info, instance, data, **kwargs)
-        elif not data.get("redirect_url"):
+        if not data.get("redirect_url"):
             raise ValidationError(
                 {
                     "redirect_url": ValidationError(
@@ -120,17 +120,17 @@ class AccountRegister(ModelMutation):
 
         try:
             validate_storefront_url(data["redirect_url"])
-        except ValidationError as error:
+        except ValidationError as e:
             raise ValidationError(
                 {
                     "redirect_url": ValidationError(
-                        error.message, code=AccountErrorCode.INVALID.value
+                        e.message, code=AccountErrorCode.INVALID.value
                     )
                 }
-            )
+            ) from e
 
         data["channel"] = clean_channel(
-            data.get("channel"), error_class=AccountErrorCode
+            data.get("channel"), error_class=AccountErrorCode, allow_replica=False
         ).slug
 
         data["email"] = data["email"].lower()
@@ -138,8 +138,8 @@ class AccountRegister(ModelMutation):
         password = data["password"]
         try:
             password_validation.validate_password(password, instance)
-        except ValidationError as error:
-            raise ValidationError({"password": error})
+        except ValidationError as e:
+            raise ValidationError({"password": e}) from e
 
         data["language_code"] = data.get("language_code", settings.LANGUAGE_CODE)
         return super().clean_input(info, instance, data, **kwargs)
@@ -158,9 +158,8 @@ class AccountRegister(ModelMutation):
 
         with traced_atomic_transaction():
             user.is_confirmed = False
+            user.save()
             if site.settings.enable_account_confirmation_by_email:
-                user.save()
-
                 # Notifications will be deprecated in the future
                 token = default_token_generator.make_token(user)
                 notifications.send_account_confirmation(
@@ -170,25 +169,22 @@ class AccountRegister(ModelMutation):
                     channel_slug=cleaned_input["channel"],
                     token=token,
                 )
-            else:
-                user.save()
+                if redirect_url:
+                    params = urlencode(
+                        {
+                            "email": user.email,
+                            "token": token or default_token_generator.make_token(user),
+                        }
+                    )
+                    redirect_url = prepare_url(params, redirect_url)
 
-            if redirect_url:
-                params = urlencode(
-                    {
-                        "email": user.email,
-                        "token": token or default_token_generator.make_token(user),
-                    }
+                cls.call_event(
+                    manager.account_confirmation_requested,
+                    user,
+                    cleaned_input["channel"],
+                    token,
+                    redirect_url,
                 )
-                redirect_url = prepare_url(params, redirect_url)
-
-            cls.call_event(
-                manager.account_confirmation_requested,
-                user,
-                cleaned_input["channel"],
-                token,
-                redirect_url,
-            )
 
             cls.call_event(manager.customer_created, user)
         account_events.customer_account_created_event(user=user)

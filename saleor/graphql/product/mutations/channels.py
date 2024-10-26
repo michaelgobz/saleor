@@ -1,9 +1,8 @@
+import datetime
 from collections import defaultdict
-from datetime import datetime
 from typing import TYPE_CHECKING
 
 import graphene
-import pytz
 from django.core.exceptions import ValidationError
 from django.db.utils import IntegrityError
 
@@ -19,20 +18,15 @@ from ....product.models import (
 )
 from ....product.models import Product as ProductModel
 from ....product.models import ProductVariant as ProductVariantModel
-from ....product.tasks import update_products_discounted_prices_for_promotion_task
+from ....product.utils.product import mark_products_in_channels_as_dirty
 from ...channel import ChannelContext
 from ...channel.mutations import BaseChannelListingMutation
 from ...channel.types import Channel
 from ...core import ResolveInfo
-from ...core.descriptions import (
-    ADDED_IN_31,
-    ADDED_IN_33,
-    ADDED_IN_38,
-    DEPRECATED_IN_3X_INPUT,
-)
+from ...core.descriptions import DEPRECATED_IN_3X_INPUT
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
 from ...core.mutations import BaseMutation
-from ...core.scalars import Date, PositiveDecimal
+from ...core.scalars import Date, DateTime, PositiveDecimal
 from ...core.types import (
     BaseInputObjectType,
     CollectionChannelListingError,
@@ -67,9 +61,7 @@ class PublishableChannelListingInput(BaseInputObjectType):
             "Use `publishedAt` field instead."
         )
     )
-    published_at = graphene.types.datetime.DateTime(
-        description="Publication date time. ISO 8601 standard." + ADDED_IN_33
-    )
+    published_at = DateTime(description="Publication date time. ISO 8601 standard.")
 
     class Meta:
         doc_category = DOC_CATEGORY_PRODUCTS
@@ -97,11 +89,11 @@ class ProductChannelListingAddInput(PublishableChannelListingInput):
             "Use `availableForPurchaseAt` field instead."
         )
     )
-    available_for_purchase_at = graphene.DateTime(
+    available_for_purchase_at = DateTime(
         description=(
             "A start date time from which a product will be available "
             "for purchase. When not set and `isAvailable` is set to True, "
-            "the current day is assumed." + ADDED_IN_33
+            "the current day is assumed."
         )
     )
     add_variants = NonNullList(
@@ -246,10 +238,10 @@ class ProductChannelListingUpdate(BaseChannelListingMutation):
                     defaults[field] = update_channel[field]
             is_available_for_purchase = update_channel.get("is_available_for_purchase")
             if is_available_for_purchase is not None:
-                defaults[
-                    "available_for_purchase_at"
-                ] = cls.get_available_for_purchase_date(
-                    is_available_for_purchase, update_channel
+                defaults["available_for_purchase_at"] = (
+                    cls.get_available_for_purchase_date(
+                        is_available_for_purchase, update_channel
+                    )
                 )
             product_channel_listing, _ = ProductChannelListing.objects.update_or_create(
                 product=product, channel=channel, defaults=defaults
@@ -269,8 +261,8 @@ class ProductChannelListingUpdate(BaseChannelListingMutation):
         )
         if is_available_for_purchase is False:
             return None
-        elif is_available_for_purchase is True and not available_for_purchase_date:
-            return datetime.now(pytz.UTC)
+        if is_available_for_purchase is True and not available_for_purchase_date:
+            return datetime.datetime.now(tz=datetime.UTC)
         return available_for_purchase_date
 
     @classmethod
@@ -296,7 +288,7 @@ class ProductChannelListingUpdate(BaseChannelListingMutation):
 
         try:
             ProductVariantChannelListing.objects.bulk_create(variant_channel_listings)
-        except IntegrityError:
+        except IntegrityError as e:
             raise ValidationError(
                 {
                     "addVariants": ValidationError(
@@ -305,7 +297,7 @@ class ProductChannelListingUpdate(BaseChannelListingMutation):
                         code=ProductErrorCode.ALREADY_EXISTS.value,
                     )
                 }
-            )
+            ) from e
 
     @classmethod
     def remove_variants(
@@ -355,10 +347,23 @@ class ProductChannelListingUpdate(BaseChannelListingMutation):
         with traced_atomic_transaction():
             cls.update_channels(product, cleaned_input.get("update_channels", []))
             cls.remove_channels(product, cleaned_input.get("remove_channels", []))
-            product = ProductModel.objects.prefetched_for_webhook().get(pk=product.pk)
-            update_products_discounted_prices_for_promotion_task.delay([product.id])
-            manager = get_plugin_manager_promise(info.context).get()
-            cls.call_event(manager.product_updated, product)
+
+    @classmethod
+    def post_save_actions(
+        cls, info: ResolveInfo, product: "ProductModel", cleaned_input: dict
+    ):
+        modified_channel_ids = [
+            update_channel["channel"].id
+            for update_channel in cleaned_input.get("update_channels", [])
+        ]
+        modified_channel_ids.extend(cleaned_input.get("remove_channels", []))
+        cls.call_event(
+            mark_products_in_channels_as_dirty,
+            {channel_id: {product.pk} for channel_id in modified_channel_ids},
+        )
+        product = ProductModel.objects.get(pk=product.pk)
+        manager = get_plugin_manager_promise(info.context).get()
+        cls.call_event(manager.product_updated, product)
 
     @classmethod
     def perform_mutation(  # type: ignore[override]
@@ -385,6 +390,7 @@ class ProductChannelListingUpdate(BaseChannelListingMutation):
             raise ValidationError(errors)
 
         cls.save(info, product, cleaned_input)
+        cls.post_save_actions(info, product, cleaned_input)
         return ProductChannelListingUpdate(
             product=ChannelContext(node=product, channel_slug=None)
         )
@@ -397,7 +403,7 @@ class ProductVariantChannelListingAddInput(BaseInputObjectType):
     )
     cost_price = PositiveDecimal(description="Cost price of the variant in channel.")
     preorder_threshold = graphene.Int(
-        description=("The threshold for preorder variant in channel." + ADDED_IN_31)
+        description="The threshold for preorder variant in channel."
     )
 
     class Meta:
@@ -414,8 +420,7 @@ class ProductVariantChannelListingUpdate(BaseMutation):
             required=False, description="ID of a product variant to update."
         )
         sku = graphene.String(
-            required=False,
-            description="SKU of a product variant to update." + ADDED_IN_38,
+            required=False, description="SKU of a product variant to update."
         )
         input = NonNullList(
             ProductVariantChannelListingAddInput,
@@ -450,7 +455,7 @@ class ProductVariantChannelListingUpdate(BaseMutation):
                 )
             )
         else:
-            channels: list["ChannelModel"] = []
+            channels: list[ChannelModel] = []
             if add_channels_ids:
                 channels = cls.get_nodes_or_error(
                     add_channels_ids, "channel_id", Channel
@@ -541,11 +546,20 @@ class ProductVariantChannelListingUpdate(BaseMutation):
                     channel=channel,
                     defaults=defaults,
                 )
-            update_products_discounted_prices_for_promotion_task.delay(
-                [variant.product_id]
-            )
-            manager = get_plugin_manager_promise(info.context).get()
-            cls.call_event(manager.product_variant_updated, variant)
+
+    @classmethod
+    def post_save_actions(
+        cls, info, variant: "ProductVariantModel", cleaned_input: list[dict]
+    ):
+        channel_ids = [
+            channel_listing_data["channel"].id for channel_listing_data in cleaned_input
+        ]
+        cls.call_event(
+            mark_products_in_channels_as_dirty,
+            {channel_id: {variant.product_id} for channel_id in channel_ids},
+        )
+        manager = get_plugin_manager_promise(info.context).get()
+        cls.call_event(manager.product_variant_updated, variant)
 
     @classmethod
     def perform_mutation(  # type: ignore[override]
@@ -553,7 +567,7 @@ class ProductVariantChannelListingUpdate(BaseMutation):
     ):
         validate_one_of_args_is_in_mutation("sku", sku, "id", id)
 
-        qs = ProductVariantModel.objects.prefetched_for_webhook()
+        qs = ProductVariantModel.objects.all()
         if id:
             variant = cls.get_node_or_error(
                 info, id, only_type=ProductVariant, field="id", qs=qs
@@ -579,7 +593,7 @@ class ProductVariantChannelListingUpdate(BaseMutation):
             raise ValidationError(errors)
 
         cls.save(info, variant, cleaned_input)
-
+        cls.post_save_actions(info, variant, cleaned_input)
         return ProductVariantChannelListingUpdate(
             variant=ChannelContext(node=variant, channel_slug=None)
         )

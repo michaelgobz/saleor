@@ -1,21 +1,16 @@
-from typing import Optional
-
 import graphene
 from django.core.exceptions import ValidationError
-from django.utils import timezone
 
-from .....account import models
 from .....account.error_codes import AccountErrorCode
-from .....account.utils import retrieve_user_by_email
+from .....account.throttling import authenticate_with_throttling
 from .....core.jwt import create_access_token, create_refresh_token
 from ....core import ResolveInfo
-from ....core.descriptions import ADDED_IN_38
 from ....core.doc_category import DOC_CATEGORY_AUTH
 from ....core.mutations import BaseMutation
 from ....core.types import AccountError
 from ....site.dataloaders import get_site_promise
 from ...types import User
-from .utils import _get_new_csrf_token
+from .utils import _get_new_csrf_token, update_user_last_login_if_required
 
 
 class CreateToken(BaseMutation):
@@ -28,7 +23,7 @@ class CreateToken(BaseMutation):
             required=False,
             description=(
                 "The audience that will be included to JWT tokens with "
-                "prefix `custom:`." + ADDED_IN_38
+                "prefix `custom:`."
             ),
         )
 
@@ -48,17 +43,8 @@ class CreateToken(BaseMutation):
     user = graphene.Field(User, description="A user instance.")
 
     @classmethod
-    def _retrieve_user_from_credentials(cls, email, password) -> Optional[models.User]:
-        user = retrieve_user_by_email(email)
-
-        if user and user.check_password(password):
-            return user
-        return None
-
-    @classmethod
     def get_user(cls, info: ResolveInfo, email, password):
-        site_settings = get_site_promise(info.context).get().settings
-        user = cls._retrieve_user_from_credentials(email, password)
+        user = authenticate_with_throttling(info.context, email, password)
         if not user:
             raise ValidationError(
                 {
@@ -68,6 +54,8 @@ class CreateToken(BaseMutation):
                     )
                 }
             )
+
+        site_settings = get_site_promise(info.context).get().settings
         if (
             not user.is_confirmed
             and not site_settings.allow_login_without_confirmation
@@ -97,7 +85,6 @@ class CreateToken(BaseMutation):
     def perform_mutation(  # type: ignore[override]
         cls, _root, info: ResolveInfo, /, *, audience=None, email, password
     ):
-        user = cls.get_user(info, email, password)
         additional_paylod = {}
 
         csrf_token = _get_new_csrf_token()
@@ -108,6 +95,7 @@ class CreateToken(BaseMutation):
             additional_paylod["aud"] = f"custom:{audience}"
             refresh_additional_payload["aud"] = f"custom:{audience}"
 
+        user = cls.get_user(info, email, password)
         access_token = create_access_token(user, additional_payload=additional_paylod)
         refresh_token = create_refresh_token(
             user, additional_payload=refresh_additional_payload
@@ -115,8 +103,7 @@ class CreateToken(BaseMutation):
         setattr(info.context, "refresh_token", refresh_token)
         info.context.user = user
         info.context._cached_user = user
-        user.last_login = timezone.now()
-        user.save(update_fields=["last_login", "updated_at"])
+        update_user_last_login_if_required(user)
         return cls(
             errors=[],
             user=user,

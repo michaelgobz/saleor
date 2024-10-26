@@ -260,6 +260,7 @@ def test_install_app_created_app_trigger_webhook(
         [any_webhook],
         app,
         None,
+        allow_replica=True,
     )
 
 
@@ -594,7 +595,7 @@ def test_install_app_webhook_incorrect_custom_headers(
     assert "webhooks" in error_dict
     assert error_dict["webhooks"][0].message == (
         'Invalid custom headers: "InvalidKey" '
-        'does not match allowed key pattern: "X-*" or "Authorization*".'
+        'does not match allowed key pattern: "X-*", "Authorization*", or "BrokerProperties".'
     )
 
 
@@ -744,6 +745,14 @@ def test_fetch_brand_data_task_terminated(
 ):
     app.delete(), app_installation.delete()
     fetch_brand_data_task({}, app_installation_id=app_installation.id, app_id=app.id)
+    mock_fetch_icon_image.assert_not_called()
+
+
+@patch("saleor.app.installation_utils.fetch_icon_image")
+def test_fetch_brand_data_task_for_removed_app(
+    mock_fetch_icon_image, removed_app, media_root
+):
+    fetch_brand_data_task({}, app_id=removed_app.id)
     mock_fetch_icon_image.assert_not_called()
 
 

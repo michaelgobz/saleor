@@ -1,15 +1,16 @@
-from datetime import datetime
+import datetime
 
 import graphene
-import pytz
 from django.core.exceptions import ValidationError
+from django.db.models import Exists, OuterRef
 
 from .....core.tracing import traced_atomic_transaction
 from .....discount import models
 from .....discount.error_codes import DiscountErrorCode
-from .....discount.utils import CATALOGUE_FIELDS
+from .....discount.utils.promotion import CATALOGUE_FIELDS
 from .....permission.enums import DiscountPermissions
-from .....product.tasks import update_products_discounted_prices_for_promotion_task
+from .....product import models as product_models
+from .....product.utils.product import mark_products_in_channels_as_dirty
 from .....webhook.event_types import WebhookEventAsyncType
 from ....channel import ChannelContext
 from ....core import ResolveInfo
@@ -29,7 +30,9 @@ from ...utils import (
     convert_migrated_sale_predicate_to_catalogue_info,
     create_catalogue_predicate,
     get_products_for_rule,
+    get_variants_for_catalogue_predicate,
 )
+from ..utils import update_variants_for_promotion
 from .sale_create import SaleInput
 
 
@@ -122,9 +125,9 @@ class SaleUpdate(ModelMutation):
         end_date = input.get("end_date") or instance.end_date
         try:
             validate_end_is_after_start(start_date, end_date)
-        except ValidationError as error:
-            error.code = DiscountErrorCode.INVALID.value
-            raise ValidationError({"end_date": error})
+        except ValidationError as e:
+            e.code = DiscountErrorCode.INVALID.value
+            raise ValidationError({"end_date": e}) from e
 
     @classmethod
     def update_fields(
@@ -143,7 +146,7 @@ class SaleUpdate(ModelMutation):
             for rule in rules:
                 rule.reward_value_type = type
 
-        if any([key in CATALOGUE_FIELDS for key in input.keys()]):
+        if any(key in CATALOGUE_FIELDS for key in input.keys()):
             predicate = cls.create_predicate(input)
             for rule in rules:
                 rule.catalogue_predicate = predicate
@@ -168,6 +171,7 @@ class SaleUpdate(ModelMutation):
         previous_product_ids,
     ):
         rule = promotion.rules.first()
+        channel_ids = rule.channels.values_list("id", flat=True)
         current_predicate = rule.catalogue_predicate
         current_catalogue = convert_migrated_sale_predicate_to_catalogue_info(
             current_predicate
@@ -181,18 +185,22 @@ class SaleUpdate(ModelMutation):
             current_catalogue,
             previous_end_date,
         )
-
         if any(
             field in input.keys()
             for field in [*CATALOGUE_FIELDS, "start_date", "end_date", "type"]
         ):
-            products = get_products_for_rule(rule)
-            if (
-                product_ids := set(products.values_list("id", flat=True))
-                | previous_product_ids
-            ):
-                update_products_discounted_prices_for_promotion_task.delay(
-                    list(product_ids)
+            variants = get_variants_for_catalogue_predicate(current_predicate)
+            product_ids = set(
+                product_models.Product.objects.filter(
+                    Exists(variants.filter(product_id=OuterRef("id")))
+                ).values_list("id", flat=True)
+            )
+            update_variants_for_promotion(variants, promotion)
+            if product_ids | previous_product_ids:
+                product_ids_to_update = product_ids | previous_product_ids
+                cls.call_event(
+                    mark_products_in_channels_as_dirty,
+                    {channel_id: product_ids_to_update for channel_id in channel_ids},
                 )
 
     @classmethod
@@ -226,7 +234,7 @@ class SaleUpdate(ModelMutation):
         and the notification_date is not set or the last notification was sent
         before start or end date.
         """
-        now = datetime.now(pytz.utc)
+        now = datetime.datetime.now(tz=datetime.UTC)
 
         notification_date = instance.last_notification_scheduled_at
         start_date = input.get("start_date")

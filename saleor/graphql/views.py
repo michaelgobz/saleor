@@ -3,6 +3,7 @@ import importlib
 import json
 from inspect import isclass
 from typing import Any, Optional, Union
+from urllib.parse import urljoin
 
 import opentracing
 import opentracing.tags
@@ -13,21 +14,22 @@ from django.db.backends.postgresql.base import DatabaseWrapper
 from django.http import HttpRequest, HttpResponseNotAllowed, JsonResponse
 from django.shortcuts import render
 from django.views.generic import View
-from graphql import GraphQLDocument, get_default_backend
+from graphql import GraphQLBackend, GraphQLDocument, GraphQLSchema
 from graphql.error import GraphQLError, GraphQLSyntaxError
 from graphql.execution import ExecutionResult
 from jwt.exceptions import PyJWTError
 from requests_hardened.ip_filter import InvalidIPAddress
 
 from .. import __version__ as saleor_version
-from ..core.exceptions import PermissionDenied, ReadOnlyException
+from ..core.exceptions import PermissionDenied
 from ..core.utils import is_valid_ipv4, is_valid_ipv6
 from ..webhook import observability
 from .api import API_PATH, schema
-from .context import get_context_value
+from .context import clear_context, get_context_value
 from .core.validators.query_cost import validate_query_cost
 from .query_cost_map import COST_MAP
 from .utils import format_error, query_fingerprint, query_identifier
+from .utils.validators import check_if_query_contains_only_schema
 
 INT_ERROR_MSG = "Int cannot represent non 32-bit signed integer value"
 
@@ -55,30 +57,29 @@ class GraphQLView(View):
     # - file upload (https://github.com/lmcgartland/graphene-file-upload)
     # - query batching
 
-    schema = None
+    schema: GraphQLSchema = None  # type: ignore[assignment]
     executor = None
     middleware = None
     root_value = None
+    backend: GraphQLBackend = None  # type: ignore[assignment]
+    _query: Optional[str] = None
 
     HANDLED_EXCEPTIONS = (
         GraphQLError,
         PyJWTError,
-        ReadOnlyException,
         PermissionDenied,
         InvalidIPAddress,
     )
 
     def __init__(
         self,
-        schema=None,
+        schema: GraphQLSchema,
+        backend: GraphQLBackend,
         executor=None,
         middleware: Optional[list[str]] = None,
         root_value=None,
-        backend=None,
     ):
         super().__init__()
-        if backend is None:
-            backend = get_default_backend()
         if middleware is None:
             middleware = settings.GRAPHQL_MIDDLEWARE
             if middleware:
@@ -86,7 +87,7 @@ class GraphQLView(View):
                     self.import_middleware(middleware_name)
                     for middleware_name in middleware
                 ]
-        self.schema = self.schema or schema
+        self.schema = schema
         if middleware is not None:
             self.middleware = list(instantiate_middleware(middleware))
         self.executor = executor
@@ -100,8 +101,10 @@ class GraphQLView(View):
             module_path, class_name = ".".join(parts[:-1]), parts[-1]
             module = importlib.import_module(module_path)
             return getattr(module, class_name)
-        except (ImportError, AttributeError):
-            raise ImportError(f"Cannot import '{middleware_name}' graphene middleware!")
+        except (ImportError, AttributeError) as e:
+            raise ImportError(
+                f"Cannot import '{middleware_name}' graphene middleware!"
+            ) from e
 
     @observability.report_view
     def dispatch(self, request, *args, **kwargs):
@@ -110,21 +113,26 @@ class GraphQLView(View):
             if settings.PLAYGROUND_ENABLED:
                 return self.render_playground(request)
             return HttpResponseNotAllowed(["OPTIONS", "POST"])
-        elif request.method == "POST":
+        if request.method == "POST":
             return self.handle_query(request)
-        else:
-            if settings.PLAYGROUND_ENABLED:
-                return HttpResponseNotAllowed(["GET", "OPTIONS", "POST"])
-            else:
-                return HttpResponseNotAllowed(["OPTIONS", "POST"])
+        if settings.PLAYGROUND_ENABLED:
+            return HttpResponseNotAllowed(["GET", "OPTIONS", "POST"])
+        return HttpResponseNotAllowed(["OPTIONS", "POST"])
 
     def render_playground(self, request):
+        if settings.PUBLIC_URL:
+            api_url = urljoin(settings.PUBLIC_URL, str(API_PATH))
+            plugins_url = urljoin(settings.PUBLIC_URL, "/plugins/")
+        else:
+            api_url = request.build_absolute_uri(str(API_PATH))
+            plugins_url = request.build_absolute_uri("/plugins/")
+
         return render(
             request,
             "graphql/playground.html",
             {
-                "api_url": request.build_absolute_uri(str(API_PATH)),
-                "plugins_url": request.build_absolute_uri("/plugins/"),
+                "api_url": api_url,
+                "plugins_url": plugins_url,
             },
         )
 
@@ -161,13 +169,18 @@ class GraphQLView(View):
         # Add `child_of=span_ontext` to `start_active_span`
         with tracer.start_active_span("http") as scope:
             span = scope.span
+            span.set_tag("resource.name", request.path)
             span.set_tag(opentracing.tags.COMPONENT, "http")
             span.set_tag(opentracing.tags.HTTP_METHOD, request.method)
             span.set_tag(
                 opentracing.tags.HTTP_URL,
                 request.build_absolute_uri(request.get_full_path()),
             )
-            span.set_tag("http.useragent", request.META.get("HTTP_USER_AGENT", ""))
+            accepted_encoding = request.headers.get("accept-encoding", "")
+            span.set_tag(
+                "http.compression", "gzip" if "gzip" in accepted_encoding else "none"
+            )
+            span.set_tag("http.useragent", request.headers.get("user-agent", ""))
             span.set_tag("span.type", "web")
 
             main_ip_header = settings.REAL_IP_ENVIRON[0]
@@ -252,20 +265,6 @@ class GraphQLView(View):
         except (ValueError, GraphQLSyntaxError) as e:
             return None, ExecutionResult(errors=[e], invalid=True)
 
-    def check_if_query_contains_only_schema(self, document: GraphQLDocument):
-        query_with_schema = False
-        for definition in document.document_ast.definitions:
-            selections = definition.selection_set.selections
-            selection_count = len(selections)
-            for selection in selections:
-                selection_name = str(selection.name.value)
-                if selection_name == "__schema":
-                    query_with_schema = True
-                    if selection_count > 1:
-                        msg = "`__schema` must be fetched in separate query"
-                        raise GraphQLError(msg)
-        return query_with_schema
-
     def execute_graphql_request(self, request: HttpRequest, data: dict):
         with opentracing.global_tracer().start_active_span("graphql_query") as scope:
             span = scope.span
@@ -276,7 +275,6 @@ class GraphQLView(View):
             )
 
             query, variables, operation_name = self.get_graphql_params(request, data)
-
             document, error = self.parse_query(query)
             with observability.report_gql_operation() as operation:
                 operation.query = document
@@ -285,14 +283,15 @@ class GraphQLView(View):
             if error or document is None:
                 return error
 
+            _query_identifier = query_identifier(document)
+            self._query = _query_identifier
             raw_query_string = document.document_string
+            span.set_tag("resource.name", raw_query_string)
             span.set_tag("graphql.query", raw_query_string)
-            span.set_tag("graphql.query_identifier", query_identifier(document))
+            span.set_tag("graphql.query_identifier", _query_identifier)
             span.set_tag("graphql.query_fingerprint", query_fingerprint(document))
             try:
-                query_contains_schema = self.check_if_query_contains_only_schema(
-                    document
-                )
+                query_contains_schema = check_if_query_contains_only_schema(document)
             except GraphQLError as e:
                 return ExecutionResult(errors=[e], invalid=True)
 
@@ -352,6 +351,8 @@ class GraphQLView(View):
                 if str(e).startswith(INT_ERROR_MSG) or isinstance(e, ValueError):
                     e = GraphQLError(str(e))
                 return ExecutionResult(errors=[e], invalid=True)
+            finally:
+                clear_context(context)
 
     @staticmethod
     def parse_body(request: HttpRequest):
@@ -385,9 +386,8 @@ class GraphQLView(View):
             variables = operations.get("variables")
         return query, variables, operation_name
 
-    @classmethod
-    def format_error(cls, error):
-        return format_error(error, cls.HANDLED_EXCEPTIONS)
+    def format_error(self, error):
+        return format_error(error, self.HANDLED_EXCEPTIONS, self._query)
 
 
 def get_key(key):

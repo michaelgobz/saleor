@@ -18,7 +18,6 @@ from ....core.mutations import BaseMutation
 from ....core.types import AccountError
 from ....core.utils import WebhookEventInfo
 from ....plugins.dataloaders import get_plugin_manager_promise
-from ....site.dataloaders import get_site_promise
 
 
 class RequestPasswordReset(BaseMutation):
@@ -67,12 +66,11 @@ class RequestPasswordReset(BaseMutation):
     def clean_user(cls, email, redirect_url, info: ResolveInfo):
         try:
             validate_storefront_url(redirect_url)
-        except ValidationError as error:
+        except ValidationError as e:
             raise ValidationError(
-                {"redirect_url": error}, code=AccountErrorCode.INVALID.value
-            )
+                {"redirect_url": e}, code=AccountErrorCode.INVALID.value
+            ) from e
 
-        site = get_site_promise(info.context).get()
         user = retrieve_user_by_email(email)
         if not user:
             raise ValidationError(
@@ -84,7 +82,7 @@ class RequestPasswordReset(BaseMutation):
                 }
             )
 
-        if not user.can_login(site.settings):
+        if not user.is_active:
             raise ValidationError(
                 {
                     "email": ValidationError(
@@ -119,7 +117,7 @@ class RequestPasswordReset(BaseMutation):
 
         if not user.is_staff:
             channel_slug = clean_channel(
-                channel_slug, error_class=AccountErrorCode
+                channel_slug, error_class=AccountErrorCode, allow_replica=False
             ).slug
         elif channel_slug is not None:
             channel_slug = validate_channel(

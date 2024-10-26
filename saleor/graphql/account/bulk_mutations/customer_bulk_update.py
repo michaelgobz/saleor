@@ -17,7 +17,6 @@ from ....order.utils import match_orders_with_new_user
 from ....permission.enums import AccountPermissions
 from ....webhook.event_types import WebhookEventAsyncType
 from ....webhook.utils import get_webhooks_for_event
-from ...core.descriptions import ADDED_IN_313, PREVIEW_FEATURE
 from ...core.doc_category import DOC_CATEGORY_USERS
 from ...core.enums import CustomerBulkUpdateErrorCode, ErrorPolicyEnum
 from ...core.mutations import BaseMutation, ModelMutation
@@ -94,7 +93,7 @@ class CustomerBulkUpdate(BaseMutation, I18nMixin):
         )
 
     class Meta:
-        description = "Updates customers." + ADDED_IN_313 + PREVIEW_FEATURE
+        description = "Updates customers."
         doc_category = DOC_CATEGORY_USERS
         permissions = (AccountPermissions.MANAGE_USERS,)
         error_type_class = CustomerBulkUpdateError
@@ -181,20 +180,22 @@ class CustomerBulkUpdate(BaseMutation, I18nMixin):
         field,
         index,
         index_error_map,
+        info,
         format_check=True,
         required_check=True,
         enable_normalization=True,
     ):
         try:
-            address_form = cls.validate_address_form(
+            address = cls.validate_address(
                 address_data,
-                address_type,
+                address_type=address_type,
                 format_check=format_check,
                 required_check=required_check,
                 enable_normalization=enable_normalization,
+                info=info,
             )
 
-            return address_form.cleaned_data
+            return address.as_data()
         except ValidationError as exc:
             cls.format_errors(index, exc, index_error_map, field_prefix=field)
 
@@ -281,6 +282,7 @@ class CustomerBulkUpdate(BaseMutation, I18nMixin):
                     field=SHIPPING_ADDRESS_FIELD,
                     index=index,
                     index_error_map=index_error_map,
+                    info=info,
                 )
                 customer_input["input"][SHIPPING_ADDRESS_FIELD] = clean_shipping_address
 
@@ -291,6 +293,7 @@ class CustomerBulkUpdate(BaseMutation, I18nMixin):
                     field=BILLING_ADDRESS_FIELD,
                     index=index,
                     index_error_map=index_error_map,
+                    info=info,
                 )
                 customer_input["input"][BILLING_ADDRESS_FIELD] = clean_billing_address
 
@@ -352,13 +355,12 @@ class CustomerBulkUpdate(BaseMutation, I18nMixin):
     def _get_customer(cls, customer_id, external_ref):
         if customer_id:
             return lambda customer: str(customer.id) == customer_id
-        else:
-            return lambda customer: customer.external_reference == external_ref
+        return lambda customer: customer.external_reference == external_ref
 
     @classmethod
     def update_address(cls, info, instance, data, field):
         address = getattr(instance, field) or models.Address()
-        address_metadata = data.pop("metadata", list())
+        address_metadata = data.pop("metadata", [])
         cls.update_metadata(address, address_metadata)
         address = cls.construct_instance(address, data)
         cls.clean_instance(info, address)
@@ -510,6 +512,7 @@ class CustomerBulkUpdate(BaseMutation, I18nMixin):
                 "country_area",
                 "phone",
                 "metadata",
+                "validation_skipped",
             ],
         )
 
@@ -520,6 +523,7 @@ class CustomerBulkUpdate(BaseMutation, I18nMixin):
                 "last_name",
                 "email",
                 "is_active",
+                "is_confirmed",
                 "note",
                 "language_code",
                 "external_reference",
@@ -665,7 +669,7 @@ class CustomerBulkUpdate(BaseMutation, I18nMixin):
             info, cleaned_inputs_map, index_error_map
         )
 
-        if any([bool(error) for error in index_error_map.values()]):
+        if any(index_error_map.values()):
             if error_policy == ErrorPolicyEnum.REJECT_EVERYTHING.value:
                 results = cls.get_results(instances_data_with_errors_list, True)
                 return CustomerBulkUpdate(count=0, results=results)

@@ -12,6 +12,7 @@ from freezegun import freeze_time
 from graphql_relay import to_global_id
 
 from ....core.utils.json_serializer import CustomJsonEncoder
+from ....discount.utils.promotion import get_active_catalogue_promotion_rules
 from ....product.error_codes import ProductErrorCode
 from ....product.models import Category, Product, ProductChannelListing
 from ....product.tests.utils import create_image, create_zip_file_with_image_ext
@@ -20,7 +21,7 @@ from ....tests.utils import dummy_editorjs
 from ....thumbnail.models import Thumbnail
 from ....webhook.event_types import WebhookEventAsyncType
 from ....webhook.payloads import generate_meta, generate_requestor
-from ...core.enums import ThumbnailFormatEnum
+from ...core.enums import LanguageCodeEnum, ThumbnailFormatEnum
 from ...tests.utils import (
     get_graphql_content,
     get_graphql_content_from_response,
@@ -28,10 +29,11 @@ from ...tests.utils import (
 )
 
 QUERY_CATEGORY = """
-    query ($id: ID, $slug: String, $channel: String){
+    query ($id: ID, $slug: String, $channel: String, $slugLanguageCode: LanguageCodeEnum){
         category(
             id: $id,
             slug: $slug,
+            slugLanguageCode: $slugLanguageCode
         ) {
             id
             name
@@ -75,6 +77,28 @@ def test_category_query_by_id(user_api_client, product, channel_USD):
     assert category_data["name"] == category.name
     assert len(category_data["ancestors"]["edges"]) == category.get_ancestors().count()
     assert len(category_data["children"]["edges"]) == category.get_children().count()
+
+
+def test_category_query_with_ancestors(user_api_client, product, channel_USD):
+    # given
+    category = Category.objects.first()
+    child = Category.objects.create(
+        name="Child Category", slug="child-category", parent=category
+    )
+
+    # when
+    variables = {
+        "id": graphene.Node.to_global_id("Category", child.pk),
+        "channel": channel_USD.slug,
+    }
+    response = user_api_client.post_graphql(QUERY_CATEGORY, variables=variables)
+    content = get_graphql_content(response)
+    category_data = content["data"]["category"]
+
+    # then
+    assert category_data is not None
+    assert len(category_data["ancestors"]["edges"]) == child.get_ancestors().count()
+    assert len(category_data["children"]["edges"]) == child.get_children().count()
 
 
 def test_category_query_invalid_id(user_api_client, product, channel_USD):
@@ -207,6 +231,21 @@ def test_category_query_by_slug(user_api_client, product, channel_USD):
     assert category_data["name"] == category.name
     assert len(category_data["ancestors"]["edges"]) == category.get_ancestors().count()
     assert len(category_data["children"]["edges"]) == category.get_children().count()
+
+
+def test_category_query_by_translated_slug(
+    user_api_client, category, category_translation_with_slug_pl, channel_USD
+):
+    variables = {
+        "slug": category_translation_with_slug_pl.slug,
+        "channel": channel_USD.slug,
+        "slugLanguageCode": LanguageCodeEnum.PL.name,
+    }
+    response = user_api_client.post_graphql(QUERY_CATEGORY, variables=variables)
+    content = get_graphql_content(response)
+    data = content["data"]["category"]
+    assert data is not None
+    assert data["name"] == category.name
 
 
 def test_category_query_error_when_id_and_slug_provided(
@@ -528,6 +567,7 @@ def test_category_create_trigger_webhook(
         [any_webhook],
         category,
         SimpleLazyObject(lambda: staff_api_client.user),
+        allow_replica=False,
     )
 
 
@@ -694,6 +734,36 @@ def test_category_update_mutation(
     assert category.private_metadata == {metadata_key: metadata_value, **old_meta}
 
 
+def test_category_update_mutation_marks_prices_to_recalculate(
+    staff_api_client, category, permission_manage_products, catalogue_promotion, product
+):
+    # given
+    product.category = category
+    product.save()
+
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    metadata_key = "md key"
+    metadata_value = "md value"
+
+    category_id = graphene.Node.to_global_id("Category", category.pk)
+    variables = {
+        "id": category_id,
+        "name": "Updated name",
+        "slug": "slug",
+        "metadata": [{"key": metadata_key, "value": metadata_value}],
+    }
+    # when
+    response = staff_api_client.post_graphql(
+        MUTATION_CATEGORY_UPDATE_MUTATION,
+        variables,
+    )
+
+    # then
+    get_graphql_content(response)
+    assert not catalogue_promotion.rules.filter(variants_dirty=False).exists()
+
+
 @freeze_time("2023-09-01 12:00:00")
 def test_category_update_mutation_with_update_at_field(
     monkeypatch, staff_api_client, category, permission_manage_products, media_root
@@ -792,6 +862,7 @@ def test_category_update_trigger_webhook(
         [any_webhook],
         category,
         SimpleLazyObject(lambda: staff_api_client.user),
+        allow_replica=False,
     )
 
 
@@ -1164,13 +1235,9 @@ MUTATION_CATEGORY_DELETE = """
 """
 
 
-@patch(
-    "saleor.product.tasks.update_products_discounted_prices_for_promotion_task.delay"
-)
 @patch("saleor.core.tasks.delete_from_storage_task.delay")
 def test_category_delete_mutation(
     delete_from_storage_task_mock,
-    update_products_discounted_price_task_mock,
     staff_api_client,
     category,
     product_list,
@@ -1204,9 +1271,8 @@ def test_category_delete_mutation(
     assert not Thumbnail.objects.filter(category_id=category_id)
     assert delete_from_storage_task_mock.call_count == 2
 
-    update_products_discounted_price_task_mock.assert_called_once()
-    args, kwargs = update_products_discounted_price_task_mock.call_args
-    assert set(kwargs["product_ids"]) == {product.id for product in product_list}
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty is True
 
 
 @freeze_time("2022-05-12 12:00:00")
@@ -1250,6 +1316,7 @@ def test_category_delete_trigger_webhook(
         [any_webhook],
         category,
         SimpleLazyObject(lambda: staff_api_client.user),
+        allow_replica=False,
     )
 
 
@@ -1272,9 +1339,7 @@ def test_delete_category_with_background_image(
         category.refresh_from_db()
 
 
-@patch("saleor.product.utils.update_products_discounted_prices_for_promotion_task")
 def test_category_delete_mutation_for_categories_tree(
-    mock_update_products_discounted_prices_for_promotion_task,
     staff_api_client,
     categories_tree_with_published_products,
     permission_manage_products,
@@ -1295,13 +1360,6 @@ def test_category_delete_mutation_for_categories_tree(
     with pytest.raises(parent._meta.model.DoesNotExist):
         parent.refresh_from_db()
 
-    mock_update_products_discounted_prices_for_promotion_task.delay.assert_called_once()
-    (
-        _call_args,
-        call_kwargs,
-    ) = mock_update_products_discounted_prices_for_promotion_task.delay.call_args
-    assert set(call_kwargs["product_ids"]) == set(p.pk for p in product_list)
-
     product_channel_listings = ProductChannelListing.objects.filter(
         product__in=product_list
     )
@@ -1309,11 +1367,11 @@ def test_category_delete_mutation_for_categories_tree(
         assert product_channel_listing.is_published is False
         assert not product_channel_listing.published_at
     assert product_channel_listings.count() == 4
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty is True
 
 
-@patch("saleor.product.utils.update_products_discounted_prices_for_promotion_task")
 def test_category_delete_mutation_for_children_from_categories_tree(
-    mock_update_products_discounted_prices_for_promotion_task,
     staff_api_client,
     categories_tree_with_published_products,
     permission_manage_products,
@@ -1333,9 +1391,8 @@ def test_category_delete_mutation_for_children_from_categories_tree(
     with pytest.raises(child._meta.model.DoesNotExist):
         child.refresh_from_db()
 
-    mock_update_products_discounted_prices_for_promotion_task.delay.assert_called_once_with(
-        product_ids=[child_product.pk]
-    )
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty is True
 
     parent_product.refresh_from_db()
     assert parent_product.category

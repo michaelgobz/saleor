@@ -1,6 +1,7 @@
 import graphene
 from django.core.exceptions import ValidationError
 
+from ....core.db.connection import allow_writer
 from ....core.exceptions import PermissionDenied
 from ....permission.enums import ProductPermissions
 from ....product import models
@@ -8,12 +9,10 @@ from ....product.error_codes import ProductErrorCode
 from ...channel import ChannelContext
 from ...core import ResolveInfo
 from ...core.context import disallow_replica_in_context
-from ...core.descriptions import ADDED_IN_38
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
 from ...core.mutations import BaseMutation, ModelMutation
 from ...core.types import BaseInputObjectType, NonNullList, ProductError, Upload
 from ...meta.inputs import MetadataInput
-from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import DigitalContent, DigitalContentUrl, ProductVariant
 
 
@@ -42,17 +41,12 @@ class DigitalContentInput(BaseInputObjectType):
     )
     metadata = NonNullList(
         MetadataInput,
-        description=(
-            "Fields required to update the digital content metadata." + ADDED_IN_38
-        ),
+        description=("Fields required to update the digital content metadata."),
         required=False,
     )
     private_metadata = NonNullList(
         MetadataInput,
-        description=(
-            "Fields required to update the digital content private metadata."
-            + ADDED_IN_38
-        ),
+        description=("Fields required to update the digital content private metadata."),
         required=False,
     )
 
@@ -172,18 +166,13 @@ class DigitalContentDelete(BaseMutation):
         permissions = (ProductPermissions.MANAGE_PRODUCTS,)
 
     @classmethod
+    @allow_writer()
     def mutate(  # type: ignore[override]
         cls, root, info: ResolveInfo, /, *, variant_id: str
     ):
         disallow_replica_in_context(info.context)
         if not cls.check_permissions(info.context):
             raise PermissionDenied(permissions=cls._meta.permissions)
-        manager = get_plugin_manager_promise(info.context).get()
-        result = manager.perform_mutation(
-            mutation_cls=cls, root=root, info=info, data={"variant_id": variant_id}
-        )
-        if result is not None:
-            return result
 
         variant = cls.get_node_or_error(
             info, variant_id, field="id", only_type=ProductVariant

@@ -9,6 +9,7 @@ from django.db.models import Model
 
 from .....checkout import models as checkout_models
 from .....checkout.actions import transaction_amounts_for_checkout_updated
+from .....core.prices import quantize_price
 from .....order import OrderStatus
 from .....order import models as order_models
 from .....order.actions import order_transaction_updated
@@ -24,7 +25,6 @@ from .....payment.utils import create_manual_adjustment_events
 from .....permission.enums import PaymentPermissions
 from ....app.dataloaders import get_app_promise
 from ....core import ResolveInfo
-from ....core.descriptions import ADDED_IN_34, ADDED_IN_313, PREVIEW_FEATURE
 from ....core.doc_category import DOC_CATEGORY_PAYMENTS
 from ....core.mutations import BaseMutation
 from ....core.types import BaseInputObjectType
@@ -38,16 +38,10 @@ from ..payment.payment_check_balance import MoneyInput
 
 
 class TransactionCreateInput(BaseInputObjectType):
-    name = graphene.String(
-        description="Payment name of the transaction." + ADDED_IN_313
-    )
-    message = graphene.String(
-        description="The message of the transaction." + ADDED_IN_313
-    )
+    name = graphene.String(description="Payment name of the transaction.")
+    message = graphene.String(description="The message of the transaction.")
 
-    psp_reference = graphene.String(
-        description=("PSP Reference of the transaction. " + ADDED_IN_313)
-    )
+    psp_reference = graphene.String(description=("PSP Reference of the transaction. "))
     available_actions = graphene.List(
         graphene.NonNull(TransactionActionEnum),
         description="List of all possible actions for the transaction",
@@ -56,9 +50,7 @@ class TransactionCreateInput(BaseInputObjectType):
     amount_charged = MoneyInput(description="Amount charged by this transaction.")
     amount_refunded = MoneyInput(description="Amount refunded by this transaction.")
 
-    amount_canceled = MoneyInput(
-        description="Amount canceled by this transaction." + ADDED_IN_313
-    )
+    amount_canceled = MoneyInput(description="Amount canceled by this transaction.")
 
     metadata = graphene.List(
         graphene.NonNull(MetadataInput),
@@ -73,7 +65,7 @@ class TransactionCreateInput(BaseInputObjectType):
     external_url = graphene.String(
         description=(
             "The url that will allow to redirect user to "
-            "payment provider page with transaction event details." + ADDED_IN_313
+            "payment provider page with transaction event details."
         )
     )
 
@@ -83,12 +75,10 @@ class TransactionCreateInput(BaseInputObjectType):
 
 class TransactionEventInput(BaseInputObjectType):
     psp_reference = graphene.String(
-        description=("PSP Reference related to this action." + ADDED_IN_313)
+        description=("PSP Reference related to this action.")
     )
 
-    message = graphene.String(
-        description="The message related to the event." + ADDED_IN_313
-    )
+    message = graphene.String(description="The message related to the event.")
 
     class Meta:
         doc_category = DOC_CATEGORY_PAYMENTS
@@ -111,9 +101,7 @@ class TransactionCreate(BaseMutation):
         )
 
     class Meta:
-        description = (
-            "Create transaction for checkout or order." + ADDED_IN_34 + PREVIEW_FEATURE
-        )
+        description = "Create transaction for checkout or order."
         doc_category = DOC_CATEGORY_PAYMENTS
         error_type_class = common_types.TransactionCreateError
         permissions = (PaymentPermissions.HANDLE_PAYMENTS,)
@@ -125,19 +113,21 @@ class TransactionCreate(BaseMutation):
         validator = URLValidator()
         try:
             validator(external_url)
-        except ValidationError:
+        except ValidationError as e:
             raise ValidationError(
                 {
                     "transaction": ValidationError(
                         "Invalid format of `externalUrl`.", code=error_code
                     )
                 }
-            )
+            ) from e
 
     @classmethod
     def validate_metadata_keys(  # type: ignore[override]
-        cls, metadata_list: list[dict], field_name, error_code
+        cls, metadata_list: Optional[list[dict]], field_name, error_code
     ):
+        if not metadata_list:
+            return
         if metadata_contains_empty_key(metadata_list):
             raise ValidationError(
                 {
@@ -149,17 +139,27 @@ class TransactionCreate(BaseMutation):
             )
 
     @classmethod
-    def get_money_data_from_input(cls, cleaned_data: dict) -> dict[str, Decimal]:
+    def get_money_data_from_input(
+        cls, cleaned_data: dict, currency: str
+    ) -> dict[str, Decimal]:
         money_data = {}
         if amount_authorized := cleaned_data.pop("amount_authorized", None):
-            money_data["authorized_value"] = amount_authorized["amount"]
+            money_data["authorized_value"] = quantize_price(
+                amount_authorized["amount"], currency
+            )
         if amount_charged := cleaned_data.pop("amount_charged", None):
-            money_data["charged_value"] = amount_charged["amount"]
+            money_data["charged_value"] = quantize_price(
+                amount_charged["amount"], currency
+            )
         if amount_refunded := cleaned_data.pop("amount_refunded", None):
-            money_data["refunded_value"] = amount_refunded["amount"]
+            money_data["refunded_value"] = quantize_price(
+                amount_refunded["amount"], currency
+            )
 
         if amount_canceled := cleaned_data.pop("amount_canceled", None):
-            money_data["canceled_value"] = amount_canceled["amount"]
+            money_data["canceled_value"] = quantize_price(
+                amount_canceled["amount"], currency
+            )
         return money_data
 
     @classmethod
@@ -237,6 +237,8 @@ class TransactionCreate(BaseMutation):
             transaction.get("external_url"),
             error_code=TransactionCreateErrorCode.INVALID.value,
         )
+        if "available_actions" in transaction and not transaction["available_actions"]:
+            transaction.pop("available_actions")
         return instance
 
     @classmethod
@@ -338,7 +340,8 @@ class TransactionCreate(BaseMutation):
             order_or_checkout_instance, transaction=transaction
         )
         transaction_data = {**transaction}
-        transaction_data["currency"] = order_or_checkout_instance.currency
+        currency = order_or_checkout_instance.currency
+        transaction_data["currency"] = currency
         app = get_app_promise(info.context).get()
         user = info.context.user
         manager = get_plugin_manager_promise(info.context).get()
@@ -355,7 +358,7 @@ class TransactionCreate(BaseMutation):
                     reference=transaction_event.get("psp_reference"),
                     message=transaction_event.get("message", ""),
                 )
-        money_data = cls.get_money_data_from_input(transaction_data)
+        money_data = cls.get_money_data_from_input(transaction_data, currency)
         new_transaction = cls.create_transaction(transaction_data, user=user, app=app)
         if money_data:
             create_manual_adjustment_events(
@@ -378,7 +381,9 @@ class TransactionCreate(BaseMutation):
                 previous_refunded_value=Decimal(0),
             )
         if transaction_data.get("checkout_id") and money_data:
-            transaction_amounts_for_checkout_updated(new_transaction, manager)
+            transaction_amounts_for_checkout_updated(
+                new_transaction, manager, user, app
+            )
 
         if transaction_event:
             cls.create_transaction_event(transaction_event, new_transaction, user, app)

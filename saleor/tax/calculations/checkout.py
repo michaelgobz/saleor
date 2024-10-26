@@ -1,7 +1,7 @@
-from collections.abc import Iterable
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
+from django.conf import settings
 from prices import TaxedMoney
 
 from ...checkout import base_calculations
@@ -21,14 +21,17 @@ if TYPE_CHECKING:
 def update_checkout_prices_with_flat_rates(
     checkout: "Checkout",
     checkout_info: "CheckoutInfo",
-    lines: Iterable["CheckoutLineInfo"],
+    lines: list["CheckoutLineInfo"],
     prices_entered_with_tax: bool,
     address: Optional["Address"] = None,
+    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ):
     country_code = get_active_country(checkout_info.channel, address)
-    default_country_rate_obj = TaxClassCountryRate.objects.filter(
-        country=country_code, tax_class=None
-    ).first()
+    default_country_rate_obj = (
+        TaxClassCountryRate.objects.using(database_connection_name)
+        .filter(country=country_code, tax_class=None)
+        .first()
+    )
     default_tax_rate = (
         default_country_rate_obj.rate if default_country_rate_obj else Decimal(0)
     )
@@ -79,7 +82,7 @@ def update_checkout_prices_with_flat_rates(
 
 def calculate_checkout_shipping(
     checkout_info: "CheckoutInfo",
-    lines: Iterable["CheckoutLineInfo"],
+    lines: list["CheckoutLineInfo"],
     tax_rate: Decimal,
     prices_entered_with_tax: bool,
 ) -> TaxedMoney:
@@ -94,14 +97,13 @@ def calculate_checkout_shipping(
 
 def calculate_checkout_line_total(
     checkout_info: "CheckoutInfo",
-    lines: Iterable["CheckoutLineInfo"],
+    lines: list["CheckoutLineInfo"],
     checkout_line_info: "CheckoutLineInfo",
     tax_rate: Decimal,
     prices_entered_with_tax: bool,
 ) -> TaxedMoney:
     base_total_price = base_calculations.calculate_base_line_total_price(
         checkout_line_info,
-        checkout_info.channel,
     )
     total_price = base_calculations.apply_checkout_discount_on_checkout_line(
         checkout_info,

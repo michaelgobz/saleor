@@ -1,6 +1,6 @@
 import logging
 from decimal import Decimal
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional, cast
 
 from ..account.models import User
 from ..app.models import App
@@ -30,6 +30,7 @@ from .utils import (
     create_transaction,
     gateway_postprocess,
     get_already_processed_transaction_or_create_new_transaction,
+    recalculate_refundable_for_checkout,
     update_payment,
     validate_gateway_response,
 )
@@ -199,9 +200,16 @@ def _create_transaction_data(
 ):
     app_owner = None
     if transaction.app_id:
-        app_owner = transaction.app
-    elif transaction.app_identifier:
-        app_owner = App.objects.filter(identifier=transaction.app_identifier).first()
+        app_owner = cast(App, transaction.app)
+        if not app_owner.is_active or app_owner.removed_at:
+            app_owner = None
+
+    if not app_owner and transaction.app_identifier:
+        app_owner = App.objects.filter(
+            identifier=transaction.app_identifier,
+            removed_at__isnull=True,
+            is_active=True,
+        ).first()
 
     return TransactionActionData(
         transaction=transaction,
@@ -214,7 +222,7 @@ def _create_transaction_data(
 
 
 def _request_payment_action(
-    transaction_action_data: "TransactionActionData",
+    transaction_action_data: TransactionActionData,
     manager: "PluginsManager",
     channel_slug: str,
     event_type: str,
@@ -224,15 +232,16 @@ def _request_payment_action(
     transaction_request_event_active = manager.is_event_active_for_any_plugin(
         plugin_func_name, channel_slug=channel_slug
     )
-
     webhooks = None
     if transaction_action_data.transaction_app_owner:
         webhooks = get_webhooks_for_event(
             event_type=event_type,
             apps_ids=[transaction_action_data.transaction_app_owner.pk],
         )
-
     if not transaction_request_event_active and not webhooks:
+        recalculate_refundable_for_checkout(
+            transaction_action_data.transaction, transaction_action_data.event
+        )
         create_failed_transaction_event(
             transaction_action_data.event,
             cause="No app or plugin is configured to handle payment action requests.",
@@ -478,7 +487,7 @@ def list_payment_sources(
     gateway: str,
     customer_id: str,
     manager: "PluginsManager",
-    channel_slug: str,
+    channel_slug: Optional[str],
 ) -> list["CustomerSource"]:
     return manager.list_payment_sources(gateway, customer_id, channel_slug=channel_slug)
 
@@ -555,12 +564,12 @@ def payment_refund_or_void(
 
 def _get_success_transaction(
     kind: str, payment: Payment, transaction_id: Optional[str]
-):
+) -> None | Transaction:
     if not transaction_id:
         try:
             transaction_id = _get_past_transaction_token(payment, kind)
         except PaymentError:
-            return
+            return None
     return payment.transactions.filter(
         token=transaction_id,
         action_required=False,

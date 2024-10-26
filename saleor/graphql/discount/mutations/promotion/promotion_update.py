@@ -1,19 +1,17 @@
-from datetime import datetime
+import datetime
 from typing import Optional
 
 import graphene
-import pytz
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from .....discount import events, models
+from .....discount import PromotionType, events, models
+from .....discount.utils.promotion import mark_catalogue_promotion_rules_as_dirty
 from .....permission.enums import DiscountPermissions
 from .....plugins.manager import PluginsManager
-from .....product.tasks import update_products_discounted_prices_of_promotion_task
 from .....webhook.event_types import WebhookEventAsyncType
 from ....app.dataloaders import get_app_promise
 from ....core import ResolveInfo
-from ....core.descriptions import ADDED_IN_317, PREVIEW_FEATURE
 from ....core.doc_category import DOC_CATEGORY_DISCOUNTS
 from ....core.mutations import ModelMutation
 from ....core.types import Error
@@ -47,7 +45,7 @@ class PromotionUpdate(ModelMutation):
         )
 
     class Meta:
-        description = "Updates an existing promotion." + ADDED_IN_317 + PREVIEW_FEATURE
+        description = "Updates an existing promotion."
         model = models.Promotion
         object_type = Promotion
         permissions = (DiscountPermissions.MANAGE_DISCOUNTS,)
@@ -92,9 +90,9 @@ class PromotionUpdate(ModelMutation):
         end_date = cleaned_input.get("end_date") or instance.end_date
         try:
             validate_end_is_after_start(start_date, end_date)
-        except ValidationError as error:
-            error.code = PromotionUpdateErrorCode.INVALID.value
-            raise ValidationError({"endDate": error})
+        except ValidationError as e:
+            e.code = PromotionUpdateErrorCode.INVALID.value
+            raise ValidationError({"endDate": e}) from e
         return cleaned_input
 
     @classmethod
@@ -108,8 +106,10 @@ class PromotionUpdate(ModelMutation):
 
         # update the product undiscounted prices for promotion only when
         # start or end date has changed
-        if "start_date" in cleaned_input or "end_date" in cleaned_input:
-            update_products_discounted_prices_of_promotion_task.delay(instance.pk)
+        if instance.type == PromotionType.CATALOGUE and (
+            "start_date" in cleaned_input or "end_date" in cleaned_input
+        ):
+            cls.call_event(mark_catalogue_promotion_rules_as_dirty, [instance.pk])
 
     @classmethod
     def get_toggle_type(cls, instance, clean_input, previous_end_date) -> Optional[str]:
@@ -122,7 +122,7 @@ class PromotionUpdate(ModelMutation):
         :return: "started" if promotion has started, "ended" if promotion has ended or
         None if there was no toggle.
         """
-        now = datetime.now(pytz.utc)
+        now = datetime.datetime.now(tz=datetime.UTC)
         notification_date = instance.last_notification_scheduled_at
         start_date = clean_input.get("start_date")
         end_date = clean_input.get("end_date")
@@ -164,7 +164,9 @@ class PromotionUpdate(ModelMutation):
             event = manager.promotion_ended
         if event:
             cls.call_event(event, instance)
-            instance.last_notification_scheduled_at = datetime.now(pytz.utc)
+            instance.last_notification_scheduled_at = datetime.datetime.now(
+                tz=datetime.UTC
+            )
             instance.save(update_fields=["last_notification_scheduled_at"])
 
     @classmethod

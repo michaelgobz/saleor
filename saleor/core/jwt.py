@@ -1,5 +1,5 @@
+import datetime
 from collections.abc import Iterable
-from datetime import datetime, timedelta
 from typing import Any, Optional
 
 import graphene
@@ -29,9 +29,9 @@ JWT_OWNER_FIELD = "owner"
 
 
 def jwt_base_payload(
-    exp_delta: Optional[timedelta], token_owner: str
+    exp_delta: Optional[datetime.timedelta], token_owner: str
 ) -> dict[str, Any]:
-    utc_now = datetime.utcnow()
+    utc_now = datetime.datetime.now(tz=datetime.UTC)
 
     payload = {
         "iat": utc_now,
@@ -46,7 +46,7 @@ def jwt_base_payload(
 def jwt_user_payload(
     user: User,
     token_type: str,
-    exp_delta: Optional[timedelta],
+    exp_delta: Optional[datetime.timedelta],
     additional_payload: Optional[dict[str, Any]] = None,
     token_owner: str = JWT_SALEOR_OWNER_NAME,
 ) -> dict[str, Any]:
@@ -86,7 +86,7 @@ def jwt_decode(
     return jwt_manager.decode(token, verify_expiration, verify_aud=verify_aud)
 
 
-def create_token(payload: dict[str, Any], exp_delta: timedelta) -> str:
+def create_token(payload: dict[str, Any], exp_delta: datetime.timedelta) -> str:
     payload.update(jwt_base_payload(exp_delta, token_owner=JWT_SALEOR_OWNER_NAME))
     return jwt_encode(payload)
 
@@ -164,10 +164,11 @@ def _create_access_token_for_third_party_actions(
     user: "User",
     app: "App",
     extra: Optional[dict[str, Any]] = None,
+    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ):
     app_permission_enums = get_permission_names(permissions)
 
-    permissions = user.effective_permissions
+    permissions = user.effective_permissions.using(database_connection_name)
     user_permission_enums = get_permission_names(permissions)
     additional_payload = {
         APP_KEY_FIELD: graphene.Node.to_global_id("App", app.id),
@@ -188,7 +189,11 @@ def _create_access_token_for_third_party_actions(
     return jwt_encode(payload)
 
 
-def create_access_token_for_app(app: "App", user: "User"):
+def create_access_token_for_app(
+    app: "App",
+    user: "User",
+    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
+):
     """Create access token for app.
 
     App can use user's JWT token to proceed given operation in Saleor.
@@ -198,7 +203,10 @@ def create_access_token_for_app(app: "App", user: "User"):
     """
     app_permissions = app.permissions.all()
     return _create_access_token_for_third_party_actions(
-        permissions=app_permissions, user=user, app=app
+        permissions=app_permissions,
+        user=user,
+        app=app,
+        database_connection_name=database_connection_name,
     )
 
 
@@ -207,6 +215,7 @@ def create_access_token_for_app_extension(
     permissions: Iterable["Permission"],
     user: "User",
     app: "App",
+    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ):
     app_extension_id = graphene.Node.to_global_id("AppExtension", app_extension.id)
     return _create_access_token_for_third_party_actions(
@@ -214,4 +223,5 @@ def create_access_token_for_app_extension(
         user=user,
         app=app,
         extra={"app_extension": app_extension_id},
+        database_connection_name=database_connection_name,
     )

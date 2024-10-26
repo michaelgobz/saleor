@@ -1,9 +1,13 @@
 from decimal import Decimal
 
+import graphene
 from prices import Money, TaxedMoney
+
+from saleor.payment import TransactionEventType
 
 from ....core.utils import to_global_id_or_none
 from ....tests.utils import assert_no_permission, get_graphql_content
+from ...enums import OrderGrantedRefundStatusEnum
 
 ORDERS_QUERY = """
 query OrdersQuery {
@@ -37,6 +41,13 @@ query OrdersQuery {
                           id
                         }
                         quantity
+                    }
+                    status
+                    transactionEvents{
+                      id
+                    }
+                    transaction{
+                      id
                     }
                 }
             }
@@ -99,6 +110,9 @@ def test_order_granted_refunds_query_without_lines_by_user(
             "app": None,
             "shippingCostsIncluded": False,
             "lines": [],
+            "status": OrderGrantedRefundStatusEnum.NONE.name,
+            "transactionEvents": [],
+            "transaction": None,
         },
         {
             "id": to_global_id_or_none(second_granted_refund),
@@ -113,6 +127,9 @@ def test_order_granted_refunds_query_without_lines_by_user(
             "user": None,
             "shippingCostsIncluded": False,
             "lines": [],
+            "status": OrderGrantedRefundStatusEnum.NONE.name,
+            "transactionEvents": [],
+            "transaction": None,
         },
     ]
 
@@ -172,6 +189,9 @@ def test_order_granted_refunds_query_without_lines_by_app(
             "app": None,
             "shippingCostsIncluded": False,
             "lines": [],
+            "status": OrderGrantedRefundStatusEnum.NONE.name,
+            "transactionEvents": [],
+            "transaction": None,
         },
         {
             "id": to_global_id_or_none(second_granted_refund),
@@ -186,6 +206,9 @@ def test_order_granted_refunds_query_without_lines_by_app(
             "user": None,
             "shippingCostsIncluded": False,
             "lines": [],
+            "status": OrderGrantedRefundStatusEnum.NONE.name,
+            "transactionEvents": [],
+            "transaction": None,
         },
     ]
 
@@ -251,6 +274,9 @@ def test_order_granted_refunds_query_by_user(
                     },
                 }
             ],
+            "status": OrderGrantedRefundStatusEnum.NONE.name,
+            "transactionEvents": [],
+            "transaction": None,
         },
     ]
 
@@ -318,6 +344,9 @@ def test_order_granted_refunds_query_by_app(
                     },
                 }
             ],
+            "status": OrderGrantedRefundStatusEnum.NONE.name,
+            "transactionEvents": [],
+            "transaction": None,
         },
     ]
 
@@ -442,3 +471,161 @@ def test_order_total_granted_refund_query_by_app(
         total_granted_refund["amount"]
         == first_granted_refund_amount + second_granted_refund_amount
     )
+
+
+def test_order_granted_refunds_query_with_removed_app(
+    staff_user,
+    removed_app,
+    staff_api_client,
+    permission_group_manage_orders,
+    fulfilled_order,
+    shipping_zone,
+):
+    # given
+    order = fulfilled_order
+    first_granted_refund_amount = Decimal("10.00")
+    order.granted_refunds.create(
+        amount_value=first_granted_refund_amount,
+        currency="USD",
+        reason="Test reason",
+        app=removed_app,
+    )
+
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+
+    # when
+    response = staff_api_client.post_graphql(ORDERS_QUERY)
+    content = get_graphql_content(response)
+
+    # then
+    order_data = content["data"]["orders"]["edges"][0]["node"]
+    granted_refund = order_data["grantedRefunds"][0]
+    assert granted_refund["app"] is None
+
+
+def test_order_granted_refund_with_assigned_transaction(
+    app,
+    app_api_client,
+    permission_manage_orders,
+    permission_manage_shipping,
+    permission_manage_users,
+    fulfilled_order,
+    transaction_item_generator,
+):
+    # given
+    order = fulfilled_order
+    transaction = transaction_item_generator(
+        order_id=order.pk, charged_value=Decimal("10.0")
+    )
+    order.granted_refunds.create(
+        amount_value=Decimal("10.0"),
+        currency="USD",
+        reason="Test reason",
+        app=app,
+        shipping_costs_included=True,
+        transaction_item=transaction,
+    )
+
+    app_api_client.app.permissions.set(
+        [permission_manage_orders, permission_manage_shipping, permission_manage_users]
+    )
+
+    # when
+    response = app_api_client.post_graphql(ORDERS_QUERY)
+    content = get_graphql_content(response)
+
+    # then
+    order_data = content["data"]["orders"]["edges"][0]["node"]
+    granted_refunds = order_data["grantedRefunds"]
+    assert len(granted_refunds) == 1
+    assert granted_refunds[0]["transaction"]["id"] == graphene.Node.to_global_id(
+        "TransactionItem", transaction.token
+    )
+
+
+def test_order_granted_refund_with_status(
+    app,
+    app_api_client,
+    permission_manage_orders,
+    permission_manage_shipping,
+    permission_manage_users,
+    fulfilled_order,
+    transaction_item_generator,
+):
+    # given
+    order = fulfilled_order
+    transaction = transaction_item_generator(
+        order_id=order.pk, charged_value=Decimal("10.0")
+    )
+    order.granted_refunds.create(
+        amount_value=Decimal("10.0"),
+        currency="USD",
+        reason="Test reason",
+        app=app,
+        shipping_costs_included=True,
+        transaction_item=transaction,
+    )
+
+    app_api_client.app.permissions.set(
+        [permission_manage_orders, permission_manage_shipping, permission_manage_users]
+    )
+
+    # when
+    response = app_api_client.post_graphql(ORDERS_QUERY)
+    content = get_graphql_content(response)
+
+    # then
+    order_data = content["data"]["orders"]["edges"][0]["node"]
+    granted_refunds = order_data["grantedRefunds"]
+    assert len(granted_refunds) == 1
+    assert granted_refunds[0]["status"] == OrderGrantedRefundStatusEnum.NONE.name
+
+
+def test_order_granted_refund_with_transaction_events(
+    app,
+    app_api_client,
+    permission_manage_orders,
+    permission_manage_shipping,
+    permission_manage_users,
+    fulfilled_order,
+    transaction_item_generator,
+):
+    # given
+    order = fulfilled_order
+    charged_value = Decimal("10.0")
+    transaction = transaction_item_generator(
+        order_id=order.pk, charged_value=charged_value
+    )
+    granted_refund = order.granted_refunds.create(
+        amount_value=Decimal("10.0"),
+        currency="USD",
+        reason="Test reason",
+        app=app,
+        shipping_costs_included=True,
+        transaction_item=transaction,
+    )
+    event = transaction.events.create(
+        psp_reference="123",
+        type=TransactionEventType.REFUND_REQUEST,
+        amount_value=charged_value,
+        include_in_calculations=True,
+        currency=transaction.currency,
+        related_granted_refund=granted_refund,
+    )
+
+    app_api_client.app.permissions.set(
+        [permission_manage_orders, permission_manage_shipping, permission_manage_users]
+    )
+
+    # when
+    response = app_api_client.post_graphql(ORDERS_QUERY)
+    content = get_graphql_content(response)
+
+    # then
+    order_data = content["data"]["orders"]["edges"][0]["node"]
+    granted_refunds = order_data["grantedRefunds"]
+    assert len(granted_refunds) == 1
+    grant_refund = granted_refunds[0]
+    assert len(grant_refund["transactionEvents"]) == 1
+    event_data = grant_refund["transactionEvents"][0]
+    assert event_data["id"] == graphene.Node.to_global_id("TransactionEvent", event.id)

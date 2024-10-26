@@ -13,12 +13,10 @@ jobs:
       - uses: actions/checkout@v2
       - uses: actions/setup-python@v2
         with:
-          python-version: '3.9'
+          python-version: '3.12'
 
       - run: python -m pip install poetry pre-commit
       - run: poetry lock
-      - run: poetry export --without-hashes --with dev -f requirements.txt -o requirements_dev.txt
-      - run: poetry export -f requirements.txt --without-hashes -o requirements.txt
       - run: pre-commit autoupdate
       - run: git status
 

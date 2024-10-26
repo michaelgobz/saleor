@@ -323,10 +323,17 @@ def draft_order_created_from_replace_event(
 
 
 def order_created_event(
-    *, order: Order, user: Optional[User], app: Optional[App], from_draft=False
+    *,
+    order: Order,
+    user: Optional[User],
+    app: Optional[App],
+    from_draft=False,
+    automatic=False,
 ) -> OrderEvent:
     if from_draft:
         event_type = OrderEvents.PLACED_FROM_DRAFT
+    elif automatic:
+        event_type = OrderEvents.PLACED_AUTOMATICALLY_FROM_PAID_CHECKOUT
     else:
         event_type = OrderEvents.PLACED
         if user:
@@ -374,10 +381,21 @@ def order_manually_marked_as_paid_event(
 
 
 def order_fully_paid_event(
-    *, order: Order, user: Optional[User], app: Optional[App]
+    *,
+    order: Order,
+    user: Optional[User],
+    app: Optional[App],
+    gateway: Optional[str] = None,
 ) -> OrderEvent:
+    parameters = {}
+    if gateway:
+        parameters = {"payment_gateway": gateway}
     return OrderEvent.objects.create(
-        order=order, type=OrderEvents.ORDER_FULLY_PAID, user=user, app=app
+        order=order,
+        type=OrderEvents.ORDER_FULLY_PAID,
+        user=user,
+        app=app,
+        parameters=parameters,
     )
 
 
@@ -850,9 +868,9 @@ def order_line_discount_event(
     if line_before_update:
         discount_parameters["old_value"] = line_before_update.unit_discount_value
         discount_parameters["old_value_type"] = line_before_update.unit_discount_type
-        discount_parameters[
-            "old_amount_value"
-        ] = line_before_update.unit_discount_amount
+        discount_parameters["old_amount_value"] = (
+            line_before_update.unit_discount_amount
+        )
 
     line_data = _line_per_quantity_to_line_object(line.quantity, line)
     line_data["discount"] = discount_parameters

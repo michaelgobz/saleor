@@ -1,9 +1,10 @@
-from datetime import timedelta
+import datetime
 
 from django.contrib.sites.models import Site
 from django.utils.timezone import now
 
 from ...account import events as account_events
+from ...core.db.connection import allow_writer
 from ..models import DigitalContentUrl
 
 
@@ -32,7 +33,7 @@ def digital_content_url_is_valid(content_url: DigitalContentUrl) -> bool:
         max_downloads = content_url.content.max_downloads
 
     if url_valid_days is not None:
-        valid_days = timedelta(days=url_valid_days)
+        valid_days = datetime.timedelta(days=url_valid_days)
         valid_until = content_url.created_at + valid_days
         if now() > valid_until:
             return False
@@ -42,6 +43,7 @@ def digital_content_url_is_valid(content_url: DigitalContentUrl) -> bool:
     return True
 
 
+@allow_writer()
 def increment_download_count(content_url: DigitalContentUrl):
     content_url.download_num += 1
     content_url.save(update_fields=["download_num"])

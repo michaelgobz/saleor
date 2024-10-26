@@ -1,15 +1,17 @@
 """Checkout-related utility functions."""
-from collections.abc import Iterable
-from typing import TYPE_CHECKING, Optional
 
+from collections.abc import Iterable
+from typing import Optional
+
+from django.conf import settings
+from django.db.models import Exists, Q
 from prices import Money
 
+from ..core.db.connection import allow_writer
 from ..core.taxes import zero_money
+from ..payment.models import TransactionItem
 from . import CheckoutAuthorizeStatus, CheckoutChargeStatus
 from .models import Checkout
-
-if TYPE_CHECKING:
-    from ..payment.models import TransactionItem
 
 
 def _update_charge_status(
@@ -52,7 +54,7 @@ def _update_authorize_status(
         checkout_has_lines and checkout_total_gross <= zero_money_amount
     )
 
-    if total_covered <= zero_money_amount and checkout_with_only_zero_price_lines:
+    if checkout_with_only_zero_price_lines:
         checkout.authorize_status = CheckoutAuthorizeStatus.FULL
     elif total_covered == zero_money_amount:
         checkout.authorize_status = CheckoutAuthorizeStatus.NONE
@@ -84,12 +86,15 @@ def update_checkout_payment_statuses(
     checkout_has_lines: bool,
     checkout_transactions: Optional[Iterable["TransactionItem"]] = None,
     save: bool = True,
+    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ):
     current_authorize_status = checkout.authorize_status
     current_charge_status = checkout.charge_status
 
     if checkout_transactions is None:
-        checkout_transactions = checkout.payment_transactions.all()
+        checkout_transactions = checkout.payment_transactions.all().using(
+            database_connection_name
+        )
     total_authorized_amount, total_charged_amount = _get_payment_amount_for_checkout(
         checkout_transactions, checkout.currency
     )
@@ -111,4 +116,21 @@ def update_checkout_payment_statuses(
             fields_to_update.append("charge_status")
         if fields_to_update:
             fields_to_update.append("last_change")
-            checkout.save(update_fields=fields_to_update)
+            with allow_writer():
+                checkout.save(update_fields=fields_to_update)
+
+
+def update_refundable_for_checkout(checkout_pk):
+    """Update automatically refundable status for checkout.
+
+    The refundable status is calculated based on the transaction. If transaction is
+    not refundable or doesn't have enough funds to refund, the function will calculate
+    the status based on the rest of transactions for the checkout.
+    """
+    transactions_subquery = TransactionItem.objects.filter(
+        Q(checkout_id=checkout_pk, last_refund_success=True)
+        & (Q(authorized_value__gt=0) | Q(charged_value__gt=0))
+    )
+    Checkout.objects.filter(pk=checkout_pk).update(
+        automatically_refundable=Exists(transactions_subquery)
+    )

@@ -7,7 +7,6 @@ from ....permission.enums import ProductTypePermissions
 from ....product import models as product_models
 from ....webhook.event_types import WebhookEventAsyncType
 from ...core import ResolveInfo
-from ...core.descriptions import ADDED_IN_310
 from ...core.mutations import ModelWithExtRefMutation
 from ...core.types import AttributeError
 from ...core.utils import WebhookEventInfo
@@ -47,7 +46,7 @@ class AttributeValueUpdate(AttributeValueCreate, ModelWithExtRefMutation):
         )
         external_reference = graphene.String(
             required=False,
-            description=f"External ID of an AttributeValue to update. {ADDED_IN_310}",
+            description="External ID of an AttributeValue to update.",
         )
         input = AttributeValueUpdateInput(
             required=True, description="Fields required to update an AttributeValue."
@@ -99,6 +98,7 @@ class AttributeValueUpdate(AttributeValueCreate, ModelWithExtRefMutation):
             )
             # SELECT … FOR UPDATE needs to lock rows in a consistent order
             # to avoid deadlocks between updates touching the same rows.
+
             qs = (
                 product_models.Product.objects.select_for_update(of=("self",))
                 .filter(
@@ -106,7 +106,7 @@ class AttributeValueUpdate(AttributeValueCreate, ModelWithExtRefMutation):
                     & (
                         Q(
                             Exists(
-                                instance.productassignments.filter(
+                                instance.productvalueassignment.filter(
                                     product_id=OuterRef("id")
                                 )
                             )

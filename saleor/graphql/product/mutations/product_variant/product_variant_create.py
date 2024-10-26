@@ -7,19 +7,18 @@ from django.utils.text import slugify
 from .....attribute import AttributeInputType
 from .....attribute import models as attribute_models
 from .....core.tracing import traced_atomic_transaction
+from .....discount.utils.promotion import mark_active_catalogue_promotion_rules_as_dirty
 from .....permission.enums import ProductPermissions
 from .....product import models
 from .....product.error_codes import ProductErrorCode
-from .....product.tasks import update_products_discounted_prices_for_promotion_task
 from .....product.utils.variants import generate_and_set_variant_name
 from ....attribute.types import AttributeValueInput
 from ....attribute.utils import AttributeAssignmentMixin, AttrValuesInput
 from ....channel import ChannelContext
 from ....core import ResolveInfo
-from ....core.descriptions import ADDED_IN_31, ADDED_IN_38, ADDED_IN_310
 from ....core.doc_category import DOC_CATEGORY_PRODUCTS
 from ....core.mutations import ModelMutation
-from ....core.scalars import WeightScalar
+from ....core.scalars import DateTime, WeightScalar
 from ....core.types import BaseInputObjectType, NonNullList, ProductError
 from ....core.utils import get_duplicated_values
 from ....meta.inputs import MetadataInput
@@ -41,7 +40,7 @@ class PreorderSettingsInput(BaseInputObjectType):
     global_threshold = graphene.Int(
         description="The global threshold for preorder variant."
     )
-    end_date = graphene.DateTime(description="The end date for preorder.")
+    end_date = DateTime(description="The end date for preorder.")
 
     class Meta:
         doc_category = DOC_CATEGORY_PRODUCTS
@@ -64,32 +63,27 @@ class ProductVariantInput(BaseInputObjectType):
     )
     weight = WeightScalar(description="Weight of the Product Variant.", required=False)
     preorder = PreorderSettingsInput(
-        description=("Determines if variant is in preorder." + ADDED_IN_31)
+        description=("Determines if variant is in preorder.")
     )
     quantity_limit_per_customer = graphene.Int(
         required=False,
         description=(
             "Determines maximum quantity of `ProductVariant`,"
-            "that can be bought in a single checkout." + ADDED_IN_31
+            "that can be bought in a single checkout."
         ),
     )
     metadata = NonNullList(
         MetadataInput,
-        description=(
-            "Fields required to update the product variant metadata." + ADDED_IN_38
-        ),
+        description=("Fields required to update the product variant metadata."),
         required=False,
     )
     private_metadata = NonNullList(
         MetadataInput,
-        description=(
-            "Fields required to update the product variant private metadata."
-            + ADDED_IN_38
-        ),
+        description=("Fields required to update the product variant private metadata."),
         required=False,
     )
     external_reference = graphene.String(
-        description="External ID of this product variant." + ADDED_IN_310,
+        description="External ID of this product variant.",
         required=False,
     )
 
@@ -164,8 +158,7 @@ class ProductVariantCreate(ModelMutation):
                 code=ProductErrorCode.DUPLICATED_INPUT_ITEM.value,
                 params={"attributes": attribute_values.keys()},
             )
-        else:
-            used_attribute_values.append(attribute_values)
+        used_attribute_values.append(attribute_values)
 
     @classmethod
     def clean_input(
@@ -214,6 +207,16 @@ class ProductVariantCreate(ModelMutation):
         else:
             # If the variant is getting created, no product type is associated yet,
             # retrieve it from the required "product" input field
+            product = cleaned_input["product"]
+            if not product:
+                raise ValidationError(
+                    {
+                        "product": ValidationError(
+                            "Product cannot be set empty.",
+                            code=ProductErrorCode.INVALID.value,
+                        )
+                    }
+                )
             product_type = cleaned_input["product"].product_type
             used_attribute_values = get_used_variants_attribute_values(
                 cleaned_input["product"]
@@ -258,8 +261,8 @@ class ProductVariantCreate(ModelMutation):
                         "All required attributes must take a value.",
                         ProductErrorCode.REQUIRED.value,
                     )
-            except ValidationError as exc:
-                raise ValidationError({"attributes": exc})
+            except ValidationError as e:
+                raise ValidationError({"attributes": e}) from e
         else:
             if attributes:
                 raise ValidationError(
@@ -314,10 +317,6 @@ class ProductVariantCreate(ModelMutation):
             if not instance.product.default_variant:
                 instance.product.default_variant = instance
                 instance.product.save(update_fields=["default_variant", "updated_at"])
-            # Recalculate the "discounted price" for the parent product
-            update_products_discounted_prices_for_promotion_task.delay(
-                [instance.product_id]
-            )
             stocks = cleaned_input.get("stocks")
             if stocks:
                 cls.create_variant_stocks(instance, stocks)
@@ -337,6 +336,14 @@ class ProductVariantCreate(ModelMutation):
                 else manager.product_variant_updated
             )
             cls.call_event(event_to_call, instance)
+
+    @classmethod
+    def post_save_action(cls, info: ResolveInfo, instance, cleaned_input):
+        channel_ids = models.ProductChannelListing.objects.filter(
+            product_id=instance.product_id
+        ).values_list("channel_id", flat=True)
+        # This will recalculate discounted prices for products.
+        cls.call_event(mark_active_catalogue_promotion_rules_as_dirty, channel_ids)
 
     @classmethod
     def create_variant_stocks(cls, variant, stocks):

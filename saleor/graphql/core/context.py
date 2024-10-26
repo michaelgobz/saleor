@@ -22,6 +22,11 @@ class SaleorContext(HttpRequest):
     requestor: Union[App, User, None]
     request_time: datetime.datetime
 
+    def __init__(self, *args, **kwargs):
+        if "dataloaders" in kwargs:
+            self.dataloaders = kwargs.pop("dataloaders")
+        super().__init__(*args, **kwargs)
+
 
 def disallow_replica_in_context(context: SaleorContext) -> None:
     """Set information in context to use database replicas or not.
@@ -55,7 +60,7 @@ def get_database_connection_name(context: SaleorContext) -> str:
 
 def setup_context_user(context: SaleorContext) -> None:
     if hasattr(context.user, "_wrapped") and (
-        context.user._wrapped is empty or context.user._wrapped is None  # type: ignore
+        context.user._wrapped is empty or context.user._wrapped is None  # type: ignore[union-attr]
     ):
-        context.user._setup()  # type: ignore
-        context.user = context.user._wrapped  # type: ignore
+        context.user._setup()  # type: ignore[union-attr]
+        context.user = context.user._wrapped  # type: ignore[union-attr]

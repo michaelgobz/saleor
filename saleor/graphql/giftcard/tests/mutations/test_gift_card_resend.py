@@ -1,5 +1,5 @@
+import datetime
 import json
-from datetime import date, timedelta
 from unittest import mock
 
 import graphene
@@ -300,6 +300,7 @@ def test_resend_gift_card_triggers_gift_card_sent_event(
             "sent_to_email": email,
         },
         SimpleLazyObject(lambda: staff_api_client.user),
+        allow_replica=False,
     )
 
 
@@ -312,7 +313,9 @@ def test_resend_gift_card_expired_card(
     permission_manage_apps,
 ):
     # given
-    gift_card.expiry_date = date.today() - timedelta(days=1)
+    gift_card.expiry_date = datetime.datetime.now(
+        tz=datetime.UTC
+    ).date() - datetime.timedelta(days=1)
     gift_card.save(update_fields=["expiry_date"])
 
     email = "gift_card_receiver@example.com"

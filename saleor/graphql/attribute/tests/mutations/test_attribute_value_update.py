@@ -8,6 +8,10 @@ from django.utils.text import slugify
 from freezegun import freeze_time
 
 from .....attribute.error_codes import AttributeErrorCode
+from .....attribute.tests.model_helpers import (
+    get_product_attribute_values,
+    get_product_attributes,
+)
 from .....attribute.utils import associate_attribute_values_to_instance
 from .....core.utils.json_serializer import CustomJsonEncoder
 from .....webhook.event_types import WebhookEventAsyncType
@@ -93,7 +97,10 @@ def test_update_attribute_value_update_search_index_dirty_in_product(
 ):
     # given
     query = UPDATE_ATTRIBUTE_VALUE_MUTATION
-    value = product.attributes.all()[0].values.first()
+
+    first_attribute = get_product_attributes(product).first()
+    value = get_product_attribute_values(product, first_attribute).first()
+
     node_id = graphene.Node.to_global_id("AttributeValue", value.id)
     name = "Crimson name"
     variables = {"input": {"name": name}, "id": node_id}
@@ -159,6 +166,7 @@ def test_update_attribute_value_trigger_webhooks(
         [any_webhook],
         attribute,
         SimpleLazyObject(lambda: staff_api_client.user),
+        allow_replica=False,
     )
 
     attribute_value_created_call = mock.call(
@@ -176,6 +184,7 @@ def test_update_attribute_value_trigger_webhooks(
         [any_webhook],
         value,
         SimpleLazyObject(lambda: staff_api_client.user),
+        allow_replica=False,
     )
 
     # then
@@ -257,7 +266,7 @@ def test_update_attribute_value_product_search_document_updated(
     product_type = product.product_type
     product_type.product_attributes.add(attribute)
 
-    associate_attribute_values_to_instance(product, attribute, value)
+    associate_attribute_values_to_instance(product, {attribute.pk: [value]})
 
     node_id = graphene.Node.to_global_id("AttributeValue", value.id)
     name = "Crimson name"
@@ -294,7 +303,7 @@ def test_update_attribute_value_product_search_document_updated_variant_attribut
     product_type = product.product_type
     product_type.variant_attributes.add(attribute)
 
-    associate_attribute_values_to_instance(variant, attribute, value)
+    associate_attribute_values_to_instance(variant, {attribute.pk: [value]})
 
     node_id = graphene.Node.to_global_id("AttributeValue", value.id)
     name = "Crimson name"

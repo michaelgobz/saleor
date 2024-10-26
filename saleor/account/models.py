@@ -67,6 +67,7 @@ class Address(ModelWithMetadata):
     country = CountryField()
     country_area = models.CharField(max_length=128, blank=True)
     phone = PossiblePhoneNumberField(blank=True, default="", db_index=True)
+    validation_skipped = models.BooleanField(default=False)
 
     objects = AddressManager()
 
@@ -110,7 +111,7 @@ class Address(ModelWithMetadata):
         data = model_to_dict(self, exclude=["id", "user"])
         if isinstance(data["country"], Country):
             data["country"] = data["country"].code
-        if isinstance(data["phone"], PhoneNumber):
+        if isinstance(data["phone"], PhoneNumber) and not data["validation_skipped"]:
             data["phone"] = data["phone"].as_e164
         return data
 
@@ -143,7 +144,7 @@ class UserManager(BaseUserManager["User"]):
         group, created = Group.objects.get_or_create(name="Full Access")
         if created:
             group.permissions.add(*get_permissions())
-        group.user_set.add(user)
+        group.user_set.add(user)  # type: ignore[attr-defined]
         return user
 
     def customers(self):
@@ -221,6 +222,16 @@ class User(
                 name="user_p_meta_jsonb_path_idx",
                 fields=["private_metadata"],
                 opclasses=["jsonb_path_ops"],
+            ),
+            GinIndex(
+                fields=["first_name"],
+                name="first_name_gin",
+                opclasses=["gin_trgm_ops"],
+            ),
+            GinIndex(
+                fields=["last_name"],
+                name="last_name_gin",
+                opclasses=["gin_trgm_ops"],
             ),
         ]
 

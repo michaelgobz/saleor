@@ -1,7 +1,6 @@
-from datetime import datetime, timedelta
+import datetime
 
 import graphene
-import pytz
 
 from .....order import OrderStatus
 from .....order.error_codes import OrderErrorCode
@@ -148,7 +147,8 @@ def test_can_finalize_order_product_available_for_purchase_from_tomorrow(
     line = order.lines.first()
     product = line.variant.product
     product.channel_listings.update(
-        available_for_purchase_at=datetime.now(pytz.UTC) + timedelta(days=1)
+        available_for_purchase_at=datetime.datetime.now(tz=datetime.UTC)
+        + datetime.timedelta(days=1)
     )
 
     order_id = graphene.Node.to_global_id("Order", order.id)
@@ -166,3 +166,25 @@ def test_can_finalize_order_product_available_for_purchase_from_tomorrow(
     assert errors[0]["code"] == OrderErrorCode.PRODUCT_UNAVAILABLE_FOR_PURCHASE.name
     assert errors[0]["field"] == "lines"
     assert errors[0]["orderLines"] == [graphene.Node.to_global_id("OrderLine", line.pk)]
+
+
+def test_can_finalize_order_invalid_voucher(
+    staff_api_client, permission_manage_orders, draft_order_with_voucher
+):
+    # given
+    order = draft_order_with_voucher
+    order.voucher.channel_listings.all().delete()
+    order_id = graphene.Node.to_global_id("Order", order.id)
+    variables = {"id": order_id}
+    staff_api_client.user.user_permissions.add(permission_manage_orders)
+
+    # when
+    response = staff_api_client.post_graphql(ORDER_CAN_FINALIZE_QUERY, variables)
+
+    # then
+    content = get_graphql_content(response)
+    assert content["data"]["order"]["canFinalize"] is False
+    errors = content["data"]["order"]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["code"] == OrderErrorCode.INVALID_VOUCHER.name
+    assert errors[0]["field"] == "voucher"

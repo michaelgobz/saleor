@@ -1,16 +1,15 @@
 from collections import defaultdict
 
+from django.db.models import Exists, OuterRef
 from promise import Promise
 
-from ...attribute.models import AssignedPageAttributeValue, AttributePage
+from ...attribute.models import AssignedPageAttributeValue, Attribute, AttributePage
 from ...page.models import Page, PageType
-from ...permission.enums import PagePermissions
 from ..attribute.dataloaders import AttributesByAttributeId, AttributeValueByIdLoader
 from ..core.dataloaders import DataLoader
-from ..utils import get_user_or_app_from_context
 
 
-class PageByIdLoader(DataLoader):
+class PageByIdLoader(DataLoader[int, Page]):
     context_key = "page_by_id"
 
     def batch_load(self, keys):
@@ -18,7 +17,7 @@ class PageByIdLoader(DataLoader):
         return [pages.get(page_id) for page_id in keys]
 
 
-class PageTypeByIdLoader(DataLoader):
+class PageTypeByIdLoader(DataLoader[int, PageType]):
     context_key = "page_type_by_id"
 
     def batch_load(self, keys):
@@ -26,7 +25,7 @@ class PageTypeByIdLoader(DataLoader):
         return [page_types.get(page_type_id) for page_type_id in keys]
 
 
-class PagesByPageTypeIdLoader(DataLoader):
+class PagesByPageTypeIdLoader(DataLoader[int, list[Page]]):
     """Loads pages by pages type ID."""
 
     context_key = "pages_by_pagetype"
@@ -43,24 +42,16 @@ class PagesByPageTypeIdLoader(DataLoader):
         return [pagetype_to_pages[key] for key in keys]
 
 
-class PageAttributesByPageTypeIdLoader(DataLoader):
+class BasePageAttributesByPageTypeIdLoader(DataLoader[int, list[Attribute]]):
     """Loads page attributes by page type ID."""
 
     context_key = "page_attributes_by_pagetype"
 
-    def batch_load(self, keys):
-        requestor = get_user_or_app_from_context(self.context)
-        if (
-            requestor
-            and requestor.is_active
-            and requestor.has_perm(PagePermissions.MANAGE_PAGES)
-        ):
-            qs = AttributePage.objects.using(self.database_connection_name).all()
-        else:
-            qs = AttributePage.objects.using(self.database_connection_name).filter(
-                attribute__visible_in_storefront=True
-            )
+    def get_queryset(self):
+        raise NotImplementedError()
 
+    def batch_load(self, keys):
+        qs = self.get_queryset()
         page_type_attribute_pairs = qs.filter(page_type_id__in=keys).values_list(
             "page_type_id", "attribute_id"
         )
@@ -81,13 +72,40 @@ class PageAttributesByPageTypeIdLoader(DataLoader):
 
         return (
             AttributesByAttributeId(self.context)
-            .load_many(set(attr_id for _, attr_id in page_type_attribute_pairs))
+            .load_many({attr_id for _, attr_id in page_type_attribute_pairs})
             .then(map_attributes)
         )
 
 
-class AttributeValuesByPageIdLoader(DataLoader):
-    context_key = "attributevalues_by_page"
+class PageAttributesAllByPageTypeIdLoader(BasePageAttributesByPageTypeIdLoader):
+    """Loads page attributes by page type ID."""
+
+    context_key = "page_attributes_all_by_pagetype"
+
+    def get_queryset(self):
+        return AttributePage.objects.using(self.database_connection_name).all()
+
+
+class PageAttributesVisibleInStorefrontByPageTypeIdLoader(
+    BasePageAttributesByPageTypeIdLoader
+):
+    """Loads page attributes by page type ID."""
+
+    context_key = "page_attributes_visible_in_storefront_by_pagetype"
+
+    def get_queryset(self):
+        return AttributePage.objects.using(self.database_connection_name).filter(
+            Exists(
+                Attribute.objects.filter(
+                    pk=OuterRef("attribute_id"), visible_in_storefront=True
+                )
+            ),
+        )
+
+
+class BaseAttributeValuesByPageIdLoader(DataLoader[int, list[dict]]):
+    def get_page_attributes_dataloader(self):
+        raise NotImplementedError()
 
     def batch_load(self, keys):
         # Using list + iterator is a small optimisation because iterator causes
@@ -133,17 +151,40 @@ class AttributeValuesByPageIdLoader(DataLoader):
                         )
                 return [assigned_page_map[key] for key in keys]
 
-            attributes = PageAttributesByPageTypeIdLoader(self.context).load_many(
-                page_type_ids
-            )
+            attributes = self.get_page_attributes_dataloader().load_many(page_type_ids)
             values = AttributeValueByIdLoader(self.context).load_many(value_ids)
             return Promise.all([attributes, values]).then(with_attributes_and_values)
 
         return PageByIdLoader(self.context).load_many(keys).then(with_pages)
 
 
-class SelectedAttributesByPageIdLoader(DataLoader):
-    context_key = "selectedattributes_by_page"
+class AttributeValuesAllByPageIdLoader(BaseAttributeValuesByPageIdLoader):
+    context_key = "attributevalues_all_by_page"
+
+    def get_page_attributes_dataloader(self):
+        return PageAttributesAllByPageTypeIdLoader(self.context)
+
+
+class AttributeValuesVisibleInStorefrontByPageIdLoader(
+    BaseAttributeValuesByPageIdLoader
+):
+    context_key = "attributevalues_visible_in_storefront_by_page"
+
+    def get_page_attributes_dataloader(self):
+        return PageAttributesVisibleInStorefrontByPageTypeIdLoader(self.context)
+
+
+class SelectedAttributesAllByPageIdLoader(DataLoader[int, list[dict]]):
+    context_key = "selectedattributes_all_by_page"
 
     def batch_load(self, page_ids):
-        return AttributeValuesByPageIdLoader(self.context).load_many(page_ids)
+        return AttributeValuesAllByPageIdLoader(self.context).load_many(page_ids)
+
+
+class SelectedAttributesVisibleInStorefrontPageIdLoader(DataLoader[int, list[dict]]):
+    context_key = "selectedattributes_visible_in_storefront_by_page"
+
+    def batch_load(self, page_ids):
+        return AttributeValuesVisibleInStorefrontByPageIdLoader(self.context).load_many(
+            page_ids
+        )

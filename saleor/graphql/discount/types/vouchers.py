@@ -15,13 +15,13 @@ from ...core import ResolveInfo, types
 from ...core.connection import CountableConnection, create_connection_slice
 from ...core.context import get_database_connection_name
 from ...core.descriptions import (
-    ADDED_IN_31,
     ADDED_IN_318,
     DEPRECATED_IN_3X_FIELD,
     PREVIEW_FEATURE,
 )
 from ...core.doc_category import DOC_CATEGORY_DISCOUNTS
 from ...core.fields import ConnectionField, PermissionsField
+from ...core.scalars import DateTime
 from ...core.types import ModelObjectType, Money, NonNullList
 from ...meta.types import ObjectWithMetadata
 from ...product.types import (
@@ -35,8 +35,8 @@ from ...translations.types import VoucherTranslation
 from ..dataloaders import (
     CodeByVoucherIDLoader,
     UsedByVoucherIDLoader,
-    VoucherChannelListingByVoucherIdAndChanneSlugLoader,
-    VoucherChannelListingByVoucherIdLoader,
+    VoucherChannelListingByVoucherIdAndChannelSlugLoader,
+    VoucherChannelListingsByVoucherIdLoader,
 )
 from ..enums import DiscountValueTypeEnum, VoucherTypeEnum
 
@@ -73,9 +73,7 @@ class VoucherCode(ModelObjectType[models.VoucherCode]):
     code = graphene.String(description="Code to use the voucher.")
     used = graphene.Int(description="Number of times a code has been used.")
     is_active = graphene.Boolean(description="Whether a code is active or not.")
-    created_at = graphene.DateTime(
-        required=True, description="Date time of code creation."
-    )
+    created_at = DateTime(required=True, description="Date time of code creation.")
 
     class Meta:
         description = "Represents voucher code." + ADDED_IN_318 + PREVIEW_FEATURE
@@ -103,10 +101,10 @@ class Voucher(ChannelContextTypeWithMetadata[models.Voucher]):
         required=True,
         description="Usage count of the voucher.",
     )
-    start_date = graphene.DateTime(
+    start_date = DateTime(
         required=True, description="The start date and time of voucher."
     )
-    end_date = graphene.DateTime(description="The end date and time of voucher.")
+    end_date = DateTime(description="The end date and time of voucher.")
     apply_once_per_order = graphene.Boolean(
         required=True,
         description="Determine if the voucher should be applied once per order. If set "
@@ -153,7 +151,7 @@ class Voucher(ChannelContextTypeWithMetadata[models.Voucher]):
     )
     variants = ConnectionField(
         ProductVariantCountableConnection,
-        description="List of product variants this voucher applies to." + ADDED_IN_31,
+        description="List of product variants this voucher applies to.",
         permissions=[
             DiscountPermissions.MANAGE_DISCOUNTS,
         ],
@@ -226,7 +224,9 @@ class Voucher(ChannelContextTypeWithMetadata[models.Voucher]):
     def resolve_collections(
         root: ChannelContext[models.Voucher], info: ResolveInfo, **kwargs
     ):
-        qs = root.node.collections.all()
+        qs = root.node.collections.using(
+            get_database_connection_name(info.context)
+        ).all()
         qs = ChannelQsContext(qs=qs, channel_slug=root.channel_slug)
         return create_connection_slice(qs, info, kwargs, CollectionCountableConnection)
 
@@ -234,7 +234,7 @@ class Voucher(ChannelContextTypeWithMetadata[models.Voucher]):
     def resolve_products(
         root: ChannelContext[models.Voucher], info: ResolveInfo, **kwargs
     ):
-        qs = root.node.products.all()
+        qs = root.node.products.using(get_database_connection_name(info.context)).all()
         qs = ChannelQsContext(qs=qs, channel_slug=root.channel_slug)
         return create_connection_slice(qs, info, kwargs, ProductCountableConnection)
 
@@ -242,7 +242,7 @@ class Voucher(ChannelContextTypeWithMetadata[models.Voucher]):
     def resolve_variants(
         root: ChannelContext[models.Voucher], info: ResolveInfo, **kwargs
     ):
-        qs = root.node.variants.all()
+        qs = root.node.variants.using(get_database_connection_name(info.context)).all()
         qs = ChannelQsContext(qs=qs, channel_slug=root.channel_slug)
         return create_connection_slice(
             qs, info, kwargs, ProductVariantCountableConnection
@@ -261,7 +261,7 @@ class Voucher(ChannelContextTypeWithMetadata[models.Voucher]):
             return None
 
         return (
-            VoucherChannelListingByVoucherIdAndChanneSlugLoader(info.context)
+            VoucherChannelListingByVoucherIdAndChannelSlugLoader(info.context)
             .load((root.node.id, root.channel_slug))
             .then(
                 lambda channel_listing: channel_listing.discount_value
@@ -276,7 +276,7 @@ class Voucher(ChannelContextTypeWithMetadata[models.Voucher]):
             return None
 
         return (
-            VoucherChannelListingByVoucherIdAndChanneSlugLoader(info.context)
+            VoucherChannelListingByVoucherIdAndChannelSlugLoader(info.context)
             .load((root.node.id, root.channel_slug))
             .then(
                 lambda channel_listing: channel_listing.currency
@@ -291,7 +291,7 @@ class Voucher(ChannelContextTypeWithMetadata[models.Voucher]):
             return None
 
         return (
-            VoucherChannelListingByVoucherIdAndChanneSlugLoader(info.context)
+            VoucherChannelListingByVoucherIdAndChannelSlugLoader(info.context)
             .load((root.node.id, root.channel_slug))
             .then(
                 lambda channel_listing: channel_listing.min_spent
@@ -304,7 +304,7 @@ class Voucher(ChannelContextTypeWithMetadata[models.Voucher]):
     def resolve_channel_listings(
         root: ChannelContext[models.Voucher], info: ResolveInfo
     ):
-        return VoucherChannelListingByVoucherIdLoader(info.context).load(root.node.id)
+        return VoucherChannelListingsByVoucherIdLoader(info.context).load(root.node.id)
 
 
 class VoucherCountableConnection(CountableConnection):

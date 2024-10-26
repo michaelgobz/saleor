@@ -1,4 +1,6 @@
+import graphene
 import pytest
+from django.utils import timezone
 
 from ...app.models import App
 from ...permission.enums import (
@@ -15,6 +17,8 @@ from ...webhook.transport.utils import get_current_tax_app
 def app_factory():
     def factory(name, is_active, webhook_event_types, permissions):
         app = App.objects.create(name=name, is_active=is_active)
+        app.identifier = graphene.Node.to_global_id("App", app.pk)
+        app.save()
         webhook = Webhook.objects.create(
             name=f"{name} Webhook",
             app=app,
@@ -63,6 +67,12 @@ def tax_app(tax_app_factory):
 
 def test_get_current_tax_app(tax_app):
     assert tax_app == get_current_tax_app()
+
+
+def test_get_current_tax_app_removed_app(tax_app):
+    tax_app.removed_at = timezone.now()
+    tax_app.save(update_fields=["removed_at"])
+    assert get_current_tax_app() is None
 
 
 def test_get_current_tax_app_multiple_apps(app_factory, tax_app_factory):

@@ -1,5 +1,5 @@
+import datetime
 import json
-from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -131,11 +131,17 @@ def test_json_truncate_text_comparison():
     ("retry", "next_retry_date"),
     [
         (Retry(), None),
-        (Retry(when=60 * 10), datetime(1914, 6, 28, 11, tzinfo=timezone.utc)),
-        (Retry(when=datetime(1914, 6, 28, 11)), datetime(1914, 6, 28, 11)),
+        (
+            Retry(when=60 * 10),
+            datetime.datetime(2004, 5, 1, 0, 10, tzinfo=datetime.UTC),
+        ),
+        (
+            Retry(when=datetime.datetime(2004, 5, 1, 12, tzinfo=datetime.UTC)),
+            datetime.datetime(2004, 5, 1, 12, tzinfo=datetime.UTC),
+        ),
     ],
 )
-@freeze_time("1914-06-28 10:50")
+@freeze_time("2004-05-01 0:00")
 def test_task_next_retry_date(retry, next_retry_date):
     assert task_next_retry_date(retry) == next_retry_date
 
@@ -244,8 +250,8 @@ def test_report_event_delivery_attempt_not_active(
     mock_put_event.assert_not_called()
 
 
-def test_put_event(patch_get_buffer, buffer):
-    put_event(lambda: {"payload": "data"})
+def test_put_event(patch_get_buffer, buffer, event_data):
+    put_event(lambda: event_data)
     assert buffer.size() == 1
 
 
@@ -268,19 +274,19 @@ def test_put_event_catch_exceptions(patch_get_buffer, buffer, error):
 
 
 def test_pop_events_with_remaining_size(patch_get_buffer, buffer):
-    payload = "payload-{}"
-    buffer.put_events([payload.format(i) for i in range(BATCH_SIZE + BATCH_SIZE // 2)])
+    payloads_count = BATCH_SIZE + (BATCH_SIZE // 2)
+    payloads = [f"event-data-{i}".encode() for i in range(payloads_count)]
+    buffer.put_events(payloads)
 
-    events, batch_count = pop_events_with_remaining_size()
+    events, remaining_batch_count = pop_events_with_remaining_size()
 
-    assert events == [payload.format(i) for i in range(BATCH_SIZE)]
-    assert batch_count == 1
+    assert events == [f"event-data-{i}".encode() for i in range(BATCH_SIZE)]
+    assert remaining_batch_count == 1
 
 
 def test_pop_events_with_remaining_size_catch_exceptions(
     redis_server, buffer, patch_get_buffer
 ):
-    payload = "payload-{}"
-    buffer.put_events([payload.format(i) for i in range(BATCH_SIZE)])
+    buffer.put_events([f"event-data-{i}".encode() for i in range(BATCH_SIZE)])
     redis_server.connected = False
     assert pop_events_with_remaining_size() == ([], 0)

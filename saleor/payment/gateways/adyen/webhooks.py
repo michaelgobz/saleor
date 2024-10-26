@@ -213,7 +213,9 @@ def create_order(payment, checkout, manager):
         )
     except ValidationError as e:
         logger.info(
-            "Failed to create order from checkout %s.", checkout.pk, extra={"error": e}
+            "Failed to create order from checkout %s.",
+            checkout.pk,
+            extra={"error": str(e)},
         )
         return None
     # Refresh the payment to assign the newly created order
@@ -231,7 +233,7 @@ def handle_not_created_order(notification, payment, checkout, kind, manager):
         ChargeStatus.PARTIALLY_CHARGED,
         ChargeStatus.FULLY_CHARGED,
     }:
-        return
+        return None
 
     transaction = create_new_transaction(
         notification, payment, TransactionKind.ACTION_TO_CONFIRM
@@ -280,7 +282,7 @@ def handle_authorization(notification: dict[str, Any], gateway_config: GatewayCo
         # We don't know anything about that payment
         return
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     adyen_auto_capture = gateway_config.connection_params["adyen_auto_capture"]
     kind = TransactionKind.AUTH
     if adyen_auto_capture:
@@ -291,8 +293,8 @@ def handle_authorization(notification: dict[str, Any], gateway_config: GatewayCo
         notification_payment_amount = price_from_minor_unit(
             amount.get("value"), amount.get("currency")
         )
-    except TypeError as e:
-        logger.exception("Cannot convert amount from minor unit", extra={"error": e})
+    except TypeError:
+        logger.exception("Cannot convert amount from minor unit")
         return
 
     if notification_payment_amount < payment.total:
@@ -300,8 +302,9 @@ def handle_authorization(notification: dict[str, Any], gateway_config: GatewayCo
         # a partial payment so we create an order in separate webhook (order_closed)
         # after payment finished.
         logger.info(
-            f"This is a partial payment notification. We can't create an order. "
-            f"pspReference: {transaction_id}, payment_id: {payment.pk}"
+            "This is a partial payment notification. We can't create an order. pspReference: %s, paymentId: %x",
+            transaction_id,
+            payment.pk,
         )
         return
 
@@ -380,7 +383,7 @@ def handle_cancellation(
         payment, success_msg, failed_msg, new_transaction.is_success
     )
     if payment.order and new_transaction.is_success:
-        manager = get_plugins_manager()
+        manager = get_plugins_manager(allow_replica=False)
         cancel_order(payment.order, None, None, manager)
 
 
@@ -412,7 +415,7 @@ def handle_capture(notification: dict[str, Any], _gateway_config: GatewayConfig)
     if not payment:
         return
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
 
     transaction = get_transaction(payment, transaction_id, TransactionKind.CAPTURE)
 
@@ -534,7 +537,7 @@ def handle_refund(notification: dict[str, Any], _gateway_config: GatewayConfig):
             None,
             transaction.amount,
             payment,
-            get_plugins_manager(),
+            get_plugins_manager(allow_replica=False),
         )
 
 
@@ -583,11 +586,11 @@ def handle_failed_refund(notification: dict[str, Any], gateway_config: GatewayCo
         # we don't know anything about refund so we have to skip the notification about
         # failed refund.
         return
-
     if refund_transaction.kind == TransactionKind.REFUND_FAILED:
         # The failed refund is already saved
         return
-    elif refund_transaction.kind == TransactionKind.REFUND_ONGOING:
+
+    if refund_transaction.kind == TransactionKind.REFUND_ONGOING:
         # create new failed transaction which will allows us to discover duplicated
         # notification
         create_new_transaction(notification, payment, TransactionKind.REFUND_FAILED)
@@ -671,7 +674,7 @@ def handle_order_opened(notification: dict[str, Any], gateway_config: GatewayCon
     # order has been created.
     #
     # In this case we just logging here that we received the webhook properly.
-    logger.info(f"First payment request as a partial payment. {notification}")
+    logger.info("First payment request as a partial payment. %s", notification)
 
 
 def get_or_create_adyen_partial_payments(
@@ -809,8 +812,9 @@ def handle_order_closed(notification: dict[str, Any], gateway_config: GatewayCon
     is_success = True if notification.get("success") == "true" else False
     psp_reference = notification.get("pspReference")
     logger.info(
-        f"Partial payment has been finished with result: {is_success}."
-        f"psp: {psp_reference}"
+        "Partial payment has been finished with result: %s. pspReference: %s",
+        is_success,
+        psp_reference,
     )
 
     if not is_success:
@@ -826,11 +830,11 @@ def handle_order_closed(notification: dict[str, Any], gateway_config: GatewayCon
 
     if not payment:
         # We don't know anything about that payment
-        logger.info(f"There is no payment with psp: {psp_reference}")
+        logger.info("There is no payment with pspReference: %s", psp_reference)
         return
 
     if payment.order:
-        logger.info(f"Order already created for payment: {payment.pk}")
+        logger.info("Order already created for payment: %s", payment.pk)
         return
 
     adyen_partial_payments = get_or_create_adyen_partial_payments(notification, payment)
@@ -849,10 +853,14 @@ def handle_order_closed(notification: dict[str, Any], gateway_config: GatewayCon
     order = None
     try:
         order = handle_not_created_order(
-            notification, payment, checkout, kind, get_plugins_manager()
+            notification,
+            payment,
+            checkout,
+            kind,
+            get_plugins_manager(allow_replica=False),
         )
-    except Exception as e:
-        logger.exception("Exception during order creation", extra={"error": e})
+    except Exception:
+        logger.exception("Exception during order creation")
         return
     finally:
         if not order and adyen_partial_payments:
@@ -941,14 +949,14 @@ def validate_auth_user(headers: HttpHeaders, gateway_config: "GatewayConfig") ->
     username = gateway_config.connection_params["webhook_user"]
     password = gateway_config.connection_params["webhook_user_password"]
     auth_header: Optional[str] = headers.get("Authorization")
-    if not auth_header and not username:
-        return True
-    if auth_header and not username:
+    if not auth_header:
+        if not username:
+            return True
         return False
-    if not auth_header and username:
+    if not username:
         return False
 
-    split_auth = auth_header.split(maxsplit=1)  # type: ignore
+    split_auth = auth_header.split(maxsplit=1)
     prefix = "BASIC"
 
     if len(split_auth) != 2 or split_auth[0].upper() != prefix:
@@ -1088,11 +1096,11 @@ def prepare_api_request_data(request: WSGIRequest, data: dict):
         )
 
     params = data["parameters"]
-    request_data: "QueryDict" = QueryDict("")
+    request_data: QueryDict = QueryDict("")
 
-    if all([param in request.GET for param in params]):
+    if all(param in request.GET for param in params):
         request_data = request.GET
-    elif all([param in request.POST for param in params]):
+    elif all(param in request.POST for param in params):
         request_data = request.POST
 
     if not request_data:
@@ -1170,7 +1178,7 @@ def handle_api_response(
         gateway_response=gateway_response,
     )
     if is_success and not action_required and not payment.order and checkout:
-        manager = get_plugins_manager()
+        manager = get_plugins_manager(allow_replica=False)
 
         confirm_payment_and_set_back_to_confirm(payment, manager, channel_slug)
         payment.refresh_from_db()  # refresh charge_status

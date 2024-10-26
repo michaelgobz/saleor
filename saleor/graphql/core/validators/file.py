@@ -6,6 +6,7 @@ from PIL import Image, UnidentifiedImageError
 
 from ....core.http_client import HTTPClient
 from ....thumbnail import MIME_TYPE_TO_PIL_IDENTIFIER
+from ....thumbnail.utils import ProcessedImage
 from ..utils import add_hash_to_file_name
 
 Image.init()
@@ -27,10 +28,6 @@ def is_supported_image_mimetype(mimetype: str) -> bool:
 
 def is_image_url(url: str) -> bool:
     """Check if file URL seems to be an image."""
-    if url.endswith(".webp"):
-        # webp is not recognized by mimetypes as image
-        # https://bugs.python.org/issue38902
-        return True
     filetype = mimetypes.guess_type(url)[0]
     return filetype is not None and is_image_mimetype(filetype)
 
@@ -76,6 +73,7 @@ def clean_image_file(cleaned_input, img_field_name, error_class):
     try:
         with Image.open(img_file) as image:
             _validate_image_exif(image, img_field_name, error_class)
+            img_file.seek(0)
     except (SyntaxError, TypeError, UnidentifiedImageError) as e:
         raise ValidationError(
             {
@@ -85,7 +83,15 @@ def clean_image_file(cleaned_input, img_field_name, error_class):
                     code=error_class.INVALID.value,
                 )
             }
-        )
+        ) from e
+
+    try:
+        # validate if the image MIME type is supported
+        ProcessedImage.get_image_metadata_from_file(img_file)
+    except ValueError as e:
+        raise ValidationError(
+            {img_field_name: ValidationError(str(e), code=error_class.INVALID.value)}
+        ) from e
 
     add_hash_to_file_name(img_file)
     return img_file
@@ -103,7 +109,7 @@ def _validate_image_format(file, field_name, error_class):
                 )
             }
         )
-    elif format not in allowed_extensions:
+    if format.lower() not in allowed_extensions:
         raise ValidationError(
             {
                 field_name: ValidationError(
@@ -135,4 +141,4 @@ def _validate_image_exif(img, field_name, error_class):
                     code=error_class.INVALID.value,
                 )
             }
-        )
+        ) from e

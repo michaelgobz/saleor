@@ -7,14 +7,11 @@ from .....core.utils.editorjs import clean_editor_js
 from .....permission.enums import ProductPermissions
 from .....product import models
 from .....product.error_codes import ProductErrorCode
-from .....product.tasks import update_products_discounted_prices_for_promotion_task
 from ....attribute.types import AttributeValueInput
-from ....attribute.utils import AttributeAssignmentMixin, AttrValuesInput
+from ....attribute.utils import AttrValuesInput, ProductAttributeAssignmentMixin
 from ....channel import ChannelContext
 from ....core import ResolveInfo
 from ....core.descriptions import (
-    ADDED_IN_38,
-    ADDED_IN_310,
     DEPRECATED_IN_3X_INPUT,
     RICH_CONTENT,
 )
@@ -69,18 +66,16 @@ class ProductInput(BaseInputObjectType):
     rating = graphene.Float(description="Defines the product rating value.")
     metadata = NonNullList(
         MetadataInput,
-        description=("Fields required to update the product metadata." + ADDED_IN_38),
+        description=("Fields required to update the product metadata."),
         required=False,
     )
     private_metadata = NonNullList(
         MetadataInput,
-        description=(
-            "Fields required to update the product private metadata." + ADDED_IN_38
-        ),
+        description=("Fields required to update the product private metadata."),
         required=False,
     )
     external_reference = graphene.String(
-        description="External ID of this product." + ADDED_IN_310, required=False
+        description="External ID of this product.", required=False
     )
 
     class Meta:
@@ -144,7 +139,9 @@ class ProductCreate(ModelMutation):
         cls, attributes: dict, product_type: models.ProductType
     ) -> T_INPUT_MAP:
         attributes_qs = product_type.product_attributes.all()
-        attributes = AttributeAssignmentMixin.clean_input(attributes, attributes_qs)
+        attributes = ProductAttributeAssignmentMixin.clean_input(
+            attributes, attributes_qs
+        )
         return attributes
 
     @classmethod
@@ -182,20 +179,19 @@ class ProductCreate(ModelMutation):
             cleaned_input = validate_slug_and_generate_if_needed(
                 instance, "name", cleaned_input
             )
-        except ValidationError as error:
-            error.code = ProductErrorCode.REQUIRED.value
-            raise ValidationError({"slug": error})
+        except ValidationError as e:
+            e.code = ProductErrorCode.REQUIRED.value
+            raise ValidationError({"slug": e}) from e
 
         if attributes and product_type:
             try:
                 cleaned_input["attributes"] = cls.clean_attributes(
                     attributes, product_type
                 )
-            except ValidationError as exc:
-                raise ValidationError({"attributes": exc})
+            except ValidationError as e:
+                raise ValidationError({"attributes": e}) from e
 
-        manager = get_plugin_manager_promise(info.context).get()
-        clean_tax_code(cleaned_input, manager)
+        clean_tax_code(cleaned_input)
 
         clean_seo_fields(cleaned_input)
         return cleaned_input
@@ -207,7 +203,7 @@ class ProductCreate(ModelMutation):
             instance.save()
             attributes = cleaned_input.get("attributes")
             if attributes:
-                AttributeAssignmentMixin.save(instance, attributes)
+                ProductAttributeAssignmentMixin.save(instance, attributes)
 
     @classmethod
     def _save_m2m(cls, _info: ResolveInfo, instance, cleaned_data):
@@ -217,8 +213,7 @@ class ProductCreate(ModelMutation):
 
     @classmethod
     def post_save_action(cls, info: ResolveInfo, instance, _cleaned_input):
-        product = models.Product.objects.prefetched_for_webhook().get(pk=instance.pk)
-        update_products_discounted_prices_for_promotion_task.delay([instance.id])
+        product = models.Product.objects.get(pk=instance.pk)
         manager = get_plugin_manager_promise(info.context).get()
         cls.call_event(manager.product_created, product)
 

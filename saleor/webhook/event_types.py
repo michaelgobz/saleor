@@ -189,6 +189,8 @@ class WebhookEventAsyncType:
     VOUCHER_CREATED = "voucher_created"
     VOUCHER_UPDATED = "voucher_updated"
     VOUCHER_DELETED = "voucher_deleted"
+    VOUCHER_CODES_CREATED = "voucher_codes_created"
+    VOUCHER_CODES_DELETED = "voucher_codes_deleted"
     VOUCHER_METADATA_UPDATED = "voucher_metadata_updated"
     VOUCHER_CODE_EXPORT_COMPLETED = "voucher_code_export_completed"
 
@@ -735,6 +737,14 @@ class WebhookEventAsyncType:
             "name": "Voucher deleted",
             "permission": DiscountPermissions.MANAGE_DISCOUNTS,
         },
+        VOUCHER_CODES_CREATED: {
+            "name": "Voucher codes created",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
+        VOUCHER_CODES_DELETED: {
+            "name": "Voucher codes deleted",
+            "permission": DiscountPermissions.MANAGE_DISCOUNTS,
+        },
         VOUCHER_METADATA_UPDATED: {
             "name": "Voucher metadata updated",
             "permission": DiscountPermissions.MANAGE_DISCOUNTS,
@@ -921,6 +931,12 @@ class WebhookEventSyncType:
         PAYMENT_REFUND,
         PAYMENT_VOID,
     ]
+    CHECKOUT_EVENTS = [
+        SHIPPING_LIST_METHODS_FOR_CHECKOUT,
+        CHECKOUT_FILTER_SHIPPING_METHODS,
+        CHECKOUT_CALCULATE_TAXES,
+    ]
+    ORDER_EVENTS = [ORDER_CALCULATE_TAXES, ORDER_FILTER_SHIPPING_METHODS]
 
     # Events that are used only in the mutation logic can be excluded from the
     # circular query check.

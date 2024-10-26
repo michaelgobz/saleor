@@ -1,6 +1,7 @@
-from collections import defaultdict, namedtuple
+from collections import defaultdict
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
+from uuid import UUID
 
 import graphene
 from django.core.exceptions import ValidationError
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+ALT_CHAR_LIMIT = 250
 
 
 def get_used_attribute_values_for_variant(variant):
@@ -88,15 +92,16 @@ def create_stocks(
                 for stock_data, warehouse in zip(stocks_data, warehouses)
             ]
         )
-    except IntegrityError:
+    except IntegrityError as e:
         msg = "Stock for one of warehouses already exists for this product variant."
-        raise ValidationError(msg)
+        raise ValidationError(msg) from e
     return new_stocks
 
 
-DraftOrderLinesData = namedtuple(
-    "DraftOrderLinesData", ["order_to_lines_mapping", "line_pks", "order_pks"]
-)
+class DraftOrderLinesData(NamedTuple):
+    order_to_lines_mapping: dict
+    line_pks: set[UUID]
+    order_pks: set[UUID]
 
 
 def get_draft_order_lines_data_for_variants(
@@ -105,9 +110,9 @@ def get_draft_order_lines_data_for_variants(
     lines = order_models.OrderLine.objects.filter(
         variant__id__in=variant_ids, order__status=OrderStatus.DRAFT
     ).select_related("order")
-    order_to_lines_mapping: dict[
-        order_models.Order, list[order_models.OrderLine]
-    ] = defaultdict(list)
+    order_to_lines_mapping: dict[order_models.Order, list[order_models.OrderLine]] = (
+        defaultdict(list)
+    )
     line_pks = set()
     order_pks = set()
     for line in lines:

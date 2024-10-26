@@ -1,4 +1,5 @@
 import jwt
+from django.conf import settings
 
 from ..account.models import User
 from ..graphql.account.dataloaders import UserByEmailLoader
@@ -72,6 +73,7 @@ class JSONWebTokenBackend(BaseBackend):
         perm_cache_name = "_effective_permissions_cache"
         if not getattr(user_obj, perm_cache_name, None):
             perms = getattr(self, f"_get_{from_name}_permissions")(user_obj)
+            perms = perms.using(settings.DATABASE_CONNECTION_REPLICA_NAME)
             perms = perms.values_list("content_type__app_label", "codename").order_by()
             setattr(user_obj, perm_cache_name, {f"{ct}.{name}" for ct, name in perms})
         return getattr(user_obj, perm_cache_name)
@@ -109,7 +111,7 @@ class PluginBackend(JSONWebTokenBackend):
         # as many Promise are waiting.
 
         allow_replica = getattr(request, "allow_replica", True)
-        manager = get_plugins_manager(None, allow_replica)
+        manager = get_plugins_manager(allow_replica, None)
 
         # Store created manager in request to be used in other Dataloader.
         plugin_loader = AnonymousPluginManagerLoader(request)
@@ -138,7 +140,7 @@ def load_user_from_request(request):
         raise jwt.InvalidTokenError(
             "Invalid token. Create new one by using tokenCreate mutation."
         )
-    elif not user:
+    if not user:
         raise jwt.InvalidTokenError(
             "Invalid token. User does not exist or is inactive."
         )

@@ -1,12 +1,13 @@
 from collections import defaultdict
 
+from django.db.models import Exists, OuterRef
 from promise import Promise
 
 from ....attribute.models import (
-    AssignedProductAttribute,
     AssignedProductAttributeValue,
     AssignedVariantAttribute,
     AssignedVariantAttributeValue,
+    Attribute,
     AttributeProduct,
     AttributeVariant,
 )
@@ -23,24 +24,16 @@ class BaseProductAttributesByProductTypeIdLoader(DataLoader):
     model_name = None
     extra_fields = None
 
+    def get_queryset(self):
+        raise NotImplementedError()
+
     def batch_load(self, keys):
         if not self.model_name:
             raise ValueError("Provide a model_name for this dataloader.")
         if not self.extra_fields:
             self.extra_fields = []
 
-        requestor = get_user_or_app_from_context(self.context)
-        if (
-            requestor
-            and requestor.is_active
-            and requestor.has_perm(ProductPermissions.MANAGE_PRODUCTS)
-        ):
-            qs = self.model_name.objects.using(self.database_connection_name).all()
-        else:
-            qs = self.model_name.objects.using(self.database_connection_name).filter(
-                attribute__visible_in_storefront=True
-            )
-
+        qs = self.get_queryset()
         product_type_attribute_pairs = qs.filter(product_type_id__in=keys).values_list(
             "product_type_id", "attribute_id", *self.extra_fields
         )
@@ -65,54 +58,67 @@ class BaseProductAttributesByProductTypeIdLoader(DataLoader):
 
         return (
             AttributesByAttributeId(self.context)
-            .load_many(set(attr_id for _, attr_id, *_ in product_type_attribute_pairs))
+            .load_many({attr_id for _, attr_id, *_ in product_type_attribute_pairs})
             .then(map_attributes)
         )
 
 
-class ProductAttributesByProductTypeIdLoader(
+class ProductAttributesAllByProductTypeIdLoader(
     BaseProductAttributesByProductTypeIdLoader
 ):
-    """Loads product attributes by product type ID."""
-
-    context_key = "product_attributes_by_producttype"
+    context_key = "product_attributes_all_by_producttype"
     model_name = AttributeProduct
 
+    def get_queryset(self):
+        return self.model_name.objects.using(self.database_connection_name).all()
 
-class VariantAttributesByProductTypeIdLoader(
+
+class ProductAttributesVisibleInStorefrontByProductTypeIdLoader(
+    BaseProductAttributesByProductTypeIdLoader
+):
+    context_key = "product_attributes_visible_in_storefront_by_producttype"
+    model_name = AttributeProduct
+
+    def get_queryset(self):
+        return self.model_name.objects.using(self.database_connection_name).filter(
+            Exists(
+                Attribute.objects.filter(
+                    pk=OuterRef("attribute_id"), visible_in_storefront=True
+                ),
+            ),
+        )
+
+
+class VariantAttributesAllByProductTypeIdLoader(
     BaseProductAttributesByProductTypeIdLoader
 ):
     """Loads variant attributes by product type ID."""
 
-    context_key = "variant_attributes_by_producttype"
+    context_key = "variant_attributes_all_by_producttype"
     model_name = AttributeVariant
     extra_fields = ["variant_selection"]
 
+    def get_queryset(self):
+        return self.model_name.objects.using(self.database_connection_name).all()
 
-class AttributeProductsByProductTypeIdLoader(DataLoader):
-    """Loads AttributeProduct objects by product type ID."""
 
-    context_key = "attributeproducts_by_producttype"
+class VariantAttributesVisibleInStorefrontByProductTypeIdLoader(
+    BaseProductAttributesByProductTypeIdLoader
+):
+    """Loads variant attributes by product type ID."""
 
-    def batch_load(self, keys):
-        requestor = get_user_or_app_from_context(self.context)
-        if (
-            requestor
-            and requestor.is_active
-            and requestor.has_perm(ProductPermissions.MANAGE_PRODUCTS)
-        ):
-            qs = AttributeProduct.objects.using(self.database_connection_name).all()
-        else:
-            qs = AttributeProduct.objects.using(self.database_connection_name).filter(
-                attribute__visible_in_storefront=True
-            )
-        attribute_products = qs.filter(product_type_id__in=keys)
-        producttype_to_attributeproducts = defaultdict(list)
-        for attribute_product in attribute_products:
-            producttype_to_attributeproducts[attribute_product.product_type_id].append(
-                attribute_product
-            )
-        return [producttype_to_attributeproducts[key] for key in keys]
+    context_key = "variant_attributes_visible_in_storefront_by_producttype"
+    model_name = AttributeVariant
+    extra_fields = ["variant_selection"]
+
+    def get_queryset(self):
+        return self.model_name.objects.using(self.database_connection_name).filter(
+            Exists(
+                Attribute.objects.filter(
+                    pk=OuterRef("attribute_id"), visible_in_storefront=True
+                ),
+            ),
+        )
 
 
 class AttributeVariantsByProductTypeIdLoader(DataLoader):
@@ -137,32 +143,6 @@ class AttributeVariantsByProductTypeIdLoader(DataLoader):
                 attribute_variant
             )
         return [producttype_to_attributevariants[key] for key in keys]
-
-
-class AssignedProductAttributesByProductIdLoader(DataLoader):
-    context_key = "assignedproductattributes_by_product"
-
-    def batch_load(self, keys):
-        requestor = get_user_or_app_from_context(self.context)
-        if (
-            requestor
-            and requestor.is_active
-            and requestor.has_perm(ProductPermissions.MANAGE_PRODUCTS)
-        ):
-            qs = AssignedProductAttribute.objects.using(
-                self.database_connection_name
-            ).all()
-        else:
-            qs = AssignedProductAttribute.objects.using(
-                self.database_connection_name
-            ).filter(assignment__attribute__visible_in_storefront=True)
-        assigned_product_attributes = qs.filter(product_id__in=keys)
-        product_to_assignedproductattributes = defaultdict(list)
-        for assigned_product_attribute in assigned_product_attributes.iterator():
-            product_to_assignedproductattributes[
-                assigned_product_attribute.product_id
-            ].append(assigned_product_attribute)
-        return [product_to_assignedproductattributes[product_id] for product_id in keys]
 
 
 class AssignedVariantAttributesByProductVariantId(DataLoader):
@@ -193,33 +173,6 @@ class AssignedVariantAttributesByProductVariantId(DataLoader):
         return [variant_attributes[variant_id] for variant_id in keys]
 
 
-class AttributeValuesByAssignedProductAttributeIdLoader(DataLoader):
-    context_key = "attributevalues_by_assignedproductattribute"
-
-    def batch_load(self, keys):
-        attribute_values = list(
-            AssignedProductAttributeValue.objects.using(self.database_connection_name)
-            .filter(assignment_id__in=keys)
-            .iterator()
-        )
-        value_ids = [a.value_id for a in attribute_values]
-
-        def map_assignment_to_values(values):
-            value_map = dict(zip(value_ids, values))
-            assigned_product_map = defaultdict(list)
-            for attribute_value in attribute_values:
-                assigned_product_map[attribute_value.assignment_id].append(
-                    value_map.get(attribute_value.value_id)
-                )
-            return [assigned_product_map[key] for key in keys]
-
-        return (
-            AttributeValueByIdLoader(self.context)
-            .load_many(value_ids)
-            .then(map_assignment_to_values)
-        )
-
-
 class AttributeValuesByAssignedVariantAttributeIdLoader(DataLoader):
     context_key = "attributevalues_by_assignedvariantattribute"
 
@@ -247,85 +200,95 @@ class AttributeValuesByAssignedVariantAttributeIdLoader(DataLoader):
         )
 
 
-class SelectedAttributesByProductIdLoader(DataLoader):
-    context_key = "selectedattributes_by_product"
+class BaseAttributeValuesByProductIdLoader(DataLoader):
+    def get_product_attributes_dataloader(self):
+        raise NotImplementedError()
 
     def batch_load(self, keys):
-        def with_products_and_assigned_attributes(result):
-            products, product_attributes = result
-            products = [product for product in products if product is not None]
-            assigned_product_attribute_ids = [
-                a.id for attrs in product_attributes for a in attrs
-            ]
-            product_type_ids = list({p.product_type_id for p in products})
-            product_attributes = dict(zip(keys, product_attributes))
-
-            def with_attributeproducts_and_values(result):
-                attribute_products, attribute_values = result
-                attribute_ids = list(
-                    {ap.attribute_id for aps in attribute_products for ap in aps}
-                )
-                attribute_products = dict(zip(product_type_ids, attribute_products))
-                attribute_values = dict(
-                    zip(assigned_product_attribute_ids, attribute_values)
-                )
-
-                def with_attributes(attributes):
-                    id_to_attribute = dict(zip(attribute_ids, attributes))
-                    selected_attributes_map = defaultdict(list)
-                    for key, product in zip(keys, products):
-                        assigned_producttype_attributes = attribute_products[
-                            product.product_type_id
-                        ]
-                        assigned_product_attributes = product_attributes[key]
-                        for (
-                            assigned_producttype_attribute
-                        ) in assigned_producttype_attributes:
-                            product_assignment = next(
-                                (
-                                    apa
-                                    for apa in assigned_product_attributes
-                                    if apa.assignment_id
-                                    == assigned_producttype_attribute.id
-                                ),
-                                None,
-                            )
-                            attribute = id_to_attribute[
-                                assigned_producttype_attribute.attribute_id
-                            ]
-                            if product_assignment:
-                                values = attribute_values[product_assignment.id]
-                            else:
-                                values = []
-                            selected_attributes_map[key].append(
-                                {"values": values, "attribute": attribute}
-                            )
-                    return [selected_attributes_map[key] for key in keys]
-
-                return (
-                    AttributesByAttributeId(self.context)
-                    .load_many(attribute_ids)
-                    .then(with_attributes)
-                )
-
-            attribute_products = AttributeProductsByProductTypeIdLoader(
-                self.context
-            ).load_many(product_type_ids)
-            attribute_values = AttributeValuesByAssignedProductAttributeIdLoader(
-                self.context
-            ).load_many(assigned_product_attribute_ids)
-            return Promise.all([attribute_products, attribute_values]).then(
-                with_attributeproducts_and_values
-            )
-
-        products = ProductByIdLoader(self.context).load_many(keys)
-        assigned_attributes = AssignedProductAttributesByProductIdLoader(
-            self.context
-        ).load_many(keys)
-
-        return Promise.all([products, assigned_attributes]).then(
-            with_products_and_assigned_attributes
+        # Using list + iterator is a small optimisation because iterator causes
+        # the db to not store the whole resultset into the memory
+        # https://docs.djangoproject.com/en/3.2/ref/models/querysets/#iterator
+        attribute_values = list(
+            AssignedProductAttributeValue.objects.using(self.database_connection_name)
+            .filter(product_id__in=keys)
+            .iterator()
         )
+        value_ids = [a.value_id for a in attribute_values]
+
+        def with_products(products):
+            products = [product for product in products if product]
+            product_type_ids = [p.product_type_id for p in products]
+
+            def with_attributes_and_values(result):
+                attribute_products, values = result
+                product_type_attrubutes = dict(
+                    zip(product_type_ids, attribute_products)
+                )
+                values_by_id_map = dict(zip(value_ids, values))
+                assigned_product_map = defaultdict(list)
+
+                for product in products:
+                    product_values = [
+                        values_by_id_map.get(product_value.value_id)
+                        for product_value in attribute_values
+                        if product_value.product_id == product.id
+                    ]
+
+                    attributes = product_type_attrubutes[product.product_type_id]
+                    for attribute_tuple in attributes:
+                        attribute = attribute_tuple[0]
+                        values = [
+                            value
+                            for value in product_values
+                            if value and value.attribute_id == attribute.id
+                        ]
+                        assigned_product_map[product.id].append(
+                            {
+                                "attribute": attribute,
+                                "values": values,
+                            }
+                        )
+                return [assigned_product_map[key] for key in keys]
+
+            attributes = self.get_product_attributes_dataloader().load_many(
+                product_type_ids
+            )
+            values = AttributeValueByIdLoader(self.context).load_many(value_ids)
+            return Promise.all([attributes, values]).then(with_attributes_and_values)
+
+        return ProductByIdLoader(self.context).load_many(keys).then(with_products)
+
+
+class AttributeValuesAllByProductIdLoader(BaseAttributeValuesByProductIdLoader):
+    context_key = "attributevalues_all_by_productid"
+
+    def get_product_attributes_dataloader(self):
+        return ProductAttributesAllByProductTypeIdLoader(self.context)
+
+
+class AttributeValuesVisibleInStorefrontByProductIdLoader(
+    BaseAttributeValuesByProductIdLoader
+):
+    context_key = "attributevalues_visible_in_storefront_by_productid"
+
+    def get_product_attributes_dataloader(self):
+        return ProductAttributesVisibleInStorefrontByProductTypeIdLoader(self.context)
+
+
+class SelectedAttributesAllByProductIdLoader(DataLoader):
+    context_key = "selectedattributes_all_by_product"
+
+    def batch_load(self, product_ids):
+        return AttributeValuesAllByProductIdLoader(self.context).load_many(product_ids)
+
+
+class SelectedAttributesVisibleInStorefrontByProductIdLoader(DataLoader):
+    context_key = "selectedattributes_visible_in_storefront_by_product"
+
+    def batch_load(self, product_ids):
+        return AttributeValuesVisibleInStorefrontByProductIdLoader(
+            self.context
+        ).load_many(product_ids)
 
 
 class SelectedAttributesByProductVariantIdLoader(DataLoader):

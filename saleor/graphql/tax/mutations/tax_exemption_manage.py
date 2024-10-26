@@ -3,14 +3,13 @@ from django.core.exceptions import ValidationError
 
 from ....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from ....checkout.models import Checkout
-from ....checkout.utils import invalidate_checkout_prices
+from ....checkout.utils import invalidate_checkout
 from ....graphql.core.mutations import BaseMutation
 from ....order import ORDER_EDITABLE_STATUS
 from ....order.models import Order
 from ....permission.enums import CheckoutPermissions
 from ....tax import error_codes
 from ...core import ResolveInfo
-from ...core.descriptions import ADDED_IN_38
 from ...core.doc_category import DOC_CATEGORY_TAXES
 from ...core.types import Error
 from ...core.types.taxes import TaxSourceObject
@@ -45,7 +44,7 @@ class TaxExemptionManage(BaseMutation):
             "Exempt checkout or order from charging the taxes. When tax exemption is "
             "enabled, taxes won't be charged for the checkout or order. Taxes may "
             "still be calculated in cases when product prices are entered with the "
-            "tax included and the net price needs to be known." + ADDED_IN_38
+            "tax included and the net price needs to be known."
         )
         doc_category = DOC_CATEGORY_TAXES
         error_type_class = TaxExemptionManageError
@@ -75,12 +74,12 @@ class TaxExemptionManage(BaseMutation):
         return obj
 
     @classmethod
-    def _invalidate_checkout_prices(cls, info: ResolveInfo, checkout):
+    def _invalidate_checkout(cls, info: ResolveInfo, checkout):
         manager = get_plugin_manager_promise(info.context).get()
 
         checkout_info = fetch_checkout_info(checkout, [], manager)
         lines_info, _ = fetch_checkout_lines(checkout)
-        invalidate_checkout_prices(
+        invalidate_checkout(
             checkout_info,
             lines_info,
             manager,
@@ -94,7 +93,7 @@ class TaxExemptionManage(BaseMutation):
         obj.tax_exemption = data["tax_exemption"]
 
         if isinstance(obj, Checkout):
-            cls._invalidate_checkout_prices(info, obj)
+            cls._invalidate_checkout(info, obj)
             obj.save(update_fields=["tax_exemption", "price_expiration", "last_change"])
 
         if isinstance(obj, Order):

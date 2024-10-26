@@ -3,9 +3,9 @@ import graphene
 from ...permission.enums import OrderPermissions, PaymentPermissions
 from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
-from ..core.descriptions import ADDED_IN_36, PREVIEW_FEATURE
 from ..core.doc_category import DOC_CATEGORY_PAYMENTS
 from ..core.fields import FilterConnectionField, PermissionsField
+from ..core.scalars import UUID
 from ..core.utils import from_global_id_or_error
 from .filters import PaymentFilterInput
 from .mutations import (
@@ -54,9 +54,22 @@ class PaymentQueries(graphene.ObjectType):
     )
     transaction = PermissionsField(
         TransactionItem,
-        description="Look up a transaction by ID." + ADDED_IN_36 + PREVIEW_FEATURE,
+        description="Look up a transaction by ID.",
         id=graphene.Argument(
-            graphene.ID, description="ID of a transaction.", required=True
+            graphene.ID,
+            description=(
+                "ID of a transaction. Either it or token is required "
+                "to fetch the transaction data."
+            ),
+            required=False,
+        ),
+        token=graphene.Argument(
+            UUID,
+            description=(
+                "Token of a transaction. Either it or ID is required "
+                "to fetch the transaction data."
+            ),
+            required=False,
         ),
         permissions=[
             PaymentPermissions.HANDLE_PAYMENTS,
@@ -65,22 +78,31 @@ class PaymentQueries(graphene.ObjectType):
     )
 
     @staticmethod
-    def resolve_payment(_root, _info: ResolveInfo, **data):
+    def resolve_payment(_root, info: ResolveInfo, **data):
         _, id = from_global_id_or_error(data["id"], Payment)
-        return resolve_payment_by_id(id)
+        return resolve_payment_by_id(info, id)
 
     @staticmethod
     def resolve_payments(_root, info: ResolveInfo, **kwargs):
         qs = resolve_payments(info)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, PaymentCountableConnection)
 
     @staticmethod
     def resolve_transaction(_root, info: ResolveInfo, **kwargs):
-        _, id = from_global_id_or_error(kwargs["id"], TransactionItem)
-        if not id:
+        id = kwargs.get("id")
+        token = kwargs.get("token")
+        if id is None and token is None:
             return None
-        return resolve_transaction(id)
+        # If token is provided we ignore the id input.
+        if token:
+            return resolve_transaction(info, str(token))
+        _, id = from_global_id_or_error(
+            global_id=str(id), only_type=TransactionItem, raise_error=True
+        )
+        return resolve_transaction(info, id)
 
 
 class PaymentMutations(graphene.ObjectType):

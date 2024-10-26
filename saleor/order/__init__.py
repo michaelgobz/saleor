@@ -89,6 +89,7 @@ class OrderEvents:
 
     PLACED = "placed"
     PLACED_FROM_DRAFT = "placed_from_draft"
+    PLACED_AUTOMATICALLY_FROM_PAID_CHECKOUT = "placed_automatically_from_paid_checkout"
 
     OVERSOLD_ITEMS = "oversold_items"
     CANCELED = "canceled"
@@ -152,6 +153,10 @@ class OrderEvents:
         (REMOVED_PRODUCTS, "Some products were removed from the order"),
         (PLACED, "The order was placed"),
         (PLACED_FROM_DRAFT, "The draft order was placed"),
+        (
+            PLACED_AUTOMATICALLY_FROM_PAID_CHECKOUT,
+            "The order was placed automatically from fully paid checkout",
+        ),
         (OVERSOLD_ITEMS, "The draft order was placed with oversold items"),
         (CANCELED, "The order was canceled"),
         (EXPIRED, "The order was automatically expired"),
@@ -319,4 +324,26 @@ class StockUpdatePolicy:
         (SKIP, "Stocks are not checked and not updated."),
         (UPDATE, "Only do update, if there is enough stocks."),
         (FORCE, "Force update, if there is not enough stocks."),
+    ]
+
+
+class OrderGrantedRefundStatus:
+    """Represents the status of a granted refund.
+
+    NONE - the refund on related transactionItem is not processed
+    PENDING - the refund on related transactionItem is pending
+    FULL - the refund on related transactionItem is fully processed
+    FAIL - the refund on related transactionItem failed
+    """
+
+    NONE = "none"
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+    CHOICES = [
+        (NONE, "The refund on related transactionItem is not processed"),
+        (PENDING, "The refund on related transactionItem is pending"),
+        (SUCCESS, "The refund on related transactionItem is successfully processed"),
+        (FAILURE, "The refund on related transactionItem failed"),
     ]

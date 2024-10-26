@@ -2,8 +2,8 @@ from collections import defaultdict
 from typing import Optional
 
 import graphene
-from django.conf import settings
 from graphene import relay
+from promise import Promise
 
 from ....permission.enums import ProductPermissions
 from ....product import models
@@ -14,6 +14,7 @@ from ....thumbnail.utils import (
     get_thumbnail_size,
 )
 from ...channel import ChannelContext, ChannelQsContext
+from ...channel.dataloaders import ChannelBySlugLoader
 from ...channel.types import ChannelContextType, ChannelContextTypeWithMetadata
 from ...core import ResolveInfo
 from ...core.connection import (
@@ -21,10 +22,9 @@ from ...core.connection import (
     create_connection_slice,
     filter_connection_queryset,
 )
+from ...core.context import get_database_connection_name
 from ...core.descriptions import (
-    ADDED_IN_314,
     DEPRECATED_IN_3X_FIELD,
-    PREVIEW_FEATURE,
     RICH_CONTENT,
 )
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
@@ -72,11 +72,7 @@ class Collection(ChannelContextTypeWithMetadata[models.Collection]):
     products = FilterConnectionField(
         ProductCountableConnection,
         filter=ProductFilterInput(description="Filtering options for products."),
-        where=ProductWhereInput(
-            description="Filtering options for products."
-            + ADDED_IN_314
-            + PREVIEW_FEATURE
-        ),
+        where=ProductWhereInput(description="Filtering options for products."),
         sort_by=ProductOrder(description="Sort products."),
         description="List of products in this collection.",
     )
@@ -110,10 +106,10 @@ class Collection(ChannelContextTypeWithMetadata[models.Collection]):
         info: ResolveInfo,
         size: Optional[int] = None,
         format: Optional[str] = None,
-    ):
+    ) -> None | Image | Promise[Image]:
         node = root.node
         if not node.background_image:
-            return
+            return None
 
         alt = node.background_image_alt
         if size == 0:
@@ -142,20 +138,33 @@ class Collection(ChannelContextTypeWithMetadata[models.Collection]):
         search = kwargs.get("search")
 
         requestor = get_user_or_app_from_context(info.context)
-        qs = root.node.products.visible_to_user(  # type: ignore[attr-defined] # mypy does not properly resolve the related manager # noqa: E501
-            requestor, root.channel_slug
-        ).using(settings.DATABASE_CONNECTION_REPLICA_NAME)
+        limited_channel_access = False if root.channel_slug is None else True
 
-        if search:
-            qs = ChannelQsContext(
-                qs=search_products(qs.qs, search), channel_slug=root.channel_slug
+        def _resolve_products(channel):
+            qs = root.node.products.using(
+                get_database_connection_name(info.context)
+            ).visible_to_user(requestor, channel, limited_channel_access)
+
+            if search:
+                qs = ChannelQsContext(
+                    qs=search_products(qs.qs, search), channel_slug=root.channel_slug
+                )
+            else:
+                qs = ChannelQsContext(qs=qs, channel_slug=root.channel_slug)
+
+            kwargs["channel"] = root.channel_slug
+            qs = filter_connection_queryset(
+                qs, kwargs, allow_replica=info.context.allow_replica
             )
-        else:
-            qs = ChannelQsContext(qs=qs, channel_slug=root.channel_slug)
+            return create_connection_slice(qs, info, kwargs, ProductCountableConnection)
 
-        kwargs["channel"] = root.channel_slug
-        qs = filter_connection_queryset(qs, kwargs)
-        return create_connection_slice(qs, info, kwargs, ProductCountableConnection)
+        if root.channel_slug:
+            return (
+                ChannelBySlugLoader(info.context)
+                .load(str(root.channel_slug))
+                .then(_resolve_products)
+            )
+        return _resolve_products(None)
 
     @staticmethod
     def resolve_channel_listings(root: ChannelContext[models.Collection], info):

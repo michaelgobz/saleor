@@ -4,11 +4,14 @@ import graphene
 from django.core.exceptions import ValidationError
 from graphql import GraphQLError
 
+from ...core.exceptions import PermissionDenied
 from ...order import models
 from ...permission.enums import OrderPermissions
+from ...permission.utils import has_one_of_permissions
 from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
-from ..core.descriptions import ADDED_IN_310, DEPRECATED_IN_3X_FIELD
+from ..core.context import get_database_connection_name
+from ..core.descriptions import DEPRECATED_IN_3X_FIELD
 from ..core.doc_category import DOC_CATEGORY_ORDERS
 from ..core.enums import ReportingPeriod
 from ..core.fields import (
@@ -21,6 +24,7 @@ from ..core.scalars import UUID
 from ..core.types import FilterInputObjectType, TaxedMoney
 from ..core.utils import ext_ref_to_global_id_or_error, from_global_id_or_error
 from ..core.validators import validate_one_of_args_is_in_query
+from ..utils import get_user_or_app_from_context
 from .bulk_mutations.draft_orders import DraftOrderBulkDelete, DraftOrderLinesBulkDelete
 from .bulk_mutations.order_bulk_cancel import OrderBulkCancel
 from .bulk_mutations.order_bulk_create import OrderBulkCreate
@@ -98,13 +102,18 @@ class OrderQueries(graphene.ObjectType):
         permissions=[
             OrderPermissions.MANAGE_ORDERS,
         ],
+        deprecation_reason=DEPRECATED_IN_3X_FIELD,
     )
     order = BaseField(
         Order,
         description="Look up an order by ID or external reference.",
         id=graphene.Argument(graphene.ID, description="ID of an order."),
         external_reference=graphene.Argument(
-            graphene.String, description=f"External ID of an order. {ADDED_IN_310}"
+            graphene.String,
+            description=(
+                "External ID of an order. "
+                "\n\nRequires one of the following permissions: MANAGE_ORDERS."
+            ),
         ),
         doc_category=DOC_CATEGORY_ORDERS,
     )
@@ -143,6 +152,7 @@ class OrderQueries(graphene.ObjectType):
             OrderPermissions.MANAGE_ORDERS,
         ],
         doc_category=DOC_CATEGORY_ORDERS,
+        deprecation_reason=DEPRECATED_IN_3X_FIELD,
     )
     order_by_token = BaseField(
         Order,
@@ -162,9 +172,16 @@ class OrderQueries(graphene.ObjectType):
         validate_one_of_args_is_in_query(
             "id", id, "external_reference", external_reference
         )
+        database_connection_name = get_database_connection_name(info.context)
         if not id:
+            requester = get_user_or_app_from_context(info.context)
+            permissions = [OrderPermissions.MANAGE_ORDERS]
+            if not has_one_of_permissions(requester, permissions):
+                raise PermissionDenied(permissions=permissions)
             try:
-                id = ext_ref_to_global_id_or_error(models.Order, external_reference)
+                id = ext_ref_to_global_id_or_error(
+                    models.Order, external_reference, database_connection_name
+                )
             except ValidationError:
                 return None
         _, id = from_global_id_or_error(id, Order)
@@ -186,7 +203,9 @@ class OrderQueries(graphene.ObjectType):
                 {"direction": "-", "field": ["search_rank", "id"]}
             )
         qs = resolve_orders(info, channel)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, OrderCountableConnection)
 
     @staticmethod
@@ -205,7 +224,9 @@ class OrderQueries(graphene.ObjectType):
                 {"direction": "-", "field": ["search_rank", "id"]}
             )
         qs = resolve_draft_orders(info)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, OrderCountableConnection)
 
     @staticmethod

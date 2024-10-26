@@ -1,17 +1,14 @@
 import graphene
+from django.db.models import Exists, OuterRef
 
+from ....app.models import App
 from ....permission.auth_filters import AuthorizationFilters
 from ....permission.enums import AppPermission
 from ....webhook import models
 from ....webhook.validators import HEADERS_LENGTH_LIMIT, HEADERS_NUMBER_LIMIT
 from ...app.dataloaders import get_app_promise
 from ...core import ResolveInfo
-from ...core.descriptions import (
-    ADDED_IN_32,
-    ADDED_IN_312,
-    DEPRECATED_IN_3X_INPUT,
-    PREVIEW_FEATURE,
-)
+from ...core.descriptions import DEPRECATED_IN_3X_INPUT
 from ...core.doc_category import DOC_CATEGORY_WEBHOOKS
 from ...core.fields import JSONString
 from ...core.types import BaseInputObjectType, NonNullList, WebhookError
@@ -58,17 +55,14 @@ class WebhookUpdateInput(BaseInputObjectType):
         required=False,
     )
     query = graphene.String(
-        description="Subscription query used to define a webhook payload."
-        + ADDED_IN_32,
+        description="Subscription query used to define a webhook payload.",
         required=False,
     )
     custom_headers = JSONString(
         description=f"Custom headers, which will be added to HTTP request. "
         f"There is a limitation of {HEADERS_NUMBER_LIMIT} headers per webhook "
         f"and {HEADERS_LENGTH_LIMIT} characters per header."
-        f'Only "X-*" and "Authorization*" keys are allowed.'
-        + ADDED_IN_312
-        + PREVIEW_FEATURE,
+        f"Only `X-*`, `Authorization*`, and `BrokerProperties` keys are allowed.",
         required=False,
     )
 
@@ -110,6 +104,10 @@ class WebhookUpdate(WebhookCreate, NotifyUserEventValidationMixin):
 
     @classmethod
     def get_instance(cls, info: ResolveInfo, **data):
+        apps = App.objects.filter(removed_at__isnull=True)
         if app := get_app_promise(info.context).get():
-            data["qs"] = app.webhooks
+            apps = apps.filter(id=app.id)
+        data["qs"] = models.Webhook.objects.filter(
+            Exists(apps.filter(id=OuterRef("app_id")))
+        )
         return super(WebhookCreate, cls).get_instance(info, **data)

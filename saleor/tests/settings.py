@@ -1,10 +1,15 @@
+import os
 import re
 from re import Pattern
 from typing import Union
 
 from django.utils.functional import SimpleLazyObject
 
-from ..settings import *  # noqa
+# Disable Jaeger tracing should be done before importing settings.
+# without this line pytest will start sending traces to Jaeger agent.
+os.environ["JAEGER_AGENT_HOST"] = ""
+
+from ..settings import *  # noqa: F403
 
 
 def lazy_re_compile(regex, flags=0):
@@ -14,9 +19,8 @@ def lazy_re_compile(regex, flags=0):
         # Compile the regex if it was not passed pre-compiled.
         if isinstance(regex, str):
             return re.compile(regex, flags)
-        else:
-            assert not flags, "flags must be empty if regex is passed pre-compiled"
-            return regex
+        assert not flags, "flags must be empty if regex is passed pre-compiled"
+        return regex
 
     return SimpleLazyObject(_compile)
 
@@ -29,10 +33,6 @@ SECRET_KEY = "NOTREALLY"
 
 ALLOWED_CLIENT_HOSTS = ["www.example.com"]
 
-TIME_ZONE = "America/Chicago"
-LANGUAGE_CODE = "en"
-
-
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
 COUNTRIES_ONLY = None
@@ -44,6 +44,9 @@ MAX_CHECKOUT_LINE_QUANTITY = 50
 AUTH_PASSWORD_VALIDATORS = []
 
 PASSWORD_HASHERS = ["saleor.tests.dummy_password_hasher.DummyHasher"]
+
+OBSERVABILITY_ACTIVE = False
+OBSERVABILITY_REPORT_ALL_API_CALLS = False
 
 PLUGINS = []
 
@@ -85,7 +88,17 @@ FdkAmFzQhgLtnEtnb+eBI7DNOJEuPLD52Jwnq2pGnJ/LxlqjjWJ5FsQQVSoDHGfM
 8yodVX6OCKwHYrgleLjVWs5ZmaGfGpqcy1YgquiYGVF4x8qBe5bpwHw=
 -----END RSA PRIVATE KEY-----"""
 
-DATABASE_CONNECTION_REPLICA_NAME = DATABASE_CONNECTION_DEFAULT_NAME  # noqa: F405
-
 HTTP_IP_FILTER_ENABLED = False
 HTTP_IP_FILTER_ALLOW_LOOPBACK_IPS = True
+
+MIDDLEWARE.insert(0, "saleor.core.db.connection.restrict_writer_middleware")  # noqa: F405
+
+CHECKOUT_WEBHOOK_EVENTS_CELERY_QUEUE_NAME = "checkout_events_queue"
+ORDER_WEBHOOK_EVENTS_CELERY_QUEUE_NAME = "order_events_queue"
+
+# Raise error when using writer DB in Celery tasks, without explicit "allow_writer"
+# context manager.
+CELERY_RESTRICT_WRITER_METHOD = "saleor.core.db.connection.restrict_writer"
+
+PRIVATE_FILE_STORAGE = "saleor.tests.storages.PrivateFileSystemStorage"
+PRIVATE_MEDIA_ROOT: str = os.path.join(PROJECT_ROOT, "private-media")  # noqa: F405

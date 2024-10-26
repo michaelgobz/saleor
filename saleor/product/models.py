@@ -5,7 +5,6 @@ from typing import Optional
 from uuid import uuid4
 
 import graphene
-import pytz
 from django.conf import settings
 from django.contrib.postgres.indexes import BTreeIndex, GinIndex
 from django.contrib.postgres.search import SearchVectorField
@@ -35,14 +34,13 @@ from ..core.utils.editorjs import clean_editor_js
 from ..core.utils.translations import Translation, get_translation
 from ..core.weight import zero_weight
 from ..discount.models import PromotionRule
-from ..discount.utils import calculate_discounted_price_for_rules
 from ..permission.enums import (
     DiscountPermissions,
     OrderPermissions,
     ProductPermissions,
     ProductTypePermissions,
 )
-from ..seo.models import SeoModel, SeoModelTranslation
+from ..seo.models import SeoModel, SeoModelTranslationWithSlug
 from ..tax.models import TaxClass
 from . import ProductMediaTypes, ProductTypeKind, managers
 
@@ -88,7 +86,7 @@ class Category(ModelWithMetadata, MPTTModel, SeoModel):
         return self.name
 
 
-class CategoryTranslation(SeoModelTranslation):
+class CategoryTranslation(SeoModelTranslationWithSlug):
     category = models.ForeignKey(
         Category, related_name="translations", on_delete=models.CASCADE
     )
@@ -96,6 +94,12 @@ class CategoryTranslation(SeoModelTranslation):
     description = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editor_js)
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["language_code", "slug"],
+                name="uniq_lang_slug_categorytransl",
+            ),
+        ]
         unique_together = (("language_code", "category"),)
 
     def __str__(self) -> str:
@@ -232,6 +236,9 @@ class Product(SeoModel, ModelWithMetadata, ModelWithExternalReference):
                 fields=["name", "slug"],
                 opclasses=["gin_trgm_ops"] * 2,
             ),
+            models.Index(
+                fields=["category_id", "slug"],
+            ),
         ]
         indexes.extend(ModelWithMetadata.Meta.indexes)
 
@@ -257,7 +264,7 @@ class Product(SeoModel, ModelWithMetadata, ModelWithExternalReference):
         return ["concatenated_values_order", "concatenated_values", "name"]
 
 
-class ProductTranslation(SeoModelTranslation):
+class ProductTranslation(SeoModelTranslationWithSlug):
     product = models.ForeignKey(
         Product, related_name="translations", on_delete=models.CASCADE
     )
@@ -265,6 +272,12 @@ class ProductTranslation(SeoModelTranslation):
     description = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editor_js)
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["language_code", "slug"],
+                name="uniq_lang_slug_producttransl",
+            ),
+        ]
         unique_together = (("language_code", "product"),)
 
     def __str__(self) -> str:
@@ -315,6 +328,7 @@ class ProductChannelListing(PublishableModel):
     discounted_price = MoneyField(
         amount_field="discounted_price_amount", currency_field="currency"
     )
+    discounted_price_dirty = models.BooleanField(default=False)
 
     class Meta:
         unique_together = [["product", "channel"]]
@@ -327,7 +341,7 @@ class ProductChannelListing(PublishableModel):
     def is_available_for_purchase(self):
         return (
             self.available_for_purchase_at is not None
-            and datetime.datetime.now(pytz.UTC) >= self.available_for_purchase_at
+            and datetime.datetime.now(tz=datetime.UTC) >= self.available_for_purchase_at
         )
 
 
@@ -392,9 +406,11 @@ class ProductVariant(SortableModel, ModelWithMetadata, ModelWithExternalReferenc
         If a custom price is provided, return the price with applied discounts from
         valid promotion rules for this variant.
         """
+        from ..discount.utils.promotion import calculate_discounted_price_for_rules
+
         if price_override is None:
             return channel_listing.discounted_price or channel_listing.price
-        price: "Money" = self.get_base_price(channel_listing, price_override)
+        price: Money = self.get_base_price(channel_listing, price_override)
         rules = promotion_rules or []
         return calculate_discounted_price_for_rules(
             price=price, rules=rules, currency=channel_listing.currency
@@ -512,6 +528,9 @@ class ProductVariantChannelListing(models.Model):
     class Meta:
         unique_together = [["variant", "channel"]]
         ordering = ("pk",)
+        indexes = [
+            GinIndex(fields=["price_amount", "channel_id"]),
+        ]
 
 
 class VariantChannelListingPromotionRule(models.Model):
@@ -593,7 +612,7 @@ class ProductMedia(SortableModel, ModelWithMetadata):
         blank=True,
     )
     image = models.ImageField(upload_to="products", blank=True, null=True)
-    alt = models.CharField(max_length=128, blank=True)
+    alt = models.CharField(max_length=250, blank=True)
     type = models.CharField(
         max_length=32,
         choices=ProductMediaTypes.CHOICES,
@@ -701,7 +720,7 @@ class CollectionChannelListing(PublishableModel):
         ordering = ("pk",)
 
 
-class CollectionTranslation(SeoModelTranslation):
+class CollectionTranslation(SeoModelTranslationWithSlug):
     collection = models.ForeignKey(
         Collection, related_name="translations", on_delete=models.CASCADE
     )
@@ -709,6 +728,12 @@ class CollectionTranslation(SeoModelTranslation):
     description = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editor_js)
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["language_code", "slug"],
+                name="uniq_lang_slug_collectiontransl",
+            ),
+        ]
         unique_together = (("language_code", "collection"),)
 
     def __repr__(self):

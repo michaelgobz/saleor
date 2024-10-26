@@ -24,11 +24,11 @@ from ....tests.utils import get_graphql_content
 
 def assert_proper_webhook_called_once(order, status, draft_mock, order_mock):
     if status == OrderStatus.DRAFT:
-        draft_mock.assert_called_once_with(order)
+        draft_mock.assert_called_once_with(order, webhooks=set())
         order_mock.assert_not_called()
     else:
         draft_mock.assert_not_called()
-        order_mock.assert_called_once_with(order)
+        order_mock.assert_called_once_with(order, webhooks=set())
 
 
 QUERY_ORDER_TOTAL = """
@@ -63,9 +63,7 @@ def test_orders_total(
     # then
     amount = str(content["data"]["ordersTotal"]["gross"]["amount"])
     assert Money(amount, "USD") == order.total.gross
-    assert any(
-        [str(warning.message) == DEPRECATION_WARNING_MESSAGE for warning in warns]
-    )
+    assert any(str(warning.message) == DEPRECATION_WARNING_MESSAGE for warning in warns)
 
 
 ORDER_LINE_DELETE_MUTATION = """
@@ -619,6 +617,25 @@ def test_update_order_line_discount_old_id(
 
     line_to_discount.refresh_from_db()
 
+    second_line = order.lines.last()
+    order.refresh_from_db()
+    order_discount = order.discounts.get()
+    order_discount_amount = order_discount.amount
+    base_shipping = order.undiscounted_base_shipping_price
+    discount_applied_to_lines = order_discount_amount - (
+        base_shipping - order.shipping_price.gross
+    )
+    discount_applied_to_discounted_line = (
+        discount_applied_to_lines
+        - (second_line.base_unit_price - second_line.unit_price.gross)
+        * second_line.quantity
+    )
+    assert (
+        discount_applied_to_discounted_line
+        == (line_to_discount.base_unit_price - line_to_discount.unit_price.gross)
+        * line_to_discount.quantity
+    )
+
     errors = data["errors"]
     assert not errors
 
@@ -628,7 +645,10 @@ def test_update_order_line_discount_old_id(
     )
     expected_line_price = discount(line_price_before_discount)
 
-    assert line_to_discount.unit_price == quantize_price(expected_line_price, "USD")
+    assert (
+        line_to_discount.base_unit_price
+        == quantize_price(expected_line_price, "USD").gross
+    )
     unit_discount = line_to_discount.unit_discount
     assert unit_discount == (line_price_before_discount - expected_line_price).gross
 

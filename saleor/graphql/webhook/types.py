@@ -10,8 +10,10 @@ from ..core.connection import (
     create_connection_slice,
     filter_connection_queryset,
 )
-from ..core.descriptions import ADDED_IN_312, DEPRECATED_IN_3X_FIELD, PREVIEW_FEATURE
+from ..core.context import get_database_connection_name
+from ..core.descriptions import DEPRECATED_IN_3X_FIELD
 from ..core.fields import FilterConnectionField, JSONString
+from ..core.scalars import DateTime
 from ..core.types import ModelObjectType, NonNullList
 from ..webhook.enums import EventDeliveryStatusEnum, WebhookEventTypeEnum
 from ..webhook.filters import EventDeliveryFilterInput
@@ -76,7 +78,7 @@ class EventDeliveryAttempt(ModelObjectType[core_models.EventDeliveryAttempt]):
     id = graphene.GlobalID(
         required=True, description="The ID of Event Delivery Attempt."
     )
-    created_at = graphene.DateTime(
+    created_at = DateTime(
         description="Event delivery creation date and time.", required=True
     )
     task_id = graphene.String(description="Task id for delivery attempt.")
@@ -108,7 +110,7 @@ class EventDeliveryAttemptCountableConnection(CountableConnection):
 
 class EventDelivery(ModelObjectType[core_models.EventDelivery]):
     id = graphene.GlobalID(required=True, description="The ID of an event delivery.")
-    created_at = graphene.DateTime(
+    created_at = DateTime(
         required=True, description="Creation time of an event delivery."
     )
     status = EventDeliveryStatusEnum(
@@ -129,8 +131,12 @@ class EventDelivery(ModelObjectType[core_models.EventDelivery]):
 
     @staticmethod
     def resolve_attempts(root: core_models.EventDelivery, info: ResolveInfo, **kwargs):
-        qs = core_models.EventDeliveryAttempt.objects.filter(delivery=root)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = core_models.EventDeliveryAttempt.objects.using(
+            get_database_connection_name(info.context)
+        ).filter(delivery=root)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(
             qs, info, kwargs, EventDeliveryAttemptCountableConnection
         )
@@ -195,8 +201,6 @@ class Webhook(ModelObjectType[models.Webhook]):
     )
     custom_headers = JSONString(
         description="Custom headers, which will be added to HTTP request."
-        + ADDED_IN_312
-        + PREVIEW_FEATURE
     )
 
     class Meta:
@@ -240,8 +244,12 @@ class Webhook(ModelObjectType[models.Webhook]):
 
     @staticmethod
     def resolve_event_deliveries(root: models.Webhook, info: ResolveInfo, **kwargs):
-        qs = core_models.EventDelivery.objects.filter(webhook_id=root.pk)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = core_models.EventDelivery.objects.using(
+            get_database_connection_name(info.context)
+        ).filter(webhook_id=root.pk)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(
             qs, info, kwargs, EventDeliveryCountableConnection
         )

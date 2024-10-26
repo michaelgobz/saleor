@@ -8,20 +8,43 @@ from django.core.management import call_command
 from django.db import connections
 from django.test.testcases import TransactionTestCase
 
+from saleor.tests.utils import prepare_test_db_connections
+
+TEST_DATABASES = {
+    settings.DATABASE_CONNECTION_DEFAULT_NAME,
+    settings.DATABASE_CONNECTION_REPLICA_NAME,
+}
+# Here, we trick Django test cases into using multiple databases.
+# Thanks to this, we do not have to mark all tests
+# with @pytest.mark.django_db(databases=['default', 'replica'])
+django.test.TransactionTestCase.databases = TEST_DATABASES
+django.test.TestCase.databases = TEST_DATABASES
+
+prepare_test_db_connections()
+
 pytest_plugins = [
     "saleor.tests.fixtures",
-    "saleor.discount.tests.test_utils.fixtures",
+    "saleor.app.tests.fixtures",
     "saleor.plugins.tests.fixtures",
     "saleor.graphql.tests.fixtures",
-    "saleor.graphql.channel.tests.fixtures",
-    "saleor.graphql.channel.tests.benchmark.fixtures",
-    "saleor.graphql.checkout.tests.benchmark.fixtures",
     "saleor.graphql.account.tests.benchmark.fixtures",
-    "saleor.graphql.order.tests.benchmark.fixtures",
-    "saleor.graphql.giftcard.tests.benchmark.fixtures",
-    "saleor.graphql.webhook.tests.benchmark.fixtures",
-    "saleor.plugins.webhook.tests.subscription_webhooks.fixtures",
+    "saleor.webhook.tests.fixtures",
     "saleor.tax.tests.fixtures",
+    "saleor.channel.tests.fixtures",
+    "saleor.page.tests.fixtures",
+    "saleor.menu.tests.fixtures",
+    "saleor.warehouse.tests.fixtures",
+    "saleor.thumbnail.tests.fixtures",
+    "saleor.order.tests.fixtures",
+    "saleor.product.tests.fixtures",
+    "saleor.site.tests.fixtures",
+    "saleor.shipping.tests.fixtures",
+    "saleor.permission.tests.fixtures",
+    "saleor.giftcard.tests.fixtures",
+    "saleor.discount.tests.fixtures",
+    "saleor.checkout.tests.fixtures",
+    "saleor.attribute.tests.fixtures",
+    "saleor.payment.tests.fixtures",
 ]
 
 

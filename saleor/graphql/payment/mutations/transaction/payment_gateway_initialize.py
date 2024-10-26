@@ -1,7 +1,7 @@
 import graphene
+from django.conf import settings
 
 from .....payment.interface import PaymentGatewayData
-from ....core.descriptions import ADDED_IN_313, PREVIEW_FEATURE
 from ....core.doc_category import DOC_CATEGORY_PAYMENTS
 from ....core.enums import PaymentGatewayInitializeErrorCode
 from ....core.scalars import JSON, PositiveDecimal
@@ -65,7 +65,8 @@ class PaymentGatewayInitialize(TransactionSessionBase):
             "Initializes a payment gateway session. It triggers the webhook "
             "`PAYMENT_GATEWAY_INITIALIZE_SESSION`, to the requested `paymentGateways`. "
             "If `paymentGateways` is not provided, the webhook will be send to all "
-            "subscribed payment gateways." + ADDED_IN_313 + PREVIEW_FEATURE
+            "subscribed payment gateways. There is a limit of "
+            f"{settings.TRANSACTION_ITEMS_LIMIT} transaction items per checkout / order."
         )
         error_type_class = common_types.PaymentGatewayInitializeError
 

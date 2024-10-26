@@ -23,10 +23,9 @@ def test_associate_guest_checkout_with_account_if_exists(
     checkout.billing_address = address
     checkout.save()
     user = None
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    checkout_info.channel.order_mark_as_paid_strategy == paid_strategy
 
     # call the complete_checkout function with the checkout object
     order, _, _ = complete_checkout(
@@ -62,10 +61,9 @@ def test_associate_guest_checkout_with_account_if_exists_with_guest_user(
     checkout.billing_address = address
     checkout.save()
     user = None
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    checkout_info.channel.order_mark_as_paid_strategy == paid_strategy
 
     # call the complete_checkout function with the checkout object
     order, _, _ = complete_checkout(
@@ -101,10 +99,9 @@ def test_associate_guest_checkout_with_account_if_exists_with_inactive_user(
     customer_user.is_active = False
     customer_user.save()
     user = None
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    checkout_info.channel.order_mark_as_paid_strategy == paid_strategy
 
     # call the complete_checkout function with the checkout object
     order, _, _ = complete_checkout(

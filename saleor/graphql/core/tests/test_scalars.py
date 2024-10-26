@@ -1,10 +1,13 @@
+import decimal
 from unittest import mock
 
 import pytest
+from graphql.language.ast import FloatValue, IntValue, ObjectValue, StringValue
 
 from ....order.models import Order
 from ....payment.interface import PaymentGatewayData
 from ...tests.utils import get_graphql_content, get_graphql_content_from_response
+from ..scalars import Decimal, PositiveDecimal
 from ..utils import to_global_id_or_none
 
 QUERY_CHECKOUT = """
@@ -272,3 +275,186 @@ def test_json_scalar_as_correct_value(
 
     # then
     get_graphql_content(response)
+
+
+DATE_TIME_QUERY_WITH_VARIABLE = """
+mutation vv($startDate: DateTime){
+	voucherCreate(input:{
+		type:SHIPPING, code:"test12", startDate: $startDate
+	}){
+		errors{
+			code
+		}
+		voucher{
+			id
+			startDate
+		}
+	}
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "start_date",
+    [
+        "0000-01-01T00:00:00+00:00",
+        "0001-01-01T00:00:01+07:00",
+        "0001-01-01T00:00:01+01:00",
+        "0001-01-01T00:00:00+00:01",
+        "0001-12-31 17:00:01+00 BC",
+        "9999-12-31T23:59:59-07:00",
+    ],
+)
+def test_incorrect_date_time_as_variable(
+    start_date, staff_api_client, permission_manage_discounts
+):
+    # given
+    variables = {"startDate": start_date}
+    staff_api_client.user.user_permissions.add(permission_manage_discounts)
+
+    # when
+    response = staff_api_client.post_graphql(DATE_TIME_QUERY_WITH_VARIABLE, variables)
+
+    # then
+    content = get_graphql_content_from_response(response)
+    assert "errors" in content
+
+
+@pytest.mark.parametrize(
+    "start_date",
+    [
+        "0001-01-01T00:00:01+00:00",
+        "0001-01-01T01:00:02+01:00",
+        "0001-01-10T00:00:01+07:00",
+        "0001-01-01T07:05:01+07:00",
+        "2024-06-10T11:00:00+07:00",
+        "9999-12-31T23:59:59+00:00",
+    ],
+)
+def test_correct_date_time_as_variable(
+    start_date, staff_api_client, permission_manage_discounts
+):
+    # given
+    variables = {"startDate": start_date}
+    staff_api_client.user.user_permissions.add(permission_manage_discounts)
+
+    # when
+    response = staff_api_client.post_graphql(DATE_TIME_QUERY_WITH_VARIABLE, variables)
+
+    # then
+    get_graphql_content(response)
+
+
+@pytest.mark.parametrize(
+    "start_date",
+    [
+        "0000-01-01T00:00:00+00:00",
+        "0001-01-01T00:00:01+07:00",
+        "0001-01-01T00:00:01+01:00",
+        "0001-01-01T00:00:00+00:01",
+        "0001-12-31 17:00:01+00 BC",
+        "9999-12-31T23:59:59-07:00",
+    ],
+)
+def test_incorrect_date_time_as_input(
+    start_date, staff_api_client, permission_manage_discounts
+):
+    # given
+    query = f"""
+    mutation{{
+        voucherCreate(input:{{
+            type:SHIPPING, code:"test12", startDate: "{start_date}"
+        }}){{
+            errors{{
+                code
+            }}
+            voucher{{
+                id
+                startDate
+            }}
+        }}
+    }}
+    """
+    staff_api_client.user.user_permissions.add(permission_manage_discounts)
+
+    # when
+    response = staff_api_client.post_graphql(query)
+
+    # then
+    content = get_graphql_content_from_response(response)
+    assert "errors" in content
+
+
+@pytest.mark.parametrize(
+    "start_date",
+    [
+        "0001-01-01T00:00:01+00:00",
+        "0001-01-01T01:00:02+01:00",
+        "0001-01-10T00:00:01+07:00",
+        "0001-01-01T07:05:01+07:00",
+        "2024-06-10T11:00:00+07:00",
+        "9999-12-31T23:59:59+00:00",
+    ],
+)
+def test_correct_date_time_as_input(
+    start_date, staff_api_client, permission_manage_discounts
+):
+    # given
+    query = f"""
+        mutation {{
+            voucherCreate(input:{{
+                type:SHIPPING, code:"test12", startDate: "{start_date}"
+            }}){{
+                errors{{
+                    code
+                }}
+                voucher{{
+                    id
+                    startDate
+                }}
+            }}
+        }}
+    """
+    staff_api_client.user.user_permissions.add(permission_manage_discounts)
+
+    # when
+    response = staff_api_client.post_graphql(query)
+
+    # then
+    get_graphql_content(response)
+
+
+@pytest.mark.parametrize("invalid_value", ["NaN", "-Infinity", "1e-9999999", "-", "x"])
+def test_decimal_scalar_invalid_value(invalid_value):
+    result = Decimal.parse_value(invalid_value)
+    assert result is None
+
+
+@pytest.mark.parametrize("invalid_value", ["NaN", "-Infinity", "1e-9999999", "-1"])
+def test_positive_decimal_scalar_invalid_value(invalid_value):
+    result = PositiveDecimal.parse_value(invalid_value)
+    assert result is None
+
+
+@pytest.mark.parametrize(
+    "valid_node",
+    [
+        FloatValue(value="1.0"),
+        IntValue(value="1"),
+    ],
+)
+def test_decimal_scalar_valid_literal(valid_node):
+    result = Decimal.parse_literal(valid_node)
+    assert result == decimal.Decimal(1)
+
+
+@pytest.mark.parametrize(
+    "invalid_node",
+    [
+        StringValue(value="1.0"),
+        ObjectValue(fields=[]),
+    ],
+)
+def test_decimal_scalar_invalid_literal(invalid_node):
+    result = Decimal.parse_literal(invalid_node)
+    assert result is None

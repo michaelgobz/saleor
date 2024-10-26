@@ -2,14 +2,13 @@ import datetime
 import json
 
 import pytest
-import pytz
 from django.conf import settings
 
 from ....tests.utils import dummy_editorjs
 from ..attributes.utils import prepare_all_attributes
 from ..pages.utils import create_page, create_page_type
 from ..product.utils.preparing_product import prepare_product
-from ..shop.utils.preparing_shop import prepare_shop
+from ..shop.utils.preparing_shop import prepare_default_shop
 from ..utils import assign_permissions
 
 
@@ -18,31 +17,22 @@ def test_create_page_with_each_of_attribute_types_core_0701(
     e2e_staff_api_client,
     permission_manage_page_types_and_attributes,
     permission_manage_pages,
-    permission_manage_products,
-    permission_manage_channels,
-    permission_manage_shipping,
+    shop_permissions,
     permission_manage_product_types_and_attributes,
-    permission_manage_discounts,
     site_settings,
 ):
     # Before
     permissions = [
         permission_manage_page_types_and_attributes,
         permission_manage_pages,
-        permission_manage_products,
-        permission_manage_channels,
-        permission_manage_shipping,
+        *shop_permissions,
         permission_manage_product_types_and_attributes,
-        permission_manage_discounts,
     ]
     assign_permissions(e2e_staff_api_client, permissions)
 
-    (
-        warehouse_id,
-        channel_id,
-        _channel_slug,
-        _shipping_method_id,
-    ) = prepare_shop(e2e_staff_api_client)
+    shop_data = prepare_default_shop(e2e_staff_api_client)
+    channel_id = shop_data["channel"]["id"]
+    warehouse_id = shop_data["warehouse"]["id"]
 
     (
         product_id,
@@ -67,7 +57,11 @@ def test_create_page_with_each_of_attribute_types_core_0701(
         attr_swatch_id,
         attr_reference_id,
         attr_file_id,
-    ) = prepare_all_attributes(e2e_staff_api_client, attribute_type="PAGE_TYPE")
+    ) = prepare_all_attributes(
+        e2e_staff_api_client,
+        attribute_type="PAGE_TYPE",
+        entity_type="PRODUCT",
+    )
 
     # Step 1 - Create page type with all attributes
     add_attributes = [
@@ -102,7 +96,7 @@ def test_create_page_with_each_of_attribute_types_core_0701(
         {"id": attr_date_id, "date": "2021-01-01"},
         {
             "id": attr_date_time_id,
-            "dateTime": datetime.datetime(2023, 1, 1, tzinfo=pytz.utc),
+            "dateTime": datetime.datetime(2023, 1, 1, tzinfo=datetime.UTC),
         },
         {"id": attr_plain_text_id, "plainText": "test plain text"},
         {"id": attr_rich_text_id, "richText": expected_rich_text},

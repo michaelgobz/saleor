@@ -91,7 +91,7 @@ def test_checkout_complete(
     checkout_line_quantity = checkout_line.quantity
     checkout_line_variant = checkout_line.variant
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     total = calculations.calculate_checkout_total_with_gift_cards(
@@ -148,7 +148,7 @@ def test_checkout_complete(
     assert not Checkout.objects.filter(
         pk=checkout.pk
     ).exists(), "Checkout should have been deleted"
-    order_confirmed_mock.assert_called_once_with(order)
+    order_confirmed_mock.assert_called_once_with(order, webhooks=set())
 
 
 def test_checkout_complete_order_already_exists_neither_token_and_id_given(
@@ -253,7 +253,7 @@ def test_checkout_complete_for_token_as_input(
     checkout_line_quantity = checkout_line.quantity
     checkout_line_variant = checkout_line.variant
 
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     total = calculations.calculate_checkout_total_with_gift_cards(
@@ -312,4 +312,4 @@ def test_checkout_complete_for_token_as_input(
     assert not Checkout.objects.filter(
         pk=checkout.pk
     ).exists(), "Checkout should have been deleted"
-    order_confirmed_mock.assert_called_once_with(order)
+    order_confirmed_mock.assert_called_once_with(order, webhooks=set())

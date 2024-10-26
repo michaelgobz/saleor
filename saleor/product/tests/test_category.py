@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
+from ...discount.utils.promotion import get_active_catalogue_promotion_rules
 from ...plugins.manager import get_plugins_manager
-from ...tests.utils import flush_post_commit_hooks
 from ..models import Category
 from ..utils import collect_categories_tree_products, delete_categories
 
@@ -19,32 +19,29 @@ def test_collect_categories_tree_products(categories_tree):
     )
 
 
-@patch("saleor.product.utils.update_products_discounted_prices_for_promotion_task")
-def test_delete_categories(
-    mock_update_products_discounted_prices_for_promotion_task,
-    categories_tree_with_published_products,
-):
+def test_delete_categories(categories_tree_with_published_products):
+    # given
     parent = categories_tree_with_published_products
     child = parent.children.first()
     product_list = [child.products.first(), parent.products.first()]
 
-    delete_categories([parent.pk], manager=get_plugins_manager())
+    # when
+    delete_categories([parent.pk], manager=get_plugins_manager(allow_replica=False))
 
     assert not Category.objects.filter(
         id__in=[category.id for category in [parent, child]]
     ).exists()
 
-    calls = mock_update_products_discounted_prices_for_promotion_task.mock_calls
-    assert len(calls) == 1
-    call_kwargs = calls[0].kwargs
-    assert set(call_kwargs["product_ids"]) == {p.pk for p in product_list}
-
+    # then
     for product in product_list:
         product.refresh_from_db()
         assert not product.category
         for product_channel_listing in product.channel_listings.all():
             assert not product_channel_listing.is_published
             assert not product_channel_listing.published_at
+
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty
 
 
 @patch("saleor.product.utils.get_webhooks_for_event")
@@ -55,6 +52,7 @@ def test_delete_categories_trigger_product_updated_webhook(
     categories_tree_with_published_products,
     any_webhook,
     settings,
+    django_capture_on_commit_callbacks,
 ):
     # given
     mocked_get_webhooks_for_event.return_value = [any_webhook]
@@ -65,8 +63,8 @@ def test_delete_categories_trigger_product_updated_webhook(
     product_list = [child.products.first(), parent.products.first()]
 
     # when
-    delete_categories([parent.pk], manager=get_plugins_manager())
-    flush_post_commit_hooks()
+    with django_capture_on_commit_callbacks(execute=True):
+        delete_categories([parent.pk], manager=get_plugins_manager(allow_replica=False))
 
     # then
     assert not Category.objects.filter(

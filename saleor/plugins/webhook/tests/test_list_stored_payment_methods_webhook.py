@@ -1,3 +1,4 @@
+import json
 from unittest import mock
 
 import graphene
@@ -7,6 +8,9 @@ from ....payment.interface import ListStoredPaymentMethodsRequestData
 from ....settings import WEBHOOK_SYNC_TIMEOUT
 from ....webhook.const import WEBHOOK_CACHE_DEFAULT_TIMEOUT
 from ....webhook.event_types import WebhookEventSyncType
+from ....webhook.tests.subscription_webhooks.subscription_queries import (
+    LIST_STORED_PAYMENT_METHODS as LIST_STORED_PAYMENT_METHODS_SUBSCRIPTION,
+)
 from ....webhook.transport.list_stored_payment_methods import (
     get_list_stored_payment_methods_from_response,
 )
@@ -67,8 +71,9 @@ def test_list_stored_payment_methods_with_static_payload(
     response = plugin.list_stored_payment_methods(data, [])
 
     # then
-    delivery = EventDelivery.objects.get()
-    mock_request.assert_called_once_with(delivery, timeout=WEBHOOK_SYNC_TIMEOUT)
+    mock_request.assert_called_once()
+    assert mock_request.mock_calls[0].kwargs["timeout"] == WEBHOOK_SYNC_TIMEOUT
+    assert not EventDelivery.objects.exists()
 
     mocked_cache_get.assert_called_once_with(expected_cache_key)
     mocked_cache_set.assert_called_once_with(
@@ -76,6 +81,104 @@ def test_list_stored_payment_methods_with_static_payload(
         webhook_list_stored_payment_methods_response,
         timeout=WEBHOOK_CACHE_DEFAULT_TIMEOUT,
     )
+
+    assert response
+    assert response == get_list_stored_payment_methods_from_response(
+        list_stored_payment_methods_app,
+        webhook_list_stored_payment_methods_response,
+        channel_USD.currency_code,
+    )
+
+
+@mock.patch("saleor.webhook.transport.synchronous.transport.cache.get")
+@mock.patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
+def test_list_stored_payment_methods_subscription_issuing_principal(
+    mock_request,
+    mocked_cache_get,
+    channel_USD,
+    customer_user,
+    webhook_plugin,
+    list_stored_payment_methods_app,
+    webhook_list_stored_payment_methods_response,
+):
+    # given
+    mock_request.return_value = webhook_list_stored_payment_methods_response
+    mocked_cache_get.return_value = None
+    webhook = list_stored_payment_methods_app.webhooks.first()
+    webhook.subscription_query = LIST_STORED_PAYMENT_METHODS_SUBSCRIPTION
+    webhook.save(update_fields=["subscription_query"])
+
+    plugin = webhook_plugin()
+    plugin.requestor = customer_user
+
+    data = ListStoredPaymentMethodsRequestData(
+        channel=channel_USD,
+        user=customer_user,
+    )
+
+    # when
+    response = plugin.list_stored_payment_methods(data, [])
+
+    # then
+    mock_request.assert_called_once()
+    assert mock_request.mock_calls[0].kwargs["timeout"] == WEBHOOK_SYNC_TIMEOUT
+    assert not EventDelivery.objects.exists()
+
+    delivery = mock_request.mock_calls[0].args[0]
+    delivery_subscription_payload = json.loads(delivery.payload.get_payload())
+    assert delivery_subscription_payload == {
+        "issuingPrincipal": {"id": graphene.Node.to_global_id("User", customer_user.pk)}
+    }
+
+    assert response
+    assert response == get_list_stored_payment_methods_from_response(
+        list_stored_payment_methods_app,
+        webhook_list_stored_payment_methods_response,
+        channel_USD.currency_code,
+    )
+
+
+@mock.patch("saleor.webhook.transport.synchronous.transport.cache.get")
+@mock.patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
+def test_list_stored_payment_methods_subscription_issuing_principal_as_app(
+    mock_request,
+    mocked_cache_get,
+    channel_USD,
+    customer_user,
+    webhook_plugin,
+    list_stored_payment_methods_app,
+    webhook_list_stored_payment_methods_response,
+):
+    # given
+    mock_request.return_value = webhook_list_stored_payment_methods_response
+    mocked_cache_get.return_value = None
+    webhook = list_stored_payment_methods_app.webhooks.first()
+    webhook.subscription_query = LIST_STORED_PAYMENT_METHODS_SUBSCRIPTION
+    webhook.save(update_fields=["subscription_query"])
+
+    plugin = webhook_plugin()
+    plugin.requestor = list_stored_payment_methods_app
+
+    data = ListStoredPaymentMethodsRequestData(
+        channel=channel_USD,
+        user=customer_user,
+    )
+
+    # when
+    response = plugin.list_stored_payment_methods(data, [])
+
+    # then
+    mock_request.assert_called_once()
+    assert mock_request.mock_calls[0].kwargs["timeout"] == WEBHOOK_SYNC_TIMEOUT
+    assert not EventDelivery.objects.exists()
+
+    delivery = mock_request.mock_calls[0].args[0]
+    delivery_subscription_payload = json.loads(delivery.payload.get_payload())
+    assert delivery_subscription_payload == {
+        "issuingPrincipal": {
+            "id": graphene.Node.to_global_id("App", list_stored_payment_methods_app.pk)
+        }
+    }
 
     assert response
     assert response == get_list_stored_payment_methods_from_response(
@@ -127,8 +230,9 @@ def test_list_stored_payment_methods_with_subscription_payload(
     response = plugin.list_stored_payment_methods(data, [])
 
     # then
-    delivery = EventDelivery.objects.get()
-    mock_request.assert_called_once_with(delivery, timeout=WEBHOOK_SYNC_TIMEOUT)
+    mock_request.assert_called_once()
+    assert mock_request.mock_calls[0].kwargs["timeout"] == WEBHOOK_SYNC_TIMEOUT
+    assert not EventDelivery.objects.exists()
 
     mocked_cache_get.assert_called_once_with(expected_cache_key)
     mocked_cache_set.assert_called_once_with(
@@ -241,8 +345,9 @@ def test_list_stored_payment_methods_app_returns_incorrect_response(
     response = plugin.list_stored_payment_methods(data, [])
 
     # then
-    delivery = EventDelivery.objects.get()
-    mock_request.assert_called_once_with(delivery, timeout=WEBHOOK_SYNC_TIMEOUT)
+    mock_request.assert_called_once()
+    assert mock_request.mock_calls[0].kwargs["timeout"] == WEBHOOK_SYNC_TIMEOUT
+    assert not EventDelivery.objects.exists()
 
     mocked_cache_get.assert_called_once_with(expected_cache_key)
     assert not mocked_cache_set.called

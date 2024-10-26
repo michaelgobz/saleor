@@ -17,7 +17,8 @@ from ....webhook.models import Webhook, WebhookEvent
 def webhook_plugin(settings):
     def factory() -> WebhookPlugin:
         settings.PLUGINS = ["saleor.plugins.webhook.plugin.WebhookPlugin"]
-        manager = get_plugins_manager()
+        manager = get_plugins_manager(allow_replica=False)
+        manager.get_all_plugins()
         return manager.global_plugins[0]
 
     return factory

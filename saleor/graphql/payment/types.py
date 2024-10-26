@@ -10,22 +10,14 @@ from ...payment import models
 from ...payment.interface import PaymentMethodData
 from ...permission.enums import OrderPermissions
 from ..account.dataloaders import UserByUserIdLoader
-from ..app.dataloaders import AppByIdLoader, AppsByAppIdentifierLoader
+from ..app.dataloaders import ActiveAppsByAppIdentifierLoader, AppByIdLoader
 from ..checkout.dataloaders import CheckoutByTokenLoader
 from ..core import ResolveInfo
 from ..core.connection import CountableConnection
-from ..core.descriptions import (
-    ADDED_IN_31,
-    ADDED_IN_34,
-    ADDED_IN_36,
-    ADDED_IN_313,
-    ADDED_IN_314,
-    ADDED_IN_315,
-    PREVIEW_FEATURE,
-)
 from ..core.doc_category import DOC_CATEGORY_PAYMENTS
 from ..core.fields import JSONString, PermissionsField
-from ..core.scalars import JSON
+from ..core.scalars import JSON, DateTime
+from ..core.scalars import UUID as UUIDScalar
 from ..core.tracing import traced_resolver
 from ..core.types import BaseObjectType, ModelObjectType, Money, NonNullList
 from ..meta.permissions import public_payment_permissions
@@ -49,7 +41,7 @@ from .enums import (
 
 class Transaction(ModelObjectType[models.Transaction]):
     id = graphene.GlobalID(required=True, description="ID of the transaction.")
-    created = graphene.DateTime(
+    created = DateTime(
         required=True, description="Date and time at which transaction was created."
     )
     payment = graphene.Field(
@@ -125,7 +117,6 @@ class PaymentSource(BaseObjectType):
         required=True,
         description=(
             "List of public metadata items."
-            + ADDED_IN_31
             + "\n\nCan be accessed without permissions."
         ),
     )
@@ -139,10 +130,10 @@ class Payment(ModelObjectType[models.Payment]):
     is_active = graphene.Boolean(
         required=True, description="Determines if the payment is active or not."
     )
-    created = graphene.DateTime(
+    created = DateTime(
         required=True, description="Date and time at which payment was created."
     )
-    modified = graphene.DateTime(
+    modified = DateTime(
         required=True, description="Date and time at which payment was modified."
     )
     token = graphene.String(
@@ -203,10 +194,10 @@ class Payment(ModelObjectType[models.Payment]):
     )
     partial = graphene.Boolean(
         required=True,
-        description="Informs whether this is a partial payment." + ADDED_IN_314,
+        description="Informs whether this is a partial payment.",
     )
     psp_reference = graphene.String(
-        required=False, description="PSP reference of the payment." + ADDED_IN_314
+        required=False, description="PSP reference of the payment."
     )
 
     class Meta:
@@ -283,6 +274,7 @@ class Payment(ModelObjectType[models.Payment]):
             raise PermissionDenied(permissions=permissions)
         return resolve_metadata(root.metadata)
 
+    @staticmethod
     def resolve_checkout(root: models.Payment, info):
         if not root.checkout_id:
             return None
@@ -310,37 +302,42 @@ class PaymentInitialized(BaseObjectType):
 
 
 class TransactionEvent(ModelObjectType[models.TransactionEvent]):
-    created_at = graphene.DateTime(
+    created_at = DateTime(
         required=True,
         description="Date and time at which a transaction event was created.",
     )
     psp_reference = graphene.String(
-        description="PSP reference of transaction." + ADDED_IN_313, required=True
+        description="PSP reference of transaction.", required=True
     )
     message = graphene.String(
-        description="Message related to the transaction's event." + ADDED_IN_313,
+        description="Message related to the transaction's event.",
         required=True,
     )
     external_url = graphene.String(
         description=(
             "The url that will allow to redirect user to "
-            "payment provider page with transaction details." + ADDED_IN_313
+            "payment provider page with transaction details."
         ),
         required=True,
     )
     amount = graphene.Field(
         Money,
         required=True,
-        description="The amount related to this event." + ADDED_IN_313,
+        description="The amount related to this event.",
     )
     type = graphene.Field(
         TransactionEventTypeEnum,
-        description="The type of action related to this event." + ADDED_IN_313,
+        description="The type of action related to this event.",
     )
 
     created_by = graphene.Field(
         "saleor.graphql.core.types.user_or_app.UserOrApp",
-        description=("User or App that created the transaction event." + ADDED_IN_313),
+        description=("User or App that created the transaction event."),
+    )
+
+    idempotency_key = graphene.String(
+        description="Idempotency key assigned to the event.",
+        required=False,
     )
 
     class Meta:
@@ -370,31 +367,48 @@ class TransactionEvent(ModelObjectType[models.TransactionEvent]):
         This covers a case when a third-party app was re-installed, but we're still able
         to determine which one is the owner of the transaction.
         """
+
+        def get_first_app_by_identifier(apps):
+            if apps:
+                return apps[0]
+            return None
+
+        def get_active_app(app):
+            if app and app.is_active and not app.removed_at:
+                return app
+
+            if root.app_identifier:
+                return (
+                    ActiveAppsByAppIdentifierLoader(info.context)
+                    .load(root.app_identifier)
+                    .then(get_first_app_by_identifier)
+                )
+            return None
+
         if root.app_id:
-            return AppByIdLoader(info.context).load(root.app_id)
+            return AppByIdLoader(info.context).load(root.app_id).then(get_active_app)
+
         if root.app_identifier:
-
-            def get_first_app(apps):
-                if apps:
-                    return apps[0]
-                return None
-
             return (
-                AppsByAppIdentifierLoader(info.context)
+                ActiveAppsByAppIdentifierLoader(info.context)
                 .load(root.app_identifier)
-                .then(get_first_app)
+                .then(get_first_app_by_identifier)
             )
+
         if root.user_id:
             return UserByUserIdLoader(info.context).load(root.user_id)
         return None
 
 
 class TransactionItem(ModelObjectType[models.TransactionItem]):
-    created_at = graphene.DateTime(
+    token = graphene.Field(
+        UUIDScalar, description="The transaction token.", required=True
+    )
+    created_at = DateTime(
         required=True,
         description="Date and time at which payment transaction was created.",
     )
-    modified_at = graphene.DateTime(
+    modified_at = DateTime(
         required=True,
         description="Date and time at which payment transaction was modified.",
     )
@@ -413,7 +427,6 @@ class TransactionItem(ModelObjectType[models.TransactionItem]):
         required=True,
         description=(
             "Total amount of ongoing authorization requests for the transaction."
-            + ADDED_IN_313
         ),
     )
     refunded_amount = graphene.Field(
@@ -422,24 +435,18 @@ class TransactionItem(ModelObjectType[models.TransactionItem]):
     refund_pending_amount = graphene.Field(
         Money,
         required=True,
-        description=(
-            "Total amount of ongoing refund requests for the transaction."
-            + ADDED_IN_313
-        ),
+        description="Total amount of ongoing refund requests for the transaction.",
     )
 
     canceled_amount = graphene.Field(
         Money,
         required=True,
-        description="Total amount canceled for this payment." + ADDED_IN_313,
+        description="Total amount canceled for this payment.",
     )
     cancel_pending_amount = graphene.Field(
         Money,
         required=True,
-        description=(
-            "Total amount of ongoing cancel requests for the transaction."
-            + ADDED_IN_313
-        ),
+        description="Total amount of ongoing cancel requests for the transaction.",
     )
     charged_amount = graphene.Field(
         Money, description="Total amount charged for this payment.", required=True
@@ -447,44 +454,41 @@ class TransactionItem(ModelObjectType[models.TransactionItem]):
     charge_pending_amount = graphene.Field(
         Money,
         required=True,
-        description=(
-            "Total amount of ongoing charge requests for the transaction."
-            + ADDED_IN_313
-        ),
+        description="Total amount of ongoing charge requests for the transaction.",
     )
-    name = graphene.String(
-        description="Name of the transaction." + ADDED_IN_313, required=True
-    )
+    name = graphene.String(description="Name of the transaction.", required=True)
     message = graphene.String(
-        description="Message related to the transaction." + ADDED_IN_313, required=True
+        description="Message related to the transaction.", required=True
     )
 
     psp_reference = graphene.String(
-        description="PSP reference of transaction." + ADDED_IN_313, required=True
+        description="PSP reference of transaction.", required=True
     )
     order = graphene.Field(
         "saleor.graphql.order.types.Order",
-        description="The related order." + ADDED_IN_36,
+        description="The related order.",
+    )
+    checkout = graphene.Field(
+        "saleor.graphql.checkout.types.Checkout",
+        description="The related checkout.",
     )
     events = NonNullList(
         TransactionEvent, required=True, description="List of all transaction's events."
     )
     created_by = graphene.Field(
         "saleor.graphql.core.types.user_or_app.UserOrApp",
-        description=("User or App that created the transaction." + ADDED_IN_313),
+        description=("User or App that created the transaction."),
     )
     external_url = graphene.String(
         description=(
             "The url that will allow to redirect user to "
-            "payment provider page with transaction details." + ADDED_IN_313
+            "payment provider page with transaction details."
         ),
         required=True,
     )
 
     class Meta:
-        description = (
-            "Represents a payment transaction." + ADDED_IN_34 + PREVIEW_FEATURE
-        )
+        description = "Represents a payment transaction."
         interfaces = [relay.Node, ObjectWithMetadata]
         model = models.TransactionItem
 
@@ -531,8 +535,14 @@ class TransactionItem(ModelObjectType[models.TransactionItem]):
     @staticmethod
     def resolve_order(root: models.TransactionItem, info):
         if not root.order_id:
-            return
+            return None
         return OrderByIdLoader(info.context).load(root.order_id)
+
+    @staticmethod
+    def resolve_checkout(root: models.TransactionItem, info):
+        if not root.checkout_id:
+            return None
+        return CheckoutByTokenLoader(info.context).load(root.checkout_id)
 
     @staticmethod
     def resolve_events(root: models.TransactionItem, info):
@@ -549,20 +559,33 @@ class TransactionItem(ModelObjectType[models.TransactionItem]):
         to determine which one is the owner of the transaction.
         """
 
+        def get_first_app_by_identifier(apps):
+            if apps:
+                return apps[0]
+            return None
+
+        def get_active_app(app):
+            if app and app.is_active and not app.removed_at:
+                return app
+
+            if root.app_identifier:
+                return (
+                    ActiveAppsByAppIdentifierLoader(info.context)
+                    .load(root.app_identifier)
+                    .then(get_first_app_by_identifier)
+                )
+            return None
+
         if root.app_id:
-            return AppByIdLoader(info.context).load(root.app_id)
+            return AppByIdLoader(info.context).load(root.app_id).then(get_active_app)
+
         if root.app_identifier:
-
-            def get_first_app(apps):
-                if apps:
-                    return apps[0]
-                return None
-
             return (
-                AppsByAppIdentifierLoader(info.context)
+                ActiveAppsByAppIdentifierLoader(info.context)
                 .load(root.app_identifier)
-                .then(get_first_app)
+                .then(get_first_app_by_identifier)
             )
+
         if root.user_id:
             return UserByUserIdLoader(info.context).load(root.user_id)
         return None
@@ -677,7 +700,7 @@ class StoredPaymentMethod(BaseObjectType):
     class Meta:
         description = (
             "Represents a payment method stored for user (tokenized) in payment "
-            "gateway." + ADDED_IN_315 + PREVIEW_FEATURE
+            "gateway."
         )
         doc_category = DOC_CATEGORY_PAYMENTS
 

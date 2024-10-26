@@ -2,11 +2,17 @@ from decimal import Decimal
 
 import graphene
 import pytest
+from django.utils import timezone
+from freezegun import freeze_time
 
 from .....payment import TransactionEventType
 from .....payment.models import TransactionEvent
 from ....core.utils import to_global_id_or_none
-from ....tests.utils import assert_no_permission, get_graphql_content
+from ....tests.utils import (
+    assert_no_permission,
+    get_graphql_content,
+    get_graphql_content_from_response,
+)
 
 TEST_SERVER_DOMAIN = "testserver.com"
 
@@ -59,6 +65,7 @@ TRANSACTION_QUERY = """
                     amount
                 }
                 type
+                idempotencyKey
                 createdBy{
                     ... on User {
                         id
@@ -72,6 +79,9 @@ TRANSACTION_QUERY = """
             message
             pspReference
             order {
+                id
+            }
+            checkout {
                 id
             }
             createdBy{
@@ -260,6 +270,47 @@ def test_transaction_created_by_app_query_by_staff(
     )
 
 
+@freeze_time("2022-05-12 12:00:00")
+def test_transaction_created_by_app_marked_to_remove(
+    staff_api_client,
+    transaction_item_created_by_app,
+    permission_manage_payments,
+    app,
+    webhook_app,
+):
+    # given
+    app.is_active = False
+    app.removed_at = timezone.now()
+    app.save()
+
+    webhook_app.identifier = app.identifier
+    webhook_app.save()
+
+    event = transaction_item_created_by_app.events.filter(
+        type=TransactionEventType.CHARGE_SUCCESS
+    ).get()
+
+    variables = {
+        "id": graphene.Node.to_global_id(
+            "TransactionItem", transaction_item_created_by_app.token
+        )
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        TRANSACTION_QUERY, variables, permissions=[permission_manage_payments]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    _assert_transaction_fields_created_by(
+        content,
+        transaction_item_created_by_app,
+        event,
+        webhook_app,
+    )
+
+
 def test_transaction_create_by_app_query_no_permission(
     app_api_client, transaction_item_created_by_app
 ):
@@ -436,6 +487,28 @@ def test_transaction_create_by_user_query_no_permission(
     assert_no_permission(response)
 
 
+def test_query_transaction_by_invalid_id(staff_api_client, permission_manage_payments):
+    # given
+    id = graphene.Node.to_global_id("Order", "e6cad766-c9df-4970-b77b-b8eb0e303fb6")
+    variables = {"id": id}
+
+    # when
+    response = staff_api_client.post_graphql(
+        TRANSACTION_QUERY,
+        variables,
+        permissions=[permission_manage_payments],
+    )
+
+    # then
+    content = get_graphql_content_from_response(response)
+    assert len(content["errors"]) == 1
+    assert (
+        content["errors"][0]["message"]
+        == f"Invalid ID: {id}. Expected: TransactionItem, received: Order."
+    )
+    assert content["data"]["transaction"] is None
+
+
 @pytest.mark.parametrize(
     ("db_field", "api_field"),
     [
@@ -477,6 +550,42 @@ def test_transaction_with_pending_amount(
     data = content["data"]["transaction"]
     pending_money = data[api_field]
     assert pending_money["amount"] == expected_value
+
+
+def test_transaction_with_checkout(
+    staff_api_client,
+    checkout_with_items,
+    transaction_item_generator,
+    permission_manage_payments,
+    permission_manage_staff,
+):
+    # given
+    charged_amount = Decimal("10.00")
+    transaction_item = transaction_item_generator(
+        checkout_id=checkout_with_items.pk,
+        charged_value=charged_amount,
+    )
+
+    event = transaction_item.events.filter(
+        type=TransactionEventType.CHARGE_SUCCESS
+    ).get()
+
+    variables = {
+        "id": graphene.Node.to_global_id("TransactionItem", transaction_item.token)
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        TRANSACTION_QUERY,
+        variables,
+        permissions=[permission_manage_payments, permission_manage_staff],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    _assert_transaction_fields(content, transaction_item, event)
+    data = content["data"]["transaction"]
+    assert data["checkout"]["id"] == to_global_id_or_none(checkout_with_items)
 
 
 def test_transaction_event_by_user(
@@ -629,3 +738,58 @@ def test_transaction_event_by_reinstalled_app(
     assert event_data["amount"]["currency"] == event.currency
     assert event_data["type"] == event.type.upper()
     assert event_data["createdBy"]["id"] == to_global_id_or_none(app_api_client.app)
+
+
+@freeze_time("2022-05-12 12:00:00")
+def test_transaction_event_by_app_marked_to_remove(
+    transaction_item_created_by_app,
+    permission_manage_payments,
+    permission_manage_staff,
+    staff_api_client,
+    app,
+    webhook_app,
+):
+    # given
+    identifier = "app.identifier"
+    app.identifier = identifier
+    app.is_active = False
+    app.removed_at = timezone.now()
+    app.save()
+    webhook_app.identifier = identifier
+    webhook_app.save()
+
+    psp_reference = "psp-ref-123"
+    event = TransactionEvent.objects.create(
+        transaction=transaction_item_created_by_app,
+        psp_reference=psp_reference,
+        message="Sucesfull charge",
+        currency="USD",
+        type=TransactionEventType.CHARGE_SUCCESS,
+        amount_value=Decimal("10.00"),
+        external_url=f"http://`{TEST_SERVER_DOMAIN}/test",
+        app_identifier=app.identifier,
+        app=app,
+    )
+
+    variables = {
+        "id": graphene.Node.to_global_id(
+            "TransactionItem", transaction_item_created_by_app.token
+        )
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        TRANSACTION_QUERY,
+        variables,
+        permissions=[permission_manage_payments, permission_manage_staff],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    events = content["data"]["transaction"]["events"]
+    assert len(events) == 2
+    event_data = [event for event in events if event["pspReference"] == psp_reference][
+        0
+    ]
+    assert event_data["amount"]["currency"] == event.currency
+    assert event_data["createdBy"]["id"] == to_global_id_or_none(webhook_app)

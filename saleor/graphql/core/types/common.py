@@ -25,14 +25,10 @@ from ...core.doc_category import (
     DOC_CATEGORY_USERS,
     DOC_CATEGORY_WEBHOOKS,
 )
-from ...core.scalars import Decimal
+from ...core.scalars import DateTime, Decimal
 from ..descriptions import (
-    ADDED_IN_36,
-    ADDED_IN_312,
-    ADDED_IN_314,
     ADDED_IN_318,
     DEPRECATED_IN_3X_FIELD,
-    PREVIEW_FEATURE,
 )
 from ..enums import (
     AccountErrorCode,
@@ -259,7 +255,7 @@ class CheckoutError(Error):
     code = CheckoutErrorCode(description="The error code.", required=True)
     variants = NonNullList(
         graphene.ID,
-        description="List of varint IDs which causes the error.",
+        description="List of variant IDs which causes the error.",
         required=False,
     )
     lines = NonNullList(
@@ -408,7 +404,7 @@ class PermissionGroupError(Error):
     )
     channels = NonNullList(
         graphene.ID,
-        description="List of chnnels IDs which causes the error.",
+        description="List of channels IDs which causes the error.",
         required=False,
     )
 
@@ -532,7 +528,7 @@ class ProductVariantBulkError(Error):
     path = graphene.String(
         description=(
             "Path to field that caused the error. A value of `null` indicates that "
-            "the error isn't associated with a particular field." + ADDED_IN_314
+            "the error isn't associated with a particular field."
         ),
         required=False,
     )
@@ -553,12 +549,12 @@ class ProductVariantBulkError(Error):
     )
     stocks = NonNullList(
         graphene.ID,
-        description="List of stocks IDs which causes the error." + ADDED_IN_312,
+        description="List of stocks IDs which causes the error.",
         required=False,
     )
     channels = NonNullList(
         graphene.ID,
-        description="List of channel IDs which causes the error." + ADDED_IN_312,
+        description="List of channel IDs which causes the error.",
         required=False,
     )
     channel_listings = NonNullList(
@@ -840,10 +836,22 @@ class AttributeValueBulkTranslateError(BulkError):
 
 class Weight(graphene.ObjectType):
     unit = WeightUnitsEnum(description="Weight unit.", required=True)
-    value = graphene.Float(description="Weight value.", required=True)
+    value = graphene.Float(
+        description="Weight value. Returns a value with maximal three decimal places",
+        required=True,
+    )
 
     class Meta:
         description = "Represents weight value in a specific weight unit."
+
+    @staticmethod
+    def resolve_value(root, _info):
+        # Mass is stored as grams in the DB. It means that even if we provide the
+        # weight with static precision (e.g. 0.77 lb), the value will be converted
+        # to grams. In this case, input like  0.77 lb will be converted to
+        # 349.26583999999997 g. In case of retrieving the weight value in lb, we need
+        # to round the value as we will receive the value like 0.7699999999999999.
+        return round(root.value, 3)
 
 
 class Image(graphene.ObjectType):
@@ -895,8 +903,8 @@ class DateRangeInput(graphene.InputObjectType):
 
 
 class DateTimeRangeInput(graphene.InputObjectType):
-    gte = graphene.DateTime(description="Start date.", required=False)
-    lte = graphene.DateTime(description="End date.", required=False)
+    gte = DateTime(description="Start date.", required=False)
+    lte = DateTime(description="End date.", required=False)
 
 
 class IntRangeInput(graphene.InputObjectType):
@@ -923,10 +931,10 @@ class TaxType(BaseObjectType):
 
 class Job(graphene.Interface):
     status = JobStatusEnum(description="Job status.", required=True)
-    created_at = graphene.DateTime(
+    created_at = DateTime(
         description="Created date time of job in ISO 8601 format.", required=True
     )
-    updated_at = graphene.DateTime(
+    updated_at = DateTime(
         description="Date time of job last update in ISO 8601 format.", required=True
     )
     message = graphene.String(description="Job message.")
@@ -935,7 +943,7 @@ class Job(graphene.Interface):
     @traced_resolver
     def resolve_type(cls, instance, _info: "ResolveInfo"):
         """Map a data object to a Graphene type."""
-        return None  # FIXME: why do we have this method?
+        return  # FIXME: why do we have this method?
 
 
 class TimePeriod(graphene.ObjectType):
@@ -955,7 +963,7 @@ class ThumbnailField(graphene.Field):
         default_value="ORIGINAL",
         description=(
             "The format of the image. When not provided, format of the original "
-            "image will be used." + ADDED_IN_36
+            "image will be used."
         ),
     )
 
@@ -970,7 +978,7 @@ class IconThumbnailField(ThumbnailField):
         default_value="ORIGINAL",
         description=(
             "The format of the image. When not provided, format of the original "
-            "image will be used." + ADDED_IN_314 + PREVIEW_FEATURE
+            "image will be used."
         ),
     )
 

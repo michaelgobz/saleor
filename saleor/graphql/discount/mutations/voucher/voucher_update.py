@@ -35,7 +35,11 @@ class VoucherUpdate(VoucherCreate):
             WebhookEventInfo(
                 type=WebhookEventAsyncType.VOUCHER_UPDATED,
                 description="A voucher was updated.",
-            )
+            ),
+            WebhookEventInfo(
+                type=WebhookEventAsyncType.VOUCHER_CODES_CREATED,
+                description="A voucher code was created.",
+            ),
         ]
 
     @classmethod
@@ -56,21 +60,11 @@ class VoucherUpdate(VoucherCreate):
 
     @classmethod
     def clean_voucher_usage_setting(cls, instance, data):
-        """Ensure single use setting is not changed if voucher was already used."""
+        """Ensure voucher usage settings are not changed if voucher was already used."""
+        is_voucher_used = None
         if "single_use" in data and instance.single_use != data["single_use"]:
-            voucher_codes = instance.codes.all()
-            used_codes = voucher_codes.filter(
-                Exists(order_models.Order.objects.filter(voucher_code=OuterRef("code")))
-                | Exists(
-                    order_models.OrderLine.objects.filter(voucher_code=OuterRef("code"))
-                )
-                | Exists(
-                    checkout_models.Checkout.objects.filter(
-                        voucher_code=OuterRef("code")
-                    )
-                )
-            )
-            if used_codes.exists():
+            is_voucher_used = cls.is_voucher_used(instance)
+            if is_voucher_used:
                 raise ValidationError(
                     {
                         "single_use": ValidationError(
@@ -80,6 +74,39 @@ class VoucherUpdate(VoucherCreate):
                         )
                     }
                 )
+        if "usage_limit" in data and instance.usage_limit != data["usage_limit"]:
+            if is_voucher_used is None:
+                is_voucher_used = cls.is_voucher_used(instance)
+            if is_voucher_used:
+                raise ValidationError(
+                    {
+                        "usage_limit": ValidationError(
+                            "Cannot change usage limit setting when any voucher code has "
+                            "already been used.",
+                            code=DiscountErrorCode.VOUCHER_ALREADY_USED.value,
+                        )
+                    }
+                )
+
+    @classmethod
+    def is_voucher_used(cls, instance) -> bool:
+        voucher_codes = instance.codes.all()
+        used_codes = voucher_codes.filter(
+            Exists(
+                order_models.Order.objects.filter(
+                    voucher_code=OuterRef("code"), voucher_id=OuterRef("voucher_id")
+                )
+            )
+            | Exists(
+                order_models.OrderLine.objects.filter(
+                    voucher_code=OuterRef("code"),
+                )
+            )
+            | Exists(
+                checkout_models.Checkout.objects.filter(voucher_code=OuterRef("code"))
+            )
+        )
+        return used_codes.exists()
 
     @classmethod
     def construct_codes_instances(
@@ -99,15 +126,14 @@ class VoucherUpdate(VoucherCreate):
                 code_instance = voucher_instance.codes.first()
                 code_instance.code = code
                 return [code_instance]
-            else:
-                raise ValidationError(
-                    {
-                        "code": ValidationError(
-                            "Cannot update code when multiple codes exists.",
-                            code=DiscountErrorCode.INVALID.value,
-                        )
-                    }
-                )
+            raise ValidationError(
+                {
+                    "code": ValidationError(
+                        "Cannot update code when multiple codes exists.",
+                        code=DiscountErrorCode.INVALID.value,
+                    )
+                }
+            )
 
         return []
 
@@ -129,6 +155,12 @@ class VoucherUpdate(VoucherCreate):
             models.VoucherCode.objects.bulk_update(codes_to_update, fields=["code"])
 
     @classmethod
-    def post_save_action(cls, info: ResolveInfo, instance, code):
+    def post_save_action(  # type: ignore[override]
+        cls, info: ResolveInfo, instance, codes_instances, cleaned_input
+    ):
         manager = get_plugin_manager_promise(info.context).get()
-        cls.call_event(manager.voucher_updated, instance, code)
+
+        if cleaned_input:
+            cls.call_event(manager.voucher_updated, instance, instance.code)
+        if codes_instances:
+            cls.call_event(manager.voucher_codes_created, codes_instances)

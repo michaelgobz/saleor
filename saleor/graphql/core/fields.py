@@ -5,7 +5,6 @@ from typing import Optional
 import graphene
 from django.conf import settings
 from graphene.relay import Connection, is_node
-from graphql import GraphQLError
 
 from ...permission.utils import message_one_of_permissions_required
 from ..decorators import one_of_permissions_required
@@ -123,8 +122,9 @@ class ConnectionField(PermissionsField):
             )
 
         assert issubclass(connection_type, Connection), (
-            '{} type have to be a subclass of Connection. Received "{}".'
-        ).format(self.__class__.__name__, connection_type)
+            f"{self.__class__.__name__} type have to be a subclass of Connection. "
+            f'Received "{connection_type}".'
+        )
         return type
 
 
@@ -164,4 +164,4 @@ class JSONString(graphene.JSONString):
         try:
             return graphene.JSONString.parse_literal(node)
         except JSONDecodeError:
-            raise GraphQLError(f"{str(node.value)[:20]}... is not a valid JSONString")
+            return None

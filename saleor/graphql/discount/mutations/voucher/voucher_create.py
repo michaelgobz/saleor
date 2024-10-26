@@ -10,13 +10,13 @@ from .....webhook.event_types import WebhookEventAsyncType
 from ....channel import ChannelContext
 from ....core import ResolveInfo
 from ....core.descriptions import (
-    ADDED_IN_31,
     ADDED_IN_318,
     DEPRECATED_IN_3X_FIELD,
     PREVIEW_FEATURE,
 )
 from ....core.doc_category import DOC_CATEGORY_DISCOUNTS
 from ....core.mutations import ModelMutation
+from ....core.scalars import DateTime
 from ....core.types import BaseInputObjectType, DiscountError, NonNullList
 from ....core.utils import WebhookEventInfo, get_duplicated_values
 from ....core.validators import (
@@ -44,12 +44,8 @@ class VoucherInput(BaseInputObjectType):
         required=False,
         description="List of codes to add." + ADDED_IN_318 + PREVIEW_FEATURE,
     )
-    start_date = graphene.types.datetime.DateTime(
-        description="Start date of the voucher in ISO 8601 format."
-    )
-    end_date = graphene.types.datetime.DateTime(
-        description="End date of the voucher in ISO 8601 format."
-    )
+    start_date = DateTime(description="Start date of the voucher in ISO 8601 format.")
+    end_date = DateTime(description="End date of the voucher in ISO 8601 format.")
     discount_value_type = DiscountValueTypeEnum(
         description="Choices: fixed or percentage."
     )
@@ -58,7 +54,7 @@ class VoucherInput(BaseInputObjectType):
     )
     variants = NonNullList(
         graphene.ID,
-        description="Variants discounted by the voucher." + ADDED_IN_31,
+        description="Variants discounted by the voucher.",
         name="variants",
     )
     collections = NonNullList(
@@ -120,7 +116,11 @@ class VoucherCreate(ModelMutation):
             WebhookEventInfo(
                 type=WebhookEventAsyncType.VOUCHER_CREATED,
                 description="A voucher was created.",
-            )
+            ),
+            WebhookEventInfo(
+                type=WebhookEventAsyncType.VOUCHER_CODES_CREATED,
+                description="A voucher codes were created.",
+            ),
         ]
 
     @classmethod
@@ -237,9 +237,9 @@ class VoucherCreate(ModelMutation):
 
         try:
             validate_end_is_after_start(start_date, end_date)
-        except ValidationError as error:
-            error.code = DiscountErrorCode.INVALID.value
-            raise ValidationError({"end_date": error})
+        except ValidationError as e:
+            e.code = DiscountErrorCode.INVALID.value
+            raise ValidationError({"end_date": e}) from e
 
     @classmethod
     def clean_codes_instance(cls, code_instances):
@@ -255,9 +255,18 @@ class VoucherCreate(ModelMutation):
             models.VoucherCode.objects.bulk_create(code_instances)
 
     @classmethod
-    def post_save_action(cls, info: ResolveInfo, instance, code):
+    def post_save_action(  # type: ignore[override]
+        cls, info: ResolveInfo, instance, codes_instances, cleaned_input
+    ):
+        last_code = codes_instances[-1].code if codes_instances else None
         manager = get_plugin_manager_promise(info.context).get()
-        cls.call_event(manager.voucher_created, instance, code)
+
+        if codes_instances:
+            cls.call_event(
+                manager.voucher_codes_created,
+                codes_instances,
+            )
+        cls.call_event(manager.voucher_created, instance, last_code)
 
     @classmethod
     def success_response(cls, instance):
@@ -293,5 +302,5 @@ class VoucherCreate(ModelMutation):
         cls.save(info, voucher_instance, code_instances, has_multiple_codes)
         cls._save_m2m(info, voucher_instance, cleaned_input)
 
-        cls.post_save_action(info, voucher_instance, voucher_instance.code)
+        cls.post_save_action(info, voucher_instance, code_instances, cleaned_input)
         return cls.success_response(voucher_instance)

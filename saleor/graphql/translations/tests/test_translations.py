@@ -5,8 +5,11 @@ from unittest.mock import ANY, patch
 import graphene
 import pytest
 from django.utils.functional import SimpleLazyObject
-from freezegun import freeze_time
 
+from ....attribute.tests.model_helpers import (
+    get_product_attribute_values,
+    get_product_attributes,
+)
 from ....attribute.utils import associate_attribute_values_to_instance
 from ....discount.error_codes import DiscountErrorCode
 from ....permission.models import Permission
@@ -842,7 +845,6 @@ PRODUCT_TRANSLATE_MUTATION = """
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_product_create_translation(
@@ -876,6 +878,7 @@ def test_product_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -996,7 +999,6 @@ def test_product_create_translation_by_invalid_translatable_content_id(
     assert errors["field"] == "id"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_product_update_translation(
@@ -1032,6 +1034,7 @@ def test_product_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1062,7 +1065,6 @@ mutation productVariantTranslate(
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_product_variant_create_translation(
@@ -1097,6 +1099,7 @@ def test_product_variant_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1122,7 +1125,6 @@ def test_product_variant_create_translation_by_translatable_content_id(
     assert data["productVariant"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_product_variant_update_translation(
@@ -1158,6 +1160,7 @@ def test_product_variant_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
 
 
@@ -1211,7 +1214,6 @@ mutation collectionTranslate($collectionId: ID!, $input: TranslationInput!) {
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_collection_create_translation(
@@ -1245,6 +1247,7 @@ def test_collection_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1306,7 +1309,6 @@ def test_collection_create_translation_for_description_name_as_null(
     assert data["collection"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_collection_update_translation(
@@ -1344,6 +1346,7 @@ def test_collection_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1388,7 +1391,6 @@ mutation categoryTranslate($categoryId: ID!, $input: TranslationInput!) {
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_category_create_translation(
@@ -1422,6 +1424,7 @@ def test_category_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1483,7 +1486,6 @@ def test_category_create_translation_for_description_name_as_null(
     assert data["category"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_category_update_translation(
@@ -1519,6 +1521,7 @@ def test_category_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1543,7 +1546,6 @@ VOUCHER_TRANSLATE_MUTATION = """
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_voucher_create_translation(
@@ -1577,6 +1579,7 @@ def test_voucher_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1601,7 +1604,6 @@ def test_voucher_create_translation_by_translatable_content_id(
     assert data["voucher"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_voucher_update_translation(
@@ -1636,6 +1638,7 @@ def test_voucher_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1664,7 +1667,6 @@ SALE_TRANSLATION_MUTATION = """
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_sale_create_translation(
@@ -1705,6 +1707,7 @@ def test_sale_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1736,7 +1739,6 @@ def test_sale_create_translation_by_translatable_content_id(
     assert data["sale"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_sale_update_translation(
@@ -1779,6 +1781,7 @@ def test_sale_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1832,7 +1835,6 @@ mutation pageTranslate($pageId: ID!, $input: PageTranslationInput!) {
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_page_create_translation(
@@ -1866,6 +1868,7 @@ def test_page_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1924,7 +1927,6 @@ def test_page_create_translation_by_translatable_content_id(
     assert data["page"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_page_update_translation(
@@ -1959,6 +1961,7 @@ def test_page_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -1985,7 +1988,6 @@ ATTRIBUTE_TRANSLATE_MUTATION = """
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_attribute_create_translation(
@@ -2019,6 +2021,7 @@ def test_attribute_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -2043,7 +2046,6 @@ def test_attribute_create_translation_by_translatable_content_id(
     assert data["attribute"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_attribute_update_translation(
@@ -2079,6 +2081,7 @@ def test_attribute_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -2110,7 +2113,6 @@ ATTRIBUTE_VALUE_TRANSLATE_MUTATION = """
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_attribute_value_create_translation(
@@ -2146,6 +2148,7 @@ def test_attribute_value_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -2158,8 +2161,9 @@ def test_rich_text_attribute_value_create_translation(
     permission_manage_translations,
 ):
     # given
-    assigned_attribute = product_with_rich_text_attribute[0].attributes.first()
-    attribute_value = assigned_attribute.attribute.values.first()
+    product = product_with_rich_text_attribute[0]
+    assigned_attribute = get_product_attributes(product).first()
+    attribute_value = get_product_attribute_values(product, assigned_attribute).first()
     attribute_value_id = graphene.Node.to_global_id(
         "AttributeValue", attribute_value.id
     )
@@ -2195,7 +2199,8 @@ def test_plain_text_attribute_value_create_translation(
 
     attribute_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, attribute_value
+        variant,
+        {plain_text_attribute.pk: [attribute_value]},
     )
     attribute_value_id = graphene.Node.to_global_id(
         "AttributeValue", attribute_value.id
@@ -2235,7 +2240,6 @@ def test_attribute_value_create_translation_by_translatable_content_id(
     assert data["attributeValue"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_attribute_value_update_translation(
@@ -2275,6 +2279,7 @@ def test_attribute_value_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -2289,8 +2294,9 @@ def test_rich_text_attribute_value_update_translation_only_rich_text(
     # given
     base_text = "Base Text"
     rich_text = dummy_editorjs(base_text)
-    assigned_attribute = product_with_rich_text_attribute[0].attributes.first()
-    attribute_value = assigned_attribute.attribute.values.first()
+    product = product_with_rich_text_attribute[0]
+    assigned_attribute = get_product_attributes(product).first()
+    attribute_value = get_product_attribute_values(product, assigned_attribute).first()
     attribute_value.translations.create(
         language_code="pl", name=base_text, rich_text=rich_text
     )
@@ -2325,8 +2331,9 @@ def test_rich_text_attribute_value_update_translation_only_rich_text_long_text(
     # given
     base_text = "Base Text"
     rich_text = dummy_editorjs(base_text)
-    assigned_attribute = product_with_rich_text_attribute[0].attributes.first()
-    attribute_value = assigned_attribute.attribute.values.first()
+    product = product_with_rich_text_attribute[0]
+    assigned_attribute = get_product_attributes(product).first()
+    attribute_value = get_product_attribute_values(product, assigned_attribute).first()
     attribute_value.translations.create(
         language_code="pl", name=base_text, rich_text=rich_text
     )
@@ -2363,8 +2370,9 @@ def test_rich_text_attribute_value_update_translation_only_rich_text_name_set_ma
     # given
     base_text = "Base Text"
     rich_text = dummy_editorjs(base_text)
-    assigned_attribute = product_with_rich_text_attribute[0].attributes.first()
-    attribute_value = assigned_attribute.attribute.values.first()
+    product = product_with_rich_text_attribute[0]
+    assigned_attribute = get_product_attributes(product).first()
+    attribute_value = get_product_attribute_values(product, assigned_attribute).first()
     attribute_value.translations.create(
         language_code="pl", name=base_text, rich_text=rich_text
     )
@@ -2400,8 +2408,9 @@ def test_rich_text_attribute_value_update_translation_only_rich_text_empty_name(
     # given
     base_text = "Base Text"
     rich_text = dummy_editorjs(base_text)
-    assigned_attribute = product_with_rich_text_attribute[0].attributes.first()
-    attribute_value = assigned_attribute.attribute.values.first()
+    product = product_with_rich_text_attribute[0]
+    assigned_attribute = get_product_attributes(product).first()
+    attribute_value = get_product_attribute_values(product, assigned_attribute).first()
     attribute_value.translations.create(
         language_code="pl", name=base_text, rich_text=rich_text
     )
@@ -2436,8 +2445,9 @@ def test_rich_text_attribute_value_update_translation_only_rich_text_name_null(
     # given
     base_text = "Base Text"
     rich_text = dummy_editorjs(base_text)
-    assigned_attribute = product_with_rich_text_attribute[0].attributes.first()
-    attribute_value = assigned_attribute.attribute.values.first()
+    product = product_with_rich_text_attribute[0]
+    assigned_attribute = get_product_attributes(product).first()
+    attribute_value = get_product_attribute_values(product, assigned_attribute).first()
     attribute_value.translations.create(
         language_code="pl", name=base_text, rich_text=rich_text
     )
@@ -2476,7 +2486,8 @@ def test_plain_text_attribute_value_update_translation_only_plain_text(
 
     attribute_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, attribute_value
+        variant,
+        {plain_text_attribute.pk: [attribute_value]},
     )
 
     text = "Jakiś bazowy opis"
@@ -2515,7 +2526,8 @@ def test_plain_text_attribute_value_update_translation_only_plain_text_long_text
 
     attribute_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, attribute_value
+        variant,
+        {plain_text_attribute.pk: [attribute_value]},
     )
 
     text = "Jakiś bazowy opis"
@@ -2556,7 +2568,8 @@ def test_plain_text_attribute_value_update_translation_name_set_manually(
 
     attribute_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, attribute_value
+        variant,
+        {plain_text_attribute.pk: [attribute_value]},
     )
 
     text = "Jakiś bazowy opis"
@@ -2596,7 +2609,8 @@ def test_plain_text_attribute_value_update_translation_empty_name(
 
     attribute_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, attribute_value
+        variant,
+        {plain_text_attribute.pk: [attribute_value]},
     )
 
     text = "Jakiś bazowy opis"
@@ -2635,7 +2649,8 @@ def test_plain_text_attribute_value_update_translation_name_null(
 
     attribute_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, attribute_value
+        variant,
+        {plain_text_attribute.pk: [attribute_value]},
     )
 
     text = "Jakiś bazowy opis"
@@ -2689,7 +2704,6 @@ SHIPPING_PRICE_TRANSLATE = """
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_shipping_method_create_translation(
@@ -2730,6 +2744,7 @@ def test_shipping_method_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -2761,7 +2776,6 @@ def test_shipping_method_create_translation_by_translatable_content_id(
     assert data["shippingMethod"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_shipping_method_update_translation(
@@ -2816,6 +2830,7 @@ def test_shipping_method_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -2841,7 +2856,6 @@ MENU_ITEM_TRANSLATE = """
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_menu_item_update_translation(
@@ -2879,6 +2893,7 @@ def test_menu_item_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -2901,7 +2916,6 @@ def test_menu_item_create_translation_by_translatable_content_id(
     assert data["menuItem"]["translation"]["language"]["code"] == "PL"
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_shop_create_translation(
@@ -2948,6 +2962,7 @@ def test_shop_create_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
@@ -2975,7 +2990,6 @@ SHOP_SETTINGS_TRANSLATE_MUTATION = """
 """
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.get_webhooks_for_event")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_shop_update_translation(
@@ -3012,13 +3026,13 @@ def test_shop_update_translation(
         translation,
         SimpleLazyObject(lambda: staff_api_client.user),
         legacy_data_generator=ANY,
+        allow_replica=False,
     )
     assert isinstance(
         mocked_webhook_trigger.call_args.kwargs["legacy_data_generator"], partial
     )
 
 
-@freeze_time("1914-06-28 10:50")
 @patch("saleor.plugins.webhook.plugin.trigger_webhooks_async")
 def test_shop_translation_validates_values_lengths(
     mocked_webhook_trigger,
@@ -3064,7 +3078,7 @@ def test_translations_query(
     product,
     published_collection,
     voucher,
-    promotion,
+    catalogue_promotion,
     shipping_method,
     page,
     menu_item,
@@ -3167,8 +3181,10 @@ QUERY_TRANSLATION_PRODUCT = """
             __typename
             ...on ProductTranslatableContent{
                 id
+                productId
                 name
                 translation(languageCode: $languageCode){
+                    id
                     name
                 }
             }
@@ -3184,7 +3200,9 @@ def test_translation_query_product(
     product_translation_fr,
 ):
     product_id = graphene.Node.to_global_id("Product", product.id)
-
+    translation_id = graphene.Node.to_global_id(
+        "ProductTranslation", product_translation_fr.id
+    )
     variables = {
         "id": product_id,
         "kind": TranslatableKinds.PRODUCT.name,
@@ -3197,7 +3215,9 @@ def test_translation_query_product(
     )
     content = get_graphql_content(response)
     data = content["data"]["translation"]
+    assert data["productId"] == product_id
     assert data["name"] == product.name
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["name"] == product_translation_fr.name
 
 
@@ -3209,8 +3229,10 @@ QUERY_TRANSLATION_COLLECTION = """
             __typename
             ...on CollectionTranslatableContent{
                 id
+                collectionId
                 name
                 translation(languageCode: $languageCode){
+                    id
                     name
                 }
             }
@@ -3229,6 +3251,9 @@ def test_translation_query_collection(
     channel_listing = published_collection.channel_listings.get()
     channel_listing.save()
     collection_id = graphene.Node.to_global_id("Collection", published_collection.id)
+    translation_id = graphene.Node.to_global_id(
+        "CollectionTranslation", collection_translation_fr.id
+    )
 
     variables = {
         "id": collection_id,
@@ -3242,7 +3267,9 @@ def test_translation_query_collection(
     )
     content = get_graphql_content(response)
     data = content["data"]["translation"]
+    assert data["collectionId"] == collection_id
     assert data["name"] == published_collection.name
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["name"] == collection_translation_fr.name
 
 
@@ -3254,9 +3281,15 @@ QUERY_TRANSLATION_CATEGORY = """
             __typename
             ...on CategoryTranslatableContent{
                 id
+                categoryId
                 name
                 translation(languageCode: $languageCode){
+                    id
                     name
+                    translatableContent {
+                        id
+                        name
+                    }
                 }
             }
         }
@@ -3268,12 +3301,15 @@ def test_translation_query_category(
     staff_api_client, category, category_translation_fr, permission_manage_translations
 ):
     category_id = graphene.Node.to_global_id("Category", category.id)
-
+    translation_id = graphene.Node.to_global_id(
+        "CategoryTranslation", category_translation_fr.id
+    )
     variables = {
         "id": category_id,
         "kind": TranslatableKinds.CATEGORY.name,
         "languageCode": LanguageCodeEnum.FR.name,
     }
+
     response = staff_api_client.post_graphql(
         QUERY_TRANSLATION_CATEGORY,
         variables,
@@ -3281,8 +3317,10 @@ def test_translation_query_category(
     )
     content = get_graphql_content(response)
     data = content["data"]["translation"]
+    assert data["categoryId"] == category_id
     assert data["name"] == category.name
     assert data["translation"]["name"] == category_translation_fr.name
+    assert data["translation"]["id"] == translation_id
 
 
 QUERY_TRANSLATION_ATTRIBUTE = """
@@ -3293,8 +3331,10 @@ QUERY_TRANSLATION_ATTRIBUTE = """
             __typename
             ...on AttributeTranslatableContent{
                 id
+                attributeId
                 name
                 translation(languageCode: $languageCode){
+                    id
                     name
                 }
             }
@@ -3308,6 +3348,9 @@ def test_translation_query_attribute(
 ):
     attribute = translated_attribute.attribute
     attribute_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    translation_id = graphene.Node.to_global_id(
+        "AttributeTranslation", translated_attribute.id
+    )
 
     variables = {
         "id": attribute_id,
@@ -3321,7 +3364,9 @@ def test_translation_query_attribute(
     )
     content = get_graphql_content(response)
     data = content["data"]["translation"]
+    assert data["attributeId"] == attribute_id
     assert data["name"] == attribute.name
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["name"] == translated_attribute.name
 
 
@@ -3333,8 +3378,10 @@ QUERY_TRANSLATION_ATTRIBUTE_VALUE = """
             __typename
             ...on AttributeValueTranslatableContent{
                 id
+                attributeValueId
                 name
                 translation(languageCode: $languageCode){
+                    id
                     name
                 }
             }
@@ -3352,6 +3399,9 @@ def test_translation_query_attribute_value(
     attribute_value_id = graphene.Node.to_global_id(
         "AttributeValue", pink_attribute_value.id
     )
+    translation_id = graphene.Node.to_global_id(
+        "AttributeValueTranslation", translated_attribute_value.id
+    )
 
     variables = {
         "id": attribute_value_id,
@@ -3365,7 +3415,9 @@ def test_translation_query_attribute_value(
     )
     content = get_graphql_content(response)
     data = content["data"]["translation"]
+    assert data["attributeValueId"] == attribute_value_id
     assert data["name"] == pink_attribute_value.name
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["name"] == translated_attribute_value.name
 
 
@@ -3377,8 +3429,10 @@ QUERY_TRANSLATION_VARIANT = """
             __typename
             ...on ProductVariantTranslatableContent{
                 id
+                productVariantId
                 name
                 translation(languageCode: $languageCode){
+                    id
                     name
                 }
             }
@@ -3395,6 +3449,9 @@ def test_translation_query_variant(
     variant_translation_fr,
 ):
     variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
+    translation_id = graphene.Node.to_global_id(
+        "ProductVariantTranslation", variant_translation_fr.id
+    )
     variables = {
         "id": variant_id,
         "kind": TranslatableKinds.VARIANT.name,
@@ -3407,7 +3464,9 @@ def test_translation_query_variant(
     )
     content = get_graphql_content(response)
     data = content["data"]["translation"]
+    assert data["productVariantId"] == variant_id
     assert data["name"] == variant.name
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["name"] == variant_translation_fr.name
 
 
@@ -3419,8 +3478,10 @@ QUERY_TRANSLATION_PAGE = """
             __typename
             ...on PageTranslatableContent{
                 id
+                pageId
                 title
                 translation(languageCode: $languageCode){
+                    id
                     title
                 }
             }
@@ -3448,6 +3509,9 @@ def test_translation_query_page(
     page.save()
 
     page_id = graphene.Node.to_global_id("Page", page.id)
+    translation_id = graphene.Node.to_global_id(
+        "PageTranslation", page_translation_fr.id
+    )
     perms = list(Permission.objects.filter(codename__in=perm_codenames))
 
     variables = {
@@ -3460,7 +3524,9 @@ def test_translation_query_page(
     )
     content = get_graphql_content(response)
     data = content["data"]["translation"]
+    assert data["pageId"] == page_id
     assert data["title"] == page.title
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["title"] == page_translation_fr.title
 
 
@@ -3472,9 +3538,11 @@ QUERY_TRANSLATION_SHIPPING_METHOD = """
             __typename
             ...on ShippingMethodTranslatableContent{
                 id
+                shippingMethodId
                 name
                 description
                 translation(languageCode: $languageCode){
+                    id
                     name
                 }
             }
@@ -3500,6 +3568,9 @@ def test_translation_query_shipping_method(
     shipping_method_id = graphene.Node.to_global_id(
         "ShippingMethodType", shipping_method.id
     )
+    translation_id = graphene.Node.to_global_id(
+        "ShippingMethodTranslation", shipping_method_translation_fr.id
+    )
     perms = list(Permission.objects.filter(codename__in=perm_codenames))
 
     variables = {
@@ -3512,8 +3583,10 @@ def test_translation_query_shipping_method(
     )
     content = get_graphql_content(response, ignore_errors=True)
     data = content["data"]["translation"]
+    assert data["shippingMethodId"] == shipping_method_id
     assert data["name"] == shipping_method.name
     assert data["description"] == shipping_method.description
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["name"] == shipping_method_translation_fr.name
 
 
@@ -3525,8 +3598,10 @@ QUERY_TRANSLATION_SALE = """
             __typename
             ...on SaleTranslatableContent{
                 id
+                saleId
                 name
                 translation(languageCode: $languageCode){
+                    id
                     name
                 }
             }
@@ -3546,6 +3621,9 @@ def test_translation_query_sale(
     promotion = promotion_converted_from_sale
     promotion_translation = promotion.translations.first()
     sale_id = graphene.Node.to_global_id("Sale", promotion.old_sale_id)
+    translation_id = graphene.Node.to_global_id(
+        "SaleTranslation", promotion_converted_from_sale_translation_fr.id
+    )
 
     variables = {
         "id": sale_id,
@@ -3563,7 +3641,9 @@ def test_translation_query_sale(
     # then
     content = get_graphql_content(response, ignore_errors=True)
     data = content["data"]["translation"]
+    assert data["saleId"] == sale_id
     assert data["name"] == promotion.name
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["name"] == promotion_translation.name
 
 
@@ -3575,8 +3655,10 @@ QUERY_TRANSLATION_VOUCHER = """
             __typename
             ...on VoucherTranslatableContent{
                 id
+                voucherId
                 name
                 translation(languageCode: $languageCode){
+                    id
                     name
                 }
             }
@@ -3596,6 +3678,9 @@ def test_translation_query_voucher(
     staff_api_client, voucher, voucher_translation_fr, perm_codenames, return_voucher
 ):
     voucher_id = graphene.Node.to_global_id("Voucher", voucher.id)
+    translation_id = graphene.Node.to_global_id(
+        "VoucherTranslation", voucher_translation_fr.id
+    )
     perms = list(Permission.objects.filter(codename__in=perm_codenames))
 
     variables = {
@@ -3608,7 +3693,9 @@ def test_translation_query_voucher(
     )
     content = get_graphql_content(response, ignore_errors=True)
     data = content["data"]["translation"]
+    assert data["voucherId"] == voucher_id
     assert data["name"] == voucher.name
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["name"] == voucher_translation_fr.name
 
 
@@ -3620,8 +3707,10 @@ QUERY_TRANSLATION_MENU_ITEM = """
             __typename
             ...on MenuItemTranslatableContent{
                 id
+                menuItemId
                 name
                 translation(languageCode: $languageCode){
+                    id
                     name
                 }
             }
@@ -3637,6 +3726,9 @@ def test_translation_query_menu_item(
     permission_manage_translations,
 ):
     menu_item_id = graphene.Node.to_global_id("MenuItem", menu_item.id)
+    translation_id = graphene.Node.to_global_id(
+        "MenuItemTranslation", menu_item_translation_fr.id
+    )
 
     variables = {
         "id": menu_item_id,
@@ -3650,7 +3742,9 @@ def test_translation_query_menu_item(
     )
     content = get_graphql_content(response)
     data = content["data"]["translation"]
+    assert data["menuItemId"] == menu_item_id
     assert data["name"] == menu_item.name
+    assert data["translation"]["id"] == translation_id
     assert data["translation"]["name"] == menu_item_translation_fr.name
 
 
@@ -3690,8 +3784,7 @@ def test_product_and_attribute_translation(user_api_client, product, channel_USD
     product.translations.create(
         language_code="pl", name="Produkt", description=description
     )
-    assigned_attribute = product.attributes.first()
-    attribute = assigned_attribute.attribute
+    attribute = get_product_attributes(product).first()
     attribute.translations.create(language_code="pl", name="Kolor")
 
     query = """
@@ -3779,8 +3872,9 @@ def test_product_attribute_value_rich_text_translation(
 ):
     # given
     rich_text = dummy_editorjs("Test_dummy_data")
-    assigned_attribute = product_with_rich_text_attribute[0].attributes.first()
-    attribute_value = assigned_attribute.attribute.values.first()
+    product = product_with_rich_text_attribute[0]
+    assigned_attribute = get_product_attributes(product).first()
+    attribute_value = get_product_attribute_values(product, assigned_attribute).first()
     attribute_value.translations.create(language_code="pl", rich_text=rich_text)
 
     product_id = graphene.Node.to_global_id(
@@ -3820,7 +3914,7 @@ def test_product_attribute_value_plain_text_translation(
 
     product_attr_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        product, plain_text_attribute, product_attr_value
+        product, {plain_text_attribute.id: [product_attr_value]}
     )
 
     text = "Test plain text translation"
@@ -3861,7 +3955,7 @@ def test_nested_product_attribute_translation(
 
     product_attr_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        product, plain_text_attribute, product_attr_value
+        product, {plain_text_attribute.id: [product_attr_value]}
     )
 
     text = "Test attribute translation"
@@ -3884,6 +3978,89 @@ def test_nested_product_attribute_translation(
     # then
     data = get_graphql_content(response)["data"]
 
+    attribute_response = data["translation"]["attributeValues"][0]["attribute"]
+    assert attribute_response["name"] == plain_text_attribute.name
+    assert attribute_response["translation"]["name"] == text
+
+
+def test_product_attribute_not_visible_in_storefront_translation_not_returned_no_page_permission(
+    staff_api_client,
+    plain_text_attribute,
+    product,
+    permission_manage_translations,
+):
+    # given
+    product_type = product.product_type
+    product_type.product_attributes.set([plain_text_attribute])
+    plain_text_attribute.visible_in_storefront = False
+    plain_text_attribute.save(update_fields=["visible_in_storefront"])
+    product_type.product_attributes.set([plain_text_attribute])
+    attribute_value = plain_text_attribute.values.first()
+
+    associate_attribute_values_to_instance(
+        product, {plain_text_attribute.pk: [attribute_value]}
+    )
+
+    text = "Test attribute translation"
+    plain_text_attribute.translations.create(language_code="pl", name=text)
+
+    product_id = graphene.Node.to_global_id("Product", product.id)
+
+    query = PRODUCT_ATTRIBUTE_VALUES_TRANSLATION_QUERY
+    variables = {
+        "id": product_id,
+        "kind": TranslatableKinds.PRODUCT.name,
+        "languageCode": LanguageCodeEnum.PL.name,
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_translations]
+    )
+
+    # then
+    data = get_graphql_content(response)["data"]
+    assert data["translation"]["attributeValues"] == []
+
+
+def test_product_attribute_not_visible_in_storefront_translation_returned_with_product_permission(
+    staff_api_client,
+    plain_text_attribute,
+    product,
+    permission_manage_translations,
+    permission_manage_products,
+):
+    # given
+    product_type = product.product_type
+    plain_text_attribute.visible_in_storefront = False
+    plain_text_attribute.save(update_fields=["visible_in_storefront"])
+    product_type.product_attributes.set([plain_text_attribute])
+    attribute_value = plain_text_attribute.values.first()
+
+    associate_attribute_values_to_instance(
+        product, {plain_text_attribute.pk: [attribute_value]}
+    )
+
+    text = "Test attribute translation"
+    plain_text_attribute.translations.create(language_code="pl", name=text)
+
+    product_id = graphene.Node.to_global_id("Product", product.id)
+
+    query = PRODUCT_ATTRIBUTE_VALUES_TRANSLATION_QUERY
+    variables = {
+        "id": product_id,
+        "kind": TranslatableKinds.PRODUCT.name,
+        "languageCode": LanguageCodeEnum.PL.name,
+    }
+
+    # when
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_translations]
+    )
+
+    # then
+    data = get_graphql_content(response)["data"]
     attribute_response = data["translation"]["attributeValues"][0]["attribute"]
     assert attribute_response["name"] == plain_text_attribute.name
     assert attribute_response["translation"]["name"] == text
@@ -3969,7 +4146,7 @@ def test_product_variant_attribute_value_plain_text_translation(
 
     attribute_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, attribute_value
+        variant, {plain_text_attribute.id: [attribute_value]}
     )
 
     text = "Test plain text translation"
@@ -4010,7 +4187,7 @@ def test_nested_product_variant_attribute_translation(
 
     attribute_value = plain_text_attribute.values.first()
     associate_attribute_values_to_instance(
-        variant, plain_text_attribute, attribute_value
+        variant, {plain_text_attribute.id: [attribute_value]}
     )
 
     text = "Test attribute translation"
@@ -4113,7 +4290,7 @@ def test_page_attribute_value_plain_text_translation(
     attribute_value = plain_text_attribute_page_type.values.first()
 
     associate_attribute_values_to_instance(
-        page, plain_text_attribute_page_type, attribute_value
+        page, {plain_text_attribute_page_type.id: [attribute_value]}
     )
 
     text = "Test plain text translation"
@@ -4156,7 +4333,7 @@ def test_nested_page_attribute_translation(
     attribute_value = plain_text_attribute_page_type.values.first()
 
     associate_attribute_values_to_instance(
-        page, plain_text_attribute_page_type, attribute_value
+        page, {plain_text_attribute_page_type.id: [attribute_value]}
     )
 
     text = "Test attribute translation"
@@ -4184,6 +4361,88 @@ def test_nested_page_attribute_translation(
     assert attribute_response["translation"]["name"] == text
 
 
+def test_page_attribute_not_visible_in_storefront_translation_not_returned_no_page_permission(
+    staff_api_client,
+    plain_text_attribute_page_type,
+    page,
+    permission_manage_translations,
+):
+    # given
+    page_type = page.page_type
+    plain_text_attribute_page_type.visible_in_storefront = False
+    plain_text_attribute_page_type.save(update_fields=["visible_in_storefront"])
+    page_type.page_attributes.set([plain_text_attribute_page_type])
+    attribute_value = plain_text_attribute_page_type.values.first()
+
+    associate_attribute_values_to_instance(
+        page, {plain_text_attribute_page_type.pk: [attribute_value]}
+    )
+
+    text = "Test attribute translation"
+    plain_text_attribute_page_type.translations.create(language_code="pl", name=text)
+
+    page_id = graphene.Node.to_global_id("Page", page.id)
+
+    query = PAGE_ATTRIBUTE_VALUES_TRANSLATION_QUERY
+    variables = {
+        "id": page_id,
+        "kind": TranslatableKinds.PAGE.name,
+        "languageCode": LanguageCodeEnum.PL.name,
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_translations]
+    )
+
+    # then
+    data = get_graphql_content(response)["data"]
+    assert data["translation"]["attributeValues"] == []
+
+
+def test_page_attribute_not_visible_in_storefront_translation_returned_with_page_permission(
+    staff_api_client,
+    plain_text_attribute_page_type,
+    page,
+    permission_manage_translations,
+    permission_manage_pages,
+):
+    # given
+    page_type = page.page_type
+    plain_text_attribute_page_type.visible_in_storefront = False
+    plain_text_attribute_page_type.save(update_fields=["visible_in_storefront"])
+    page_type.page_attributes.set([plain_text_attribute_page_type])
+    attribute_value = plain_text_attribute_page_type.values.first()
+
+    associate_attribute_values_to_instance(
+        page, {plain_text_attribute_page_type.pk: [attribute_value]}
+    )
+
+    text = "Test attribute translation"
+    plain_text_attribute_page_type.translations.create(language_code="pl", name=text)
+
+    page_id = graphene.Node.to_global_id("Page", page.id)
+
+    query = PAGE_ATTRIBUTE_VALUES_TRANSLATION_QUERY
+    variables = {
+        "id": page_id,
+        "kind": TranslatableKinds.PAGE.name,
+        "languageCode": LanguageCodeEnum.PL.name,
+    }
+
+    # when
+    staff_api_client.user.user_permissions.add(permission_manage_pages)
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_translations]
+    )
+
+    # then
+    data = get_graphql_content(response)["data"]
+    attribute_response = data["translation"]["attributeValues"][0]["attribute"]
+    assert attribute_response["name"] == plain_text_attribute_page_type.name
+    assert attribute_response["translation"]["name"] == text
+
+
 QUERY_TRANSLATION_PROMOTION = """
     query translation(
         $kind: TranslatableKinds!, $id: ID!, $languageCode: LanguageCodeEnum!
@@ -4204,11 +4463,12 @@ QUERY_TRANSLATION_PROMOTION = """
 
 def test_translation_query_promotion(
     staff_api_client,
-    promotion,
+    catalogue_promotion,
     promotion_translation_fr,
     permission_manage_translations,
 ):
     # given
+    promotion = catalogue_promotion
     promotion_id = graphene.Node.to_global_id("Promotion", promotion.id)
 
     variables = {

@@ -1,11 +1,13 @@
 import graphene
 
-from ...permission.enums import AccountPermissions, CheckoutPermissions
+from ...permission.enums import (
+    AccountPermissions,
+    CheckoutPermissions,
+    PaymentPermissions,
+)
 from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
 from ..core.descriptions import (
-    ADDED_IN_31,
-    ADDED_IN_34,
     DEPRECATED_IN_3X_FIELD,
     DEPRECATED_IN_3X_INPUT,
 )
@@ -22,6 +24,7 @@ from .mutations import (
     CheckoutCreateFromOrder,
     CheckoutCustomerAttach,
     CheckoutCustomerDetach,
+    CheckoutCustomerNoteUpdate,
     CheckoutDeliveryMethodUpdate,
     CheckoutEmailUpdate,
     CheckoutLanguageCodeUpdate,
@@ -47,14 +50,13 @@ class CheckoutQueries(graphene.ObjectType):
     checkout = BaseField(
         Checkout,
         description=(
-            "Look up a checkout by id.\n\nRequires one of the following permissions to "
-            "query checkouts that belong to other users: "
+            "Look up a checkout by id.\n\nRequires one of the following permissions "
+            "to query a checkout, if a checkout is in inactive channel: "
             f"{CheckoutPermissions.MANAGE_CHECKOUTS.name}, "
-            f"{AccountPermissions.IMPERSONATE_USER.name}. "
+            f"{AccountPermissions.IMPERSONATE_USER.name}, "
+            f"{PaymentPermissions.HANDLE_PAYMENTS.name}. "
         ),
-        id=graphene.Argument(
-            graphene.ID, description="The checkout's ID." + ADDED_IN_34
-        ),
+        id=graphene.Argument(graphene.ID, description="The checkout's ID."),
         token=graphene.Argument(
             UUID,
             description=(
@@ -66,15 +68,14 @@ class CheckoutQueries(graphene.ObjectType):
     # FIXME we could optimize the below field
     checkouts = FilterConnectionField(
         CheckoutCountableConnection,
-        sort_by=CheckoutSortingInput(description="Sort checkouts." + ADDED_IN_31),
-        filter=CheckoutFilterInput(
-            description="Filtering options for checkouts." + ADDED_IN_31
-        ),
+        sort_by=CheckoutSortingInput(description="Sort checkouts."),
+        filter=CheckoutFilterInput(description="Filtering options for checkouts."),
         channel=graphene.String(
             description="Slug of a channel for which the data should be returned."
         ),
         permissions=[
             CheckoutPermissions.MANAGE_CHECKOUTS,
+            PaymentPermissions.HANDLE_PAYMENTS,
         ],
         description="List of checkouts.",
         doc_category=DOC_CATEGORY_CHECKOUT,
@@ -94,13 +95,15 @@ class CheckoutQueries(graphene.ObjectType):
 
     @staticmethod
     def resolve_checkouts(_root, info: ResolveInfo, *, channel=None, **kwargs):
-        qs = resolve_checkouts(channel)
-        qs = filter_connection_queryset(qs, kwargs)
+        qs = resolve_checkouts(info, channel)
+        qs = filter_connection_queryset(
+            qs, kwargs, allow_replica=info.context.allow_replica
+        )
         return create_connection_slice(qs, info, kwargs, CheckoutCountableConnection)
 
     @staticmethod
     def resolve_checkout_lines(_root, info: ResolveInfo, **kwargs):
-        qs = resolve_checkout_lines()
+        qs = resolve_checkout_lines(info)
         return create_connection_slice(
             qs, info, kwargs, CheckoutLineCountableConnection
         )
@@ -114,6 +117,7 @@ class CheckoutMutations(graphene.ObjectType):
     checkout_create_from_order = CheckoutCreateFromOrder.Field()
     checkout_customer_attach = CheckoutCustomerAttach.Field()
     checkout_customer_detach = CheckoutCustomerDetach.Field()
+    checkout_customer_note_update = CheckoutCustomerNoteUpdate.Field()
     checkout_email_update = CheckoutEmailUpdate.Field()
     checkout_line_delete = CheckoutLineDelete.Field(
         deprecation_reason=(

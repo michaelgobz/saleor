@@ -1,4 +1,5 @@
 import graphene
+from django.db.models.expressions import Exists, OuterRef
 
 from .....attribute import AttributeInputType
 from .....attribute import models as attribute_models
@@ -11,7 +12,6 @@ from .....product import models
 from ....app.dataloaders import get_app_promise
 from ....channel import ChannelContext
 from ....core import ResolveInfo
-from ....core.descriptions import ADDED_IN_310
 from ....core.mutations import ModelDeleteMutation, ModelWithExtRefMutation
 from ....core.types import ProductError
 from ....plugins.dataloaders import get_plugin_manager_promise
@@ -24,7 +24,7 @@ class ProductDelete(ModelDeleteMutation, ModelWithExtRefMutation):
         id = graphene.ID(required=False, description="ID of a product to delete.")
         external_reference = graphene.String(
             required=False,
-            description=f"External ID of a product to delete. {ADDED_IN_310}",
+            description="External ID of a product to delete.",
         )
 
     class Meta:
@@ -45,14 +45,22 @@ class ProductDelete(ModelDeleteMutation, ModelWithExtRefMutation):
         cls, _root, info: ResolveInfo, /, *, external_reference=None, id=None
     ):
         instance = cls.get_instance(info, external_reference=external_reference, id=id)
-        variants_id = list(instance.variants.all().values_list("id", flat=True))
         with traced_atomic_transaction():
+            variants_id = list(
+                instance.variants.order_by("pk")
+                .select_for_update(of=("self",))
+                .all()
+                .values_list("id", flat=True)
+            )
             cls.delete_assigned_attribute_values(instance)
 
             draft_order_lines_data = get_draft_order_lines_data_for_variants(
                 variants_id
             )
 
+            models.ProductVariant.objects.order_by("pk").filter(
+                pk__in=variants_id
+            ).delete()
             response = super().perform_mutation(
                 _root, info, external_reference=external_reference, id=id
             )
@@ -82,7 +90,14 @@ class ProductDelete(ModelDeleteMutation, ModelWithExtRefMutation):
 
     @staticmethod
     def delete_assigned_attribute_values(instance):
+        assigned_values = attribute_models.AssignedProductAttributeValue.objects.filter(
+            product_id=instance.pk
+        )
+        attributes = attribute_models.Attribute.objects.filter(
+            input_type__in=AttributeInputType.TYPES_WITH_UNIQUE_VALUES
+        )
+
         attribute_models.AttributeValue.objects.filter(
-            productassignments__product_id=instance.id,
-            attribute__input_type__in=AttributeInputType.TYPES_WITH_UNIQUE_VALUES,
+            Exists(assigned_values.filter(value_id=OuterRef("id"))),
+            Exists(attributes.filter(id=OuterRef("attribute_id"))),
         ).delete()

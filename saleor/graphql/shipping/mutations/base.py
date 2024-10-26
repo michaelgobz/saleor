@@ -81,7 +81,7 @@ class ShippingZoneMixin:
         if add_channels := cleaned_input.get("add_channels"):
             add_channel_ids = {channel.id for channel in add_channels}
 
-        ChannelWarehouse = channel_models.Channel.warehouses.through  # type: ignore[attr-defined] # raw access to the through model # noqa: E501
+        ChannelWarehouse = channel_models.Channel.warehouses.through
         channel_warehouses = ChannelWarehouse.objects.filter(
             warehouse_id__in=warehouse_ids
         )
@@ -173,8 +173,7 @@ class ShippingZoneMixin:
                         )
                     }
                 )
-            else:
-                cls._extend_shipping_zone_countries(data)
+            cls._extend_shipping_zone_countries(data)
         else:
             data["default"] = False
         return data
@@ -224,8 +223,8 @@ class ShippingZoneMixin:
         Remove all shipping zone to warehouse relations that will not have common
         channel after removing given channels from the shipping zone.
         """
-        WarehouseShippingZone = models.ShippingZone.warehouses.through  # type: ignore[attr-defined] # raw access to the through model # noqa: E501
-        ChannelWarehouse = channel_models.Channel.warehouses.through  # type: ignore[attr-defined] # raw access to the through model # noqa: E501
+        WarehouseShippingZone = models.ShippingZone.warehouses.through
+        ChannelWarehouse = channel_models.Channel.warehouses.through
         ShippingZoneChannel = models.ShippingZone.channels.through
 
         warehouse_shipping_zones = WarehouseShippingZone.objects.filter(
@@ -270,9 +269,9 @@ class ShippingZoneMixin:
     def _extend_shipping_zone_countries(cls, data):
         countries = get_countries_without_shipping_zone()
         try:
-            data["countries"].extend([country for country in countries])
+            data["countries"].extend(list(countries))
         except (KeyError, AttributeError):
-            data["countries"] = [country for country in countries]
+            data["countries"] = list(countries)
 
 
 class ShippingPriceMixin:
@@ -424,7 +423,7 @@ class ShippingPriceMixin:
                         instance.postal_code_rules.create(
                             start=start, end=end, inclusion_type=inclusion_type
                         )
-                    except IntegrityError:
+                    except IntegrityError as e:
                         raise ValidationError(
                             {
                                 "addPostalCodeRules": ValidationError(
@@ -432,7 +431,7 @@ class ShippingPriceMixin:
                                     code=ShippingErrorCode.ALREADY_EXISTS.value,
                                 )
                             }
-                        )
+                        ) from e
 
 
 class ShippingMethodTypeMixin:

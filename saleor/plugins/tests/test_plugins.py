@@ -1,4 +1,3 @@
-from ..anonymize.plugin import AnonymizePlugin
 from ..base_plugin import ConfigurationTypeField
 from ..manager import get_plugins_manager
 from ..tests.sample_plugins import PluginSample
@@ -11,7 +10,7 @@ def test_update_config_items_keeps_bool_value(plugin_configuration, settings):
         {"name": "Username", "value": "new_admin@example.com"},
         {"name": "Use sandbox", "value": False},
     ]
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     plugin_sample = manager.get_plugin(PluginSample.PLUGIN_ID)
     plugin_sample._update_config_items(data_to_update, plugin_sample.configuration)
 
@@ -44,7 +43,7 @@ def test_update_config_items_skips_new_keys_when_doesnt_exsist_in_conf_structure
 
     plugin_sample._update_config_items(data_to_update, current_config)
     assert not all(
-        [config_field["name"] == "New-field" for config_field in current_config]
+        config_field["name"] == "New-field" for config_field in current_config
     )
 
 
@@ -75,7 +74,7 @@ def test_update_config_items_adds_new_keys(monkeypatch):
     ]
 
     plugin_sample._update_config_items(data_to_update, current_config)
-    assert any([config_field["name"] == "New-field" for config_field in current_config])
+    assert any(config_field["name"] == "New-field" for config_field in current_config)
 
 
 def test_update_configuration_structure_removes_old_keys(
@@ -90,7 +89,7 @@ def test_update_configuration_structure_removes_old_keys(
     configuration = PluginSample._update_configuration_structure(
         plugin_configuration.configuration
     )
-    assert all([config_field["name"] != "Username" for config_field in configuration])
+    assert all(config_field["name"] != "Username" for config_field in configuration)
 
 
 def test_save_plugin_configuration(plugin_configuration):
@@ -207,7 +206,7 @@ def test_base_plugin__update_configuration_structure_configuration_has_change(
 
 def test_base_plugin__append_config_structure_to_config(settings):
     settings.PLUGINS = ["saleor.plugins.tests.sample_plugins.PluginSample"]
-    manager = get_plugins_manager()
+    manager = get_plugins_manager(allow_replica=False)
     plugin = manager.get_plugin(PluginSample.PLUGIN_ID)
     config = [
         {"name": "Username", "value": "my_test_user"},
@@ -231,17 +230,3 @@ def test_base_plugin__append_config_structure_to_config(settings):
     ]
     plugin._append_config_structure(config)
     assert config == config_with_structure
-
-
-def test_change_user_address_in_anonymize_plugin_reset_phone(address, settings):
-    settings.PLUGINS = ["saleor.plugins.anonymize.plugin.AnonymizePlugin"]
-    manager = get_plugins_manager()
-    anonymize_plugin = manager.get_plugin(AnonymizePlugin.PLUGIN_ID)
-
-    # ensure that phone is set
-    assert address.phone
-
-    new_address = anonymize_plugin.change_user_address(
-        address=address, address_type=None, user=None, save=True, previous_value=address
-    )
-    assert not new_address.phone

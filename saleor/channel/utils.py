@@ -1,5 +1,7 @@
 import warnings
 
+from django.conf import settings
+
 from .exceptions import ChannelNotDefined, NoDefaultChannel
 from .models import Channel
 
@@ -10,7 +12,7 @@ DEPRECATION_WARNING_MESSAGE = (
 )
 
 
-def get_default_channel() -> Channel:
+def get_default_channel(allow_replica: bool = False) -> Channel:
     """Return a default channel.
 
     Returns a channel only when exactly one channel exists in the system. If there are
@@ -23,16 +25,23 @@ def get_default_channel() -> Channel:
     :raises NoDefaultChannel: When there are no channels.
     """
 
-    try:
-        channel = Channel.objects.get()
-    except Channel.MultipleObjectsReturned:
-        channels = list(Channel.objects.filter(is_active=True))
-        if len(channels) == 1:
-            warnings.warn(DEPRECATION_WARNING_MESSAGE)
-            return channels[0]
-        raise ChannelNotDefined()
-    except Channel.DoesNotExist:
-        raise NoDefaultChannel()
+    if allow_replica:
+        database_connection_name = settings.DATABASE_CONNECTION_REPLICA_NAME
     else:
-        warnings.warn(DEPRECATION_WARNING_MESSAGE)
+        database_connection_name = settings.DATABASE_CONNECTION_DEFAULT_NAME
+
+    try:
+        channel = Channel.objects.using(database_connection_name).get()
+    except Channel.MultipleObjectsReturned as e:
+        channels = list(
+            Channel.objects.using(database_connection_name).filter(is_active=True)
+        )
+        if len(channels) == 1:
+            warnings.warn(DEPRECATION_WARNING_MESSAGE, stacklevel=1)
+            return channels[0]
+        raise ChannelNotDefined() from e
+    except Channel.DoesNotExist as e:
+        raise NoDefaultChannel() from e
+    else:
+        warnings.warn(DEPRECATION_WARNING_MESSAGE, stacklevel=1)
         return channel
