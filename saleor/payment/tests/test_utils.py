@@ -1,4 +1,5 @@
 import datetime
+import logging
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -23,6 +24,7 @@ from ..utils import (
     create_payment_lines_information,
     create_transaction_event_for_transaction_session,
     create_transaction_event_from_request_and_webhook_response,
+    deduplicate_event,
     get_channel_slug_from_payment,
     get_correct_event_types_based_on_request_type,
     get_transaction_event_amount,
@@ -494,6 +496,7 @@ def test_create_transaction_event_from_request_and_webhook_response_with_psp_ref
     # then
     request_event.refresh_from_db()
     assert request_event.psp_reference == expected_psp_reference
+    assert request_event.include_in_calculations is True
     assert TransactionEvent.objects.count() == 1
 
 
@@ -541,6 +544,7 @@ def test_create_transaction_event_from_request_and_webhook_response_with_no_psp_
     request_event.refresh_from_db()
     transaction.refresh_from_db()
     assert request_event.psp_reference is None
+    assert request_event.include_in_calculations is False
     assert transaction.events.count() == event_count + 1
     assert event.psp_reference is None
     assert event.type == result_event_type
@@ -573,6 +577,7 @@ def test_create_transaction_event_from_request_and_webhook_response_with_no_psp_
     result_event_type,
     transaction_item_generator,
     app,
+    caplog,
 ):
     # given
     transaction = transaction_item_generator()
@@ -598,12 +603,14 @@ def test_create_transaction_event_from_request_and_webhook_response_with_no_psp_
     request_event.refresh_from_db()
     transaction.refresh_from_db()
     assert request_event.psp_reference is None
+    assert request_event.include_in_calculations is False
     assert transaction.events.count() == event_count + 1
     assert event.psp_reference is None
     assert event.transaction_id == transaction.id
-    assert event.message == (
-        f"Providing `pspReference` is required for {result_event_type.upper()}."
-    )
+    error_msg = f"Providing `pspReference` is required for {result_event_type.upper()}."
+    assert event.message == error_msg
+    assert caplog.records[0].levelno == logging.WARNING
+    assert caplog.records[0].message == error_msg
 
 
 @freeze_time("2018-05-31 12:00:01")
@@ -636,6 +643,7 @@ def test_create_transaction_event_from_request_and_webhook_response_part_event(
     assert TransactionEvent.objects.count() == 2
     request_event.refresh_from_db()
     assert request_event.psp_reference == expected_psp_reference
+    assert request_event.include_in_calculations is True
     assert event
     assert event.psp_reference == expected_psp_reference
     assert event.amount_value == amount
@@ -999,6 +1007,7 @@ def test_create_transaction_event_from_request_and_webhook_response_full_event(
     assert transaction.events.count() == 2
     request_event.refresh_from_db()
     assert request_event.psp_reference == expected_psp_reference
+    assert request_event.include_in_calculations is True
     assert event
     assert event.psp_reference == expected_psp_reference
     assert event.amount_value == event_amount
@@ -1283,6 +1292,7 @@ def test_create_transaction_event_from_request_and_webhook_response_twice_auth(
     assert TransactionEvent.objects.count() == 3
     request_event.refresh_from_db()
     assert request_event.psp_reference == expected_psp_reference
+    assert request_event.include_in_calculations is True
     assert failed_event
     assert failed_event.psp_reference == expected_psp_reference
     assert failed_event.type == TransactionEventType.AUTHORIZATION_FAILURE
@@ -1338,6 +1348,7 @@ def test_create_transaction_event_from_request_and_webhook_response_same_event(
     assert TransactionEvent.objects.count() == 2
     request_event.refresh_from_db()
     assert request_event.psp_reference == expected_psp_reference
+    assert request_event.include_in_calculations is True
     assert event
     assert event.pk == existing_authorize_success.pk
 
@@ -1387,6 +1398,7 @@ def test_create_transaction_event_from_request_handle_incorrect_values(
     assert TransactionEvent.objects.count() == 2
     request_event.refresh_from_db()
     assert request_event.psp_reference == expected_psp_reference
+    assert request_event.include_in_calculations is False
 
 
 @freeze_time("2018-05-31 12:00:01")
@@ -1434,6 +1446,7 @@ def test_create_transaction_event_from_request_and_webhook_response_different_am
     assert TransactionEvent.objects.count() == 3
     request_event.refresh_from_db()
     assert request_event.psp_reference == expected_psp_reference
+    assert request_event.include_in_calculations is True
     assert failed_event
     assert failed_event.psp_reference == expected_psp_reference
     assert failed_event.type == TransactionEventType.AUTHORIZATION_FAILURE
@@ -3055,3 +3068,85 @@ def test_get_transaction_event_amount_for_info_event_type(
 
     # then
     assert amount == 0
+
+
+def test_deduplicate_event(transaction_events_generator, transaction_item, app):
+    # given
+    event = TransactionEvent(
+        psp_reference="psp:123",
+        type=TransactionEventType.CHARGE_SUCCESS,
+        amount_value=Decimal("10"),
+        transaction=transaction_item,
+        currency=transaction_item.currency,
+    )
+
+    # when
+    result_event, err_msg = deduplicate_event(event, app)
+
+    # then
+    assert err_msg is None
+    assert result_event
+
+
+def test_deduplicate_event_different_amount(
+    transaction_events_generator, transaction_item, app, caplog
+):
+    # given
+    events = transaction_events_generator(
+        psp_references=["psp:123"],
+        types=[TransactionEventType.CHARGE_SUCCESS],
+        amounts=[Decimal("10")],
+        transaction=transaction_item,
+    )
+    event = TransactionEvent(
+        psp_reference="psp:123",
+        type=TransactionEventType.CHARGE_SUCCESS,
+        amount_value=Decimal("12"),
+        transaction=transaction_item,
+        currency=transaction_item.currency,
+    )
+
+    # when
+    result_event, err_msg = deduplicate_event(event, app)
+
+    # then
+    assert result_event.id == events[0].id
+    assert err_msg == (
+        "The transaction with provided `pspReference` and "
+        "`type` already exists with different amount."
+    )
+    assert caplog.records[0].levelno == logging.WARNING
+    assert caplog.records[0].message == err_msg
+
+
+def test_deduplicate_event_authorization_already_exists(
+    transaction_events_generator, transaction_item, app, caplog
+):
+    # given
+    transaction_events_generator(
+        psp_references=["psp:123"],
+        types=[TransactionEventType.AUTHORIZATION_SUCCESS],
+        amounts=[Decimal("10")],
+        transaction=transaction_item,
+    )
+    event = TransactionEvent(
+        psp_reference="psp:111",
+        type=TransactionEventType.AUTHORIZATION_SUCCESS,
+        amount_value=Decimal("10"),
+        transaction=transaction_item,
+        currency=transaction_item.currency,
+    )
+
+    # when
+    result_event, err_msg = deduplicate_event(event, app)
+
+    # then
+    assert result_event
+    assert err_msg == (
+        "Event with `AUTHORIZATION_SUCCESS` already "
+        "reported for the transaction. Use "
+        "`AUTHORIZATION_ADJUSTMENT` to change the "
+        "authorization amount."
+    )
+    assert caplog.records[0].levelno == logging.WARNING
+    assert caplog.records[0].message == err_msg

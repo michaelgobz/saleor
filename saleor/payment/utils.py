@@ -956,7 +956,7 @@ def parse_transaction_action_data(
     request_event_type = parsed_event_data.get("type", request_type)
     if not psp_reference and request_event_type not in OPTIONAL_PSP_REFERENCE_EVENTS:
         msg = f"Providing `pspReference` is required for {request_event_type.upper()}."
-        logger.error(msg)
+        logger.warning(msg)
         return None, msg
 
     return (
@@ -1091,7 +1091,7 @@ def deduplicate_event(
                 "authorization amount."
             )
     if error_message:
-        logger.error(
+        logger.warning(
             msg=error_message,
             extra={
                 "transaction_id": event.transaction_id,
@@ -1313,9 +1313,10 @@ def create_transaction_event_from_request_and_webhook_response(
         return failure_event
 
     psp_reference = transaction_request_response.psp_reference
-    request_event.psp_reference = psp_reference
-    request_event.include_in_calculations = True
-    request_event.save(update_fields=["psp_reference", "include_in_calculations"])
+    if psp_reference is not None:
+        request_event.psp_reference = psp_reference
+        request_event.include_in_calculations = True
+        request_event.save(update_fields=["psp_reference", "include_in_calculations"])
     event = None
     if response_event := transaction_request_response.event:
         event, error_msg = _create_event_from_response(
