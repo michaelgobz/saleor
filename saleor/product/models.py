@@ -1,3 +1,4 @@
+import copy
 import datetime
 from collections.abc import Iterable
 from decimal import Decimal
@@ -11,6 +12,7 @@ from django.contrib.postgres.search import SearchVectorField
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
 from django.db.models import JSONField, TextField
+from django.forms.models import model_to_dict
 from django.urls import reverse
 from django.utils import timezone
 from django_measurement.models import MeasurementField
@@ -399,7 +401,7 @@ class ProductVariant(SortableModel, ModelWithMetadata, ModelWithExternalReferenc
         self,
         channel_listing: "ProductVariantChannelListing",
         price_override: Optional["Decimal"] = None,
-        promotion_rules: Optional[Iterable["PromotionRule"]] = None,
+        promotion_rules: Iterable["PromotionRule"] | None = None,
     ) -> "Money":
         """Return the variant discounted price with applied promotions.
 
@@ -448,6 +450,25 @@ class ProductVariant(SortableModel, ModelWithMetadata, ModelWithExternalReferenc
         return self.is_preorder and (
             self.preorder_end_date is None or timezone.now() <= self.preorder_end_date
         )
+
+    @property
+    def comparison_fields(self):
+        return [
+            "sku",
+            "name",
+            "track_inventory",
+            "is_preorder",
+            "quantity_limit_per_customer",
+            "weight",
+            "external_reference",
+            "metadata",
+            "private_metadata",
+            "preorder_end_date",
+            "preorder_global_threshold",
+        ]
+
+    def serialize_for_comparison(self):
+        return copy.deepcopy(model_to_dict(self, fields=self.comparison_fields))
 
 
 class ProductVariantTranslation(Translation):
@@ -597,7 +618,7 @@ class DigitalContentUrl(models.Model):
             self.token = str(uuid4()).replace("-", "")
         super().save(force_insert, force_update, using, update_fields)
 
-    def get_absolute_url(self) -> Optional[str]:
+    def get_absolute_url(self) -> str | None:
         url = reverse("digital-product", kwargs={"token": str(self.token)})
         return build_absolute_uri(url)
 

@@ -12,7 +12,13 @@ from .....checkout import calculations
 from .....checkout.error_codes import OrderCreateFromCheckoutErrorCode
 from .....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from .....checkout.models import Checkout, CheckoutLine
-from .....core.taxes import TaxError, zero_money, zero_taxed_money
+from .....core.taxes import (
+    TaxDataError,
+    TaxDataErrorMessage,
+    TaxError,
+    zero_money,
+    zero_taxed_money,
+)
 from .....discount import DiscountType, DiscountValueType, RewardValueType
 from .....discount.models import CheckoutLineDiscount
 from .....giftcard import GiftCardEvents
@@ -21,7 +27,7 @@ from .....order import OrderOrigin, OrderStatus
 from .....order.models import Fulfillment, Order
 from .....payment.model_helpers import get_subtotal
 from .....plugins.manager import PluginsManager, get_plugins_manager
-from .....product.models import ProductVariantChannelListing
+from .....product.models import ProductChannelListing, ProductVariantChannelListing
 from .....warehouse.models import Reservation, Stock, WarehouseClickAndCollectOption
 from .....warehouse.tests.utils import get_available_quantity_for_stock
 from ....tests.utils import assert_no_permission, get_graphql_content
@@ -1738,9 +1744,9 @@ def test_order_from_checkout_with_digital(
     assert not content["errors"]
 
     # Ensure the order was actually created
-    assert (
-        Order.objects.count() == order_count + 1
-    ), "The order should have been created"
+    assert Order.objects.count() == order_count + 1, (
+        "The order should have been created"
+    )
 
 
 @pytest.mark.integration
@@ -1810,9 +1816,9 @@ def test_order_from_checkout_0_total_value(
     assert order.shipping_address is None
     assert order.shipping_method is None
 
-    assert not Checkout.objects.filter(
-        pk=checkout.pk
-    ).exists(), "Checkout should have been deleted"
+    assert not Checkout.objects.filter(pk=checkout.pk).exists(), (
+        "Checkout should have been deleted"
+    )
 
 
 def test_order_from_checkout_for_click_and_collect(
@@ -2078,9 +2084,9 @@ def test_order_from_draft_create_with_preorder_variant(
     assert stock_line.allocations.exists()
     assert not stock_line.preorder_allocations.exists()
 
-    assert not Checkout.objects.filter(
-        pk=checkout.pk
-    ).exists(), "Checkout should have been deleted"
+    assert not Checkout.objects.filter(pk=checkout.pk).exists(), (
+        "Checkout should have been deleted"
+    )
     order_confirmed_mock.assert_called_once_with(order, webhooks=set())
 
 
@@ -2143,7 +2149,16 @@ def test_order_from_draft_create_click_collect_preorder_fails_for_disabled_wareh
     assert Order.objects.count() == initial_order_count
 
 
-def test_order_from_draft_create_variant_channel_listing_does_not_exist(
+@pytest.mark.parametrize(
+    ("channel_listing_model", "listing_filter_field"),
+    [
+        (ProductVariantChannelListing, "variant_id"),
+        (ProductChannelListing, "product__variants__id"),
+    ],
+)
+def test_order_from_checkout_create_when_line_without_listing(
+    channel_listing_model,
+    listing_filter_field,
     checkout_with_items,
     address,
     shipping_method,
@@ -2164,7 +2179,11 @@ def test_order_from_draft_create_variant_channel_listing_does_not_exist(
 
     checkout_line = checkout.lines.first()
     checkout_line_variant = checkout_line.variant
-    checkout_line_variant.channel_listings.get(channel__id=checkout.channel_id).delete()
+
+    channel_listing_model.objects.filter(
+        channel_id=checkout.channel_id,
+        **{listing_filter_field: checkout_line_variant.id},
+    ).delete()
 
     lines, _ = fetch_checkout_lines(checkout)
 
@@ -2425,9 +2444,9 @@ def test_order_from_draft_create_0_total_value_from_voucher(
     assert order.shipping_address is None
     assert order.shipping_method is None
 
-    assert not Checkout.objects.filter(
-        pk=checkout.pk
-    ).exists(), "Checkout should have been deleted"
+    assert not Checkout.objects.filter(pk=checkout.pk).exists(), (
+        "Checkout should have been deleted"
+    )
 
 
 @pytest.mark.integration
@@ -2485,6 +2504,35 @@ def test_order_from_draft_create_0_total_value_from_giftcard(
     assert order.shipping_address is None
     assert order.shipping_method is None
 
-    assert not Checkout.objects.filter(
-        pk=checkout.pk
-    ).exists(), "Checkout should have been deleted"
+    assert not Checkout.objects.filter(pk=checkout.pk).exists(), (
+        "Checkout should have been deleted"
+    )
+
+
+@patch("saleor.checkout.calculations.validate_tax_data")
+def test_order_from_checkout_tax_error(
+    mock_validate_tax_data,
+    app_api_client,
+    permission_handle_checkouts,
+    checkout_with_items_and_shipping,
+    caplog,
+):
+    # given
+    mock_validate_tax_data.side_effect = TaxDataError(TaxDataErrorMessage.EMPTY)
+    checkout = checkout_with_items_and_shipping
+    variables = {"id": graphene.Node.to_global_id("Checkout", checkout.pk)}
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_ORDER_CREATE_FROM_CHECKOUT,
+        variables,
+        permissions=[permission_handle_checkouts],
+    )
+    content = get_graphql_content(response)
+
+    # then
+    data = content["data"]["orderCreateFromCheckout"]
+    assert data["errors"][0]["code"] == OrderCreateFromCheckoutErrorCode.TAX_ERROR.name
+    assert data["errors"][0]["field"] is None
+    assert not Order.objects.exists()
+    assert "Tax app error for checkout" in caplog.text

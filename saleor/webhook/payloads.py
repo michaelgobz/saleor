@@ -20,7 +20,6 @@ from .. import __version__
 from ..account.models import User
 from ..attribute.models import AttributeValueTranslation
 from ..checkout import base_calculations
-from ..checkout.fetch import CheckoutInfo, CheckoutLineInfo
 from ..checkout.models import Checkout
 from ..checkout.utils import get_checkout_metadata
 from ..core.db.connection import allow_writer
@@ -56,8 +55,10 @@ from .serializers import (
     serialize_product_attributes,
     serialize_variant_attributes,
 )
+from .transport.utils import from_payment_app_id
 
 if TYPE_CHECKING:
+    from ..checkout.fetch import CheckoutInfo, CheckoutLineInfo
     from ..discount.models import Promotion
     from ..invoice.models import Invoice
     from ..payment.interface import (
@@ -420,8 +421,8 @@ def _calculate_removed(
 @traced_payload_generator
 def generate_sale_payload(
     promotion: "Promotion",
-    previous_catalogue: Optional[defaultdict[str, set[str]]] = None,
-    current_catalogue: Optional[defaultdict[str, set[str]]] = None,
+    previous_catalogue: defaultdict[str, set[str]] | None = None,
+    current_catalogue: defaultdict[str, set[str]] | None = None,
     requestor: Optional["RequestorOrLazyObject"] = None,
 ):
     if previous_catalogue is None:
@@ -1065,8 +1066,6 @@ def _generate_refund_data_payload(data):
 def generate_payment_payload(
     payment_data: "PaymentData", requestor: Optional["RequestorOrLazyObject"] = None
 ):
-    from .transport.utils import from_payment_app_id
-
     data = asdict(payment_data)
 
     if refund_data := data.get("refund_data"):
@@ -1082,7 +1081,7 @@ def generate_payment_payload(
 @allow_writer()
 @traced_payload_generator
 def generate_list_gateways_payload(
-    currency: Optional[str], checkout: Optional["Checkout"]
+    currency: str | None, checkout: Optional["Checkout"]
 ):
     if checkout:
         # Deserialize checkout payload to dict and generate a new payload including
@@ -1140,7 +1139,7 @@ def _generate_sample_order_payload(event_name):
 
 @allow_writer()
 @traced_payload_generator
-def generate_sample_payload(event_name: str) -> Optional[dict]:
+def generate_sample_payload(event_name: str) -> dict | None:
     checkout_events = [
         WebhookEventAsyncType.CHECKOUT_UPDATED,
         WebhookEventAsyncType.CHECKOUT_CREATED,

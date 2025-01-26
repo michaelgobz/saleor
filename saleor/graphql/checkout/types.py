@@ -1,15 +1,11 @@
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import graphene
 from promise import Promise
 
 from ...account.models import User
 from ...checkout import calculations, models, problems
-from ...checkout.base_calculations import (
-    calculate_undiscounted_base_line_total_price,
-    calculate_undiscounted_base_line_unit_price,
-)
 from ...checkout.calculations import fetch_checkout_data
 from ...checkout.utils import get_valid_collection_points_for_checkout
 from ...core.db.connection import allow_writer_in_context
@@ -79,7 +75,9 @@ from ..tax.dataloaders import (
 from ..utils import get_user_or_app_from_context
 from ..warehouse.dataloaders import StocksReservationsByCheckoutTokenLoader
 from ..warehouse.types import Warehouse
-from ..webhook.dataloaders import PregeneratedCheckoutTaxPayloadsByCheckoutTokenLoader
+from ..webhook.dataloaders.pregenerated_payload_for_checkout_tax import (
+    PregeneratedCheckoutTaxPayloadsByCheckoutTokenLoader,
+)
 from .dataloaders import (
     CheckoutByTokenLoader,
     CheckoutInfoByCheckoutTokenLoader,
@@ -100,7 +98,7 @@ if TYPE_CHECKING:
 def get_dataloaders_for_fetching_checkout_data(
     root: models.Checkout, info: ResolveInfo
 ) -> tuple[
-    Optional[Promise["Address"]],
+    Promise["Address"] | None,
     Promise[list["CheckoutLineInfo"]],
     Promise["CheckoutInfo"],
     Promise["PluginsManager"],
@@ -321,8 +319,9 @@ class CheckoutLine(ModelObjectType[models.CheckoutLine]):
                 ) = data
                 for line_info in lines:
                     if line_info.line.pk == root.pk:
-                        return calculate_undiscounted_base_line_unit_price(
-                            line_info, checkout_info.channel
+                        return calculations.checkout_line_undiscounted_unit_price(
+                            checkout_info=checkout_info,
+                            checkout_line_info=line_info,
                         )
 
                 return None
@@ -404,8 +403,9 @@ class CheckoutLine(ModelObjectType[models.CheckoutLine]):
                 ) = data
                 for line_info in lines:
                     if line_info.line.pk == root.pk:
-                        return calculate_undiscounted_base_line_total_price(
-                            line_info, checkout_info.channel
+                        return calculations.checkout_line_undiscounted_total_price(
+                            checkout_info=checkout_info,
+                            checkout_line_info=line_info,
                         )
                 return None
 
@@ -1272,7 +1272,7 @@ class Checkout(ModelObjectType[models.Checkout]):
 
     @staticmethod
     def resolve_stored_payment_methods(
-        root: models.Checkout, info: ResolveInfo, amount: Optional[Decimal] = None
+        root: models.Checkout, info: ResolveInfo, amount: Decimal | None = None
     ):
         if root.user_id is None:
             return []

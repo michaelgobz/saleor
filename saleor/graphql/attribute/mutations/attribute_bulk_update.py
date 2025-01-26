@@ -1,5 +1,4 @@
 from collections import defaultdict
-from typing import Union
 
 import graphene
 from django.core.exceptions import ValidationError
@@ -313,7 +312,7 @@ class AttributeBulkUpdate(BaseMutation):
         attribute_data["instance"] = attr
 
         # check permissions based on attribute type
-        permissions: Union[tuple[ProductTypePermissions], tuple[PageTypePermissions]]
+        permissions: tuple[ProductTypePermissions] | tuple[PageTypePermissions]
         if attr.type == AttributeTypeEnum.PRODUCT_TYPE.value:
             permissions = (ProductTypePermissions.MANAGE_PRODUCT_TYPES_AND_ATTRIBUTES,)
         else:
@@ -490,24 +489,29 @@ class AttributeBulkUpdate(BaseMutation):
     def get_attributes(
         cls, attributes_data: list[AttributeBulkUpdateInput]
     ) -> list[models.Attribute]:
-        lookup = Q()
+        external_refs: set[str] = set()
+        attribute_ids: set[str] = set()
 
         for attribute_input in attributes_data:
-            external_ref = attribute_input.get("external_reference")
-            attribute_id = attribute_input.get("id")
+            external_ref = attribute_input.external_reference
+            attribute_id = attribute_input.id
 
             if not external_ref and not attribute_id:
                 continue
 
-            single_attr_lookup = Q()
-
             if attribute_id:
-                single_attr_lookup |= Q(
-                    pk=graphene.Node.from_global_id(attribute_id)[1]
-                )
+                attribute_ids.add(graphene.Node.from_global_id(attribute_id)[1])
             else:
-                single_attr_lookup |= Q(external_reference=external_ref)
-            lookup |= single_attr_lookup
+                external_refs.add(external_ref)
+
+        if attribute_ids and external_refs:
+            lookup = Q(pk__in=attribute_ids) | Q(external_reference__in=external_refs)
+        elif attribute_ids:
+            lookup = Q(pk__in=attribute_ids)
+        elif external_refs:
+            lookup = Q(external_reference__in=external_refs)
+        else:
+            return []
 
         attributes = models.Attribute.objects.filter(lookup).prefetch_related("values")
         return list(attributes)

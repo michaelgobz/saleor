@@ -243,6 +243,46 @@ def test_transaction_update_metadata_by_app(
     assert transaction_item_created_by_app.metadata == {meta_key: meta_value}
 
 
+def test_transaction_update_metadata_by_app_metadata_extended(
+    transaction_item_created_by_app, permission_manage_payments, app_api_client
+):
+    # given
+    transaction = transaction_item_created_by_app
+    old_key = "old-key"
+    old_value = "old-value"
+    transaction.metadata = {old_key: old_value}
+    transaction.save(update_fields=["metadata"])
+
+    meta_key = "key-name"
+    meta_value = "key_value"
+    variables = {
+        "id": graphene.Node.to_global_id("TransactionItem", transaction.token),
+        "transaction": {
+            "metadata": [{"key": meta_key, "value": meta_value}],
+        },
+    }
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_TRANSACTION_UPDATE, variables, permissions=[permission_manage_payments]
+    )
+
+    # then
+    transaction.refresh_from_db()
+    content = get_graphql_content(response)
+    data = content["data"]["transactionUpdate"]["transaction"]
+    assert len(data["metadata"]) == 2
+    assert {metadata["key"] for metadata in data["metadata"]} == {old_key, meta_key}
+    assert {metadata["value"] for metadata in data["metadata"]} == {
+        old_value,
+        meta_value,
+    }
+    assert transaction_item_created_by_app.metadata == {
+        old_key: old_value,
+        meta_key: meta_value,
+    }
+
+
 def test_transaction_update_metadata_by_app_null_value(
     transaction_item_created_by_app, permission_manage_payments, app_api_client
 ):
@@ -325,6 +365,50 @@ def test_transaction_update_private_metadata_by_app(
     assert data["privateMetadata"][0]["key"] == meta_key
     assert data["privateMetadata"][0]["value"] == meta_value
     assert transaction_item_created_by_app.private_metadata == {meta_key: meta_value}
+
+
+def test_transaction_update_private_metadata_by_app_extend_metadata(
+    transaction_item_created_by_app, permission_manage_payments, app_api_client
+):
+    # given
+    transaction = transaction_item_created_by_app
+
+    old_key = "old-key"
+    old_value = "old-value"
+    transaction.private_metadata = {old_key: old_value}
+    transaction.save(update_fields=["private_metadata"])
+
+    meta_key = "key-name"
+    meta_value = "key_value"
+    variables = {
+        "id": graphene.Node.to_global_id("TransactionItem", transaction.token),
+        "transaction": {
+            "privateMetadata": [{"key": meta_key, "value": meta_value}],
+        },
+    }
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_TRANSACTION_UPDATE, variables, permissions=[permission_manage_payments]
+    )
+
+    # then
+    transaction.refresh_from_db()
+    content = get_graphql_content(response)
+    data = content["data"]["transactionUpdate"]["transaction"]
+    assert len(data["privateMetadata"]) == 2
+    assert {metadata["key"] for metadata in data["privateMetadata"]} == {
+        old_key,
+        meta_key,
+    }
+    assert {metadata["value"] for metadata in data["privateMetadata"]} == {
+        old_value,
+        meta_value,
+    }
+    assert transaction_item_created_by_app.private_metadata == {
+        old_key: old_value,
+        meta_key: meta_value,
+    }
 
 
 def test_transaction_update_private_metadata_by_app_null_value(
@@ -3302,3 +3386,85 @@ def test_transaction_update_amounts_with_lot_of_decimal_places(
     data = content["data"]["transactionUpdate"]["transaction"]
     assert str(data[response_field]["amount"]) == str(round(value, 2))
     assert getattr(transaction, db_field_name) == round(value, 2)
+
+
+def test_transaction_uodate_transaction_event_message_limit_exceeded(
+    transaction_item_created_by_app,
+    order_with_lines,
+    permission_manage_payments,
+    app_api_client,
+):
+    # given
+    transaction = transaction_item_created_by_app
+    transaction_reference = "transaction reference"
+    transaction_msg = "m" * 513
+
+    variables = {
+        "id": graphene.Node.to_global_id("TransactionItem", transaction.token),
+        "transaction_event": {
+            "pspReference": transaction_reference,
+            "message": transaction_msg,
+        },
+    }
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_TRANSACTION_UPDATE, variables, permissions=[permission_manage_payments]
+    )
+    # then
+    event = order_with_lines.events.first()
+    content = get_graphql_content(response)
+    data = content["data"]["transactionUpdate"]
+
+    assert not data["errors"]
+    assert event.type == OrderEvents.TRANSACTION_EVENT
+    assert event.parameters == {
+        "message": transaction_msg,
+        "reference": transaction_reference,
+    }
+
+    transaction = order_with_lines.payment_transactions.first()
+    event = transaction.events.last()
+    assert event.message == transaction_msg[:509] + "..."
+    assert event.psp_reference == transaction_reference
+
+
+def test_transaction_uodate_transaction_event_empty_message(
+    transaction_item_created_by_app,
+    order_with_lines,
+    permission_manage_payments,
+    app_api_client,
+):
+    # given
+    transaction = transaction_item_created_by_app
+    transaction_reference = "transaction reference"
+    transaction_msg = None
+
+    variables = {
+        "id": graphene.Node.to_global_id("TransactionItem", transaction.token),
+        "transaction_event": {
+            "pspReference": transaction_reference,
+            "message": transaction_msg,
+        },
+    }
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_TRANSACTION_UPDATE, variables, permissions=[permission_manage_payments]
+    )
+    # then
+    event = order_with_lines.events.first()
+    content = get_graphql_content(response)
+    data = content["data"]["transactionUpdate"]
+
+    assert not data["errors"]
+    assert event.type == OrderEvents.TRANSACTION_EVENT
+    assert event.parameters == {
+        "message": transaction_msg,
+        "reference": transaction_reference,
+    }
+
+    transaction = order_with_lines.payment_transactions.first()
+    event = transaction.events.last()
+    assert event.message == ""
+    assert event.psp_reference == transaction_reference

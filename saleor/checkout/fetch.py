@@ -107,6 +107,7 @@ class CheckoutInfo:
     voucher: Optional["Voucher"] = None
     voucher_code: Optional["VoucherCode"] = None
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME
+    pregenerated_payloads_for_excluded_shipping_method: dict | None = None
 
     @cached_property
     def all_shipping_methods(self) -> list["ShippingMethodData"]:
@@ -123,6 +124,7 @@ class CheckoutInfo:
             self.checkout,
             self.channel,
             all_methods,
+            self.pregenerated_payloads_for_excluded_shipping_method,
         )
         initialize_shipping_method_active_status(all_methods, excluded_methods)
         return all_methods
@@ -142,7 +144,7 @@ class CheckoutInfo:
         from ..webhook.transport.shipping import convert_to_app_id_with_identifier
         from .utils import get_external_shipping_id
 
-        delivery_method: Optional[Union[ShippingMethodData, Warehouse]] = None
+        delivery_method: ShippingMethodData | Warehouse | None = None
 
         if self.shipping_method:
             # Find listing for the currently selected shipping method
@@ -196,18 +198,18 @@ class CheckoutInfo:
             return self.checkout.country.code
         return address.country.code
 
-    def get_customer_email(self) -> Optional[str]:
+    def get_customer_email(self) -> str | None:
         return self.user.email if self.user else self.checkout.email
 
 
 @dataclass(frozen=True)
 class DeliveryMethodBase:
-    delivery_method: Optional[Union["ShippingMethodData", "Warehouse"]] = None
+    delivery_method: Union["ShippingMethodData", "Warehouse"] | None = None
     shipping_address: Optional["Address"] = None
     store_as_customer_address: bool = False
 
     @property
-    def warehouse_pk(self) -> Optional[UUID]:
+    def warehouse_pk(self) -> UUID | None:
         pass
 
     @property
@@ -219,7 +221,7 @@ class DeliveryMethodBase:
         return False
 
     @property
-    def delivery_method_name(self) -> dict[str, Optional[str]]:
+    def delivery_method_name(self) -> dict[str, str | None]:
         return {"shipping_method_name": None}
 
     def get_warehouse_filter_lookup(self) -> dict[str, Any]:
@@ -239,7 +241,7 @@ class ShippingMethodInfo(DeliveryMethodBase):
     store_as_customer_address: bool = True
 
     @property
-    def delivery_method_name(self) -> dict[str, Optional[str]]:
+    def delivery_method_name(self) -> dict[str, str | None]:
         return {"shipping_method_name": str(self.delivery_method.name)}
 
     @property
@@ -279,7 +281,7 @@ class CollectionPointInfo(DeliveryMethodBase):
         )
 
     @property
-    def delivery_method_name(self) -> dict[str, Optional[str]]:
+    def delivery_method_name(self) -> dict[str, str | None]:
         return {"collection_point_name": str(self.delivery_method)}
 
     def get_warehouse_filter_lookup(self) -> dict[str, Any]:
@@ -304,7 +306,7 @@ class CollectionPointInfo(DeliveryMethodBase):
 
 @singledispatch
 def get_delivery_method_info(
-    delivery_method: Optional[Union["ShippingMethodData", "Warehouse"]],
+    delivery_method: Union["ShippingMethodData", "Warehouse"] | None,
     address: Optional["Address"] = None,
 ) -> DeliveryMethodBase:
     if delivery_method is None:
@@ -355,7 +357,7 @@ def fetch_checkout_lines(
     )
     lines_info = []
     unavailable_variant_pks = []
-    product_channel_listing_mapping: dict[int, Optional[ProductChannelListing]] = {}
+    product_channel_listing_mapping: dict[int, ProductChannelListing | None] = {}
     channel = checkout.channel
 
     for line in lines:
@@ -379,36 +381,22 @@ def fetch_checkout_lines(
             checkout, product, variant_channel_listing, product_channel_listing_mapping
         ):
             unavailable_variant_pks.append(variant.pk)
-            if (
-                not skip_lines_with_unavailable_variants
-                # variant price is denormalized on checkout line object. We have enough
-                # information to include the variant without listing in the
-                # calculations. This will allow to display a proper prices but we won't
-                # allow to finalize the checkout without removing `unavailable_variant`
-                # from the checkout.
-                or _only_variant_listing_is_missing(
-                    checkout,
-                    product,
-                    variant_channel_listing,
-                    product_channel_listing_mapping,
+            lines_info.append(
+                CheckoutLineInfo(
+                    line=line,
+                    variant=variant,
+                    channel_listing=variant_channel_listing,
+                    product=product,
+                    product_type=product_type,
+                    collections=collections,
+                    tax_class=product.tax_class or product_type.tax_class,
+                    discounts=discounts,
+                    rules_info=rules_info,
+                    channel=channel,
+                    voucher=None,
+                    voucher_code=None,
                 )
-            ):
-                lines_info.append(
-                    CheckoutLineInfo(
-                        line=line,
-                        variant=variant,
-                        channel_listing=variant_channel_listing,
-                        product=product,
-                        product_type=product_type,
-                        collections=collections,
-                        tax_class=product.tax_class or product_type.tax_class,
-                        discounts=discounts,
-                        rules_info=rules_info,
-                        channel=channel,
-                        voucher=None,
-                        voucher_code=None,
-                    )
-                )
+            )
             continue
 
         lines_info.append(
@@ -491,23 +479,6 @@ def _is_variant_valid(
     return True
 
 
-def _only_variant_listing_is_missing(
-    checkout: "Checkout",
-    product: "Product",
-    variant_channel_listing: Optional["ProductVariantChannelListing"],
-    product_channel_listing_mapping: dict,
-):
-    if not _product_channel_listing_is_valid(
-        checkout,
-        product,
-        product_channel_listing_mapping,
-    ):
-        return False
-    if not variant_channel_listing or variant_channel_listing.price is None:
-        return True
-    return False
-
-
 def _get_product_channel_listing(
     product_channel_listing_mapping: dict, channel_id: int, product: "Product"
 ):
@@ -524,9 +495,7 @@ def fetch_checkout_info(
     checkout: "Checkout",
     lines: list[CheckoutLineInfo],
     manager: "PluginsManager",
-    shipping_channel_listings: Optional[
-        Iterable["ShippingMethodChannelListing"]
-    ] = None,
+    shipping_channel_listings: Iterable["ShippingMethodChannelListing"] | None = None,
     voucher: Optional["Voucher"] = None,
     voucher_code: Optional["VoucherCode"] = None,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,

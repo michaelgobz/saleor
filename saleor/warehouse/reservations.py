@@ -1,7 +1,7 @@
 import datetime
 from collections import defaultdict
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, NamedTuple, Optional
+from typing import TYPE_CHECKING, NamedTuple
 
 from django.conf import settings
 from django.db.models import F, Sum
@@ -11,8 +11,8 @@ from django.utils import timezone
 from ..core.exceptions import InsufficientStock, InsufficientStockData
 from ..core.tracing import traced_atomic_transaction
 from ..product.models import ProductVariant, ProductVariantChannelListing
-from .management import sort_stocks
-from .models import Allocation, PreorderReservation, Reservation, Stock
+from .management import sort_stocks, stock_qs_select_for_update
+from .models import Allocation, PreorderReservation, Reservation
 
 if TYPE_CHECKING:
     from ..channel.models import Channel
@@ -106,7 +106,7 @@ def reserve_stocks(
         return
 
     stocks = list(
-        Stock.objects.select_for_update(of=("self",))
+        stock_qs_select_for_update()
         .get_variants_stocks_for_country(country_code, channel.slug, variants)
         .order_by("pk")
         .values("id", "product_variant", "pk", "quantity", "warehouse_id")
@@ -396,14 +396,14 @@ def is_reservation_enabled(settings) -> bool:
     )
 
 
-def get_reservation_length(site, user) -> Optional[int]:
+def get_reservation_length(site, user) -> int | None:
     if user:
         return site.settings.reserve_stock_duration_authenticated_user
     return site.settings.reserve_stock_duration_anonymous_user
 
 
 def get_listings_reservations(
-    checkout_lines: Optional[Iterable["CheckoutLine"]],
+    checkout_lines: Iterable["CheckoutLine"] | None,
     all_variants_channel_listings,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ) -> dict[int, int]:

@@ -2,7 +2,7 @@ import hashlib
 import importlib
 import json
 from inspect import isclass
-from typing import Any, Optional, Union
+from typing import Any
 from urllib.parse import urljoin
 
 import opentracing
@@ -28,7 +28,12 @@ from .api import API_PATH, schema
 from .context import clear_context, get_context_value
 from .core.validators.query_cost import validate_query_cost
 from .query_cost_map import COST_MAP
-from .utils import format_error, query_fingerprint, query_identifier
+from .utils import (
+    format_error,
+    get_source_service_name_value,
+    query_fingerprint,
+    query_identifier,
+)
 from .utils.validators import check_if_query_contains_only_schema
 
 INT_ERROR_MSG = "Int cannot represent non 32-bit signed integer value"
@@ -62,7 +67,7 @@ class GraphQLView(View):
     middleware = None
     root_value = None
     backend: GraphQLBackend = None  # type: ignore[assignment]
-    _query: Optional[str] = None
+    _query: str | None = None
 
     HANDLED_EXCEPTIONS = (
         GraphQLError,
@@ -76,7 +81,7 @@ class GraphQLView(View):
         schema: GraphQLSchema,
         backend: GraphQLBackend,
         executor=None,
-        middleware: Optional[list[str]] = None,
+        middleware: list[str] | None = None,
         root_value=None,
     ):
         super().__init__()
@@ -147,9 +152,7 @@ class GraphQLView(View):
 
         if isinstance(data, list):
             responses = [self.get_response(request, entry) for entry in data]
-            result: Union[list, Optional[dict]] = [
-                response for response, code in responses
-            ]
+            result: list | dict | None = [response for response, code in responses]
             status_code = max((code for response, code in responses), default=200)
         else:
             result, status_code = self.get_response(request, data)
@@ -183,6 +186,11 @@ class GraphQLView(View):
             span.set_tag("http.useragent", request.headers.get("user-agent", ""))
             span.set_tag("span.type", "web")
 
+            source_service_name = get_source_service_name_value(
+                request.headers.get("source-service-name")
+            )
+            span.set_tag("source.service.name", source_service_name)
+
             main_ip_header = settings.REAL_IP_ENVIRON[0]
             additional_ip_headers = settings.REAL_IP_ENVIRON[1:]
 
@@ -213,7 +221,7 @@ class GraphQLView(View):
 
     def get_response(
         self, request: HttpRequest, data: dict
-    ) -> tuple[Optional[dict[str, list[Any]]], int]:
+    ) -> tuple[dict[str, list[Any]] | None, int]:
         with observability.report_gql_operation() as operation:
             execution_result = self.execute_graphql_request(request, data)
             status_code = 200
@@ -229,7 +237,7 @@ class GraphQLView(View):
                     response["data"] = execution_result.data
                 if execution_result.extensions:
                     response["extensions"] = execution_result.extensions
-                result: Optional[dict[str, list[Any]]] = response
+                result: dict[str, list[Any]] | None = response
             else:
                 result = None
             operation.result = result
@@ -240,8 +248,8 @@ class GraphQLView(View):
         return self.root_value
 
     def parse_query(
-        self, query: Optional[str]
-    ) -> tuple[Optional[GraphQLDocument], Optional[ExecutionResult]]:
+        self, query: str | None
+    ) -> tuple[GraphQLDocument | None, ExecutionResult | None]:
         """Attempt to parse a query (mandatory) to a gql document object.
 
         If no query was given or query is not a string, it returns an error.
@@ -307,7 +315,7 @@ class GraphQLView(View):
                 result = ExecutionResult(errors=cost_errors, invalid=True)
                 return set_query_cost_on_result(result, query_cost)
 
-            extra_options: dict[str, Optional[Any]] = {}
+            extra_options: dict[str, Any | None] = {}
 
             if self.executor:
                 # We only include it optionally since

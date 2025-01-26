@@ -60,7 +60,23 @@ mutation CheckoutComplete($checkoutId: ID!) {
       }
       lines {
         id
+        quantity
+        totalPrice {
+          gross {
+            amount
+          }
+        }
         unitPrice {
+          gross {
+            amount
+          }
+        }
+        undiscountedTotalPrice {
+          gross {
+            amount
+          }
+        }
+        undiscountedUnitPrice {
           gross {
             amount
           }
@@ -71,17 +87,15 @@ mutation CheckoutComplete($checkoutId: ID!) {
         unitDiscountType
         unitDiscountReason
         unitDiscountValue
-        undiscountedUnitPrice {
-          gross {
-            amount
-          }
-        }
       }
       discounts {
         id
         name
         type
         value
+        amount {
+          amount
+        }
       }
       voucher {
         code

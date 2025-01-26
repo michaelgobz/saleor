@@ -15,10 +15,12 @@ def prepare_product(
     channel_id,
     variant_price,
     product_type_slug="default",
+    is_shipping_required=True,
 ):
     product_type_data = create_product_type(
         e2e_staff_api_client,
         slug=product_type_slug,
+        is_shipping_required=is_shipping_required,
     )
     product_type_id = product_type_data["id"]
 
@@ -41,7 +43,7 @@ def prepare_product(
     stocks = [
         {
             "warehouse": warehouse_id,
-            "quantity": 5,
+            "quantity": 15,
         }
     ]
     product_variant_data = create_product_variant(
@@ -107,10 +109,36 @@ def prepare_digital_product(
     product_variant_id = product_variant_data["id"]
 
     variant_listing = create_product_variant_channel_listing(
-        e2e_staff_api_client, product_variant_id, channel_id, price=10
+        e2e_staff_api_client, product_variant_id, channel_id, price=variant_price
     )
 
     create_digital_content(e2e_staff_api_client, product_variant_id)
 
     product_variant_price = variant_listing["channelListings"][0]["price"]["amount"]
     return product_id, product_variant_id, product_variant_price
+
+
+def prepare_products(
+    e2e_staff_api_client,
+    warehouse_id,
+    channel_id,
+    prices,
+):
+    products_data = []
+
+    for i, variant_price in enumerate(prices):
+        product_id, variant_id, price = prepare_product(
+            e2e_staff_api_client,
+            warehouse_id,
+            channel_id,
+            variant_price,
+            product_type_slug=f"test-{i}",
+        )
+        product_data = {
+            "product_id": product_id,
+            "variant_id": variant_id,
+            "price": price,
+        }
+        products_data.append(product_data)
+
+    return products_data

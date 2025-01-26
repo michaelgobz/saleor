@@ -1,7 +1,6 @@
 import logging
 from collections.abc import Iterable
 from decimal import Decimal
-from typing import Optional
 
 from django.conf import settings
 from django.db import transaction
@@ -44,10 +43,10 @@ logger = logging.getLogger(__name__)
 def fetch_order_prices_if_expired(
     order: Order,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
-) -> tuple[Order, Optional[Iterable[OrderLine]]]:
+) -> tuple[Order, Iterable[OrderLine] | None]:
     """Fetch order prices with taxes.
 
     First applies order level discounts, then calculates taxes.
@@ -174,7 +173,7 @@ def _recalculate_prices(
         if not should_charge_tax:
             # If charge_taxes is disabled or order is exempt from taxes, remove the
             # tax from the original gross prices.
-            _remove_tax(order, lines)
+            remove_tax(order, lines, prices_entered_with_tax)
 
     else:
         # Prices are entered without taxes.
@@ -196,12 +195,12 @@ def _recalculate_prices(
                     logger.warning(str(e), extra=order_info_for_logs(order, lines))
                 order.tax_error = str(e)
         else:
-            _remove_tax(order, lines)
+            remove_tax(order, lines, prices_entered_with_tax)
 
 
 def _calculate_and_add_tax(
     tax_calculation_strategy: str,
-    tax_app_identifier: Optional[str],
+    tax_app_identifier: str | None,
     order: "Order",
     lines: Iterable["OrderLine"],
     manager: "PluginsManager",
@@ -276,7 +275,7 @@ def _recalculate_with_plugins(
     order: Order,
     lines: Iterable[OrderLine],
     prices_entered_with_tax: bool,
-    plugin_ids: Optional[list[str]] = None,
+    plugin_ids: list[str] | None = None,
 ) -> None:
     """Fetch taxes from plugins and recalculate order/lines prices.
 
@@ -306,7 +305,7 @@ def _recalculate_with_plugins(
                 product,
                 variant,
                 None,
-                line_unit.undiscounted_price,
+                line.total_price,
                 plugin_ids=plugin_ids,
             )
             line.undiscounted_unit_price = _get_undiscounted_price(
@@ -346,17 +345,17 @@ def _recalculate_with_plugins(
 
 def _get_undiscounted_price(
     line_price: OrderTaxedPricesData,
-    line_base_price: Money,
+    undiscounted_base_price: Money,
     tax_rate,
     prices_entered_with_tax,
-):
+) -> TaxedMoney:
     if (
         tax_rate > 0
         and line_price.undiscounted_price.net == line_price.undiscounted_price.gross
     ):
-        get_taxed_undiscounted_price(
-            line_base_price,
-            line_price.undiscounted_price,
+        return get_taxed_undiscounted_price(
+            undiscounted_base_price,
+            line_price.price_with_discounts,
             tax_rate,
             prices_entered_with_tax,
         )
@@ -366,7 +365,7 @@ def _get_undiscounted_price(
 def _apply_tax_data(
     order: Order,
     lines: Iterable[OrderLine],
-    tax_data: Optional[TaxData],
+    tax_data: TaxData | None,
     prices_entered_with_tax: bool,
 ) -> None:
     """Apply all prices from tax data to order and order lines."""
@@ -392,7 +391,7 @@ def _apply_tax_data(
 
     subtotal = zero_taxed_money(order.currency)
     undiscounted_subtotal = zero_taxed_money(order.currency)
-    for order_line, tax_line in zip(lines, tax_data.lines):
+    for order_line, tax_line in zip(lines, tax_data.lines, strict=False):
         line_total_price = TaxedMoney(
             net=Money(tax_line.total_net_amount, currency),
             gross=Money(tax_line.total_gross_amount, currency),
@@ -425,7 +424,15 @@ def _apply_tax_data(
     order.undiscounted_total = undiscounted_shipping_price + undiscounted_subtotal
 
 
-def _remove_tax(order, lines):
+def remove_tax(order, lines, prices_entered_with_taxes):
+    if prices_entered_with_taxes:
+        _remove_tax_net(order, lines)
+    else:
+        _remove_tax_gross(order, lines)
+
+
+def _remove_tax_gross(order, lines):
+    """Set gross values equal to net values."""
     order.total_gross_amount = order.total_net_amount
     order.undiscounted_total_gross_amount = order.undiscounted_total_net_amount
     order.subtotal_gross_amount = order.subtotal_net_amount
@@ -444,8 +451,30 @@ def _remove_tax(order, lines):
         line.tax_rate = Decimal("0.00")
 
 
+def _remove_tax_net(order, lines):
+    """Set net values equal to gross values."""
+    order.total_net_amount = order.total_gross_amount
+    order.undiscounted_total_net_amount = order.undiscounted_total_gross_amount
+    order.subtotal_net_amount = order.subtotal_gross_amount
+    order.shipping_price_net_amount = order.shipping_price_gross_amount
+    order.shipping_tax_rate = Decimal("0.00")
+
+    for line in lines:
+        total_price_gross_amount = line.total_price_gross_amount
+        unit_price_gross_amount = line.unit_price_gross_amount
+        undiscounted_unit_price_gross_amount = line.undiscounted_unit_price_gross_amount
+        undiscounted_total_price_gross_amount = (
+            line.undiscounted_total_price_gross_amount
+        )
+        line.unit_price_net_amount = unit_price_gross_amount
+        line.undiscounted_unit_price_net_amount = undiscounted_unit_price_gross_amount
+        line.total_price_net_amount = total_price_gross_amount
+        line.undiscounted_total_price_net_amount = undiscounted_total_price_gross_amount
+        line.tax_rate = Decimal("0.00")
+
+
 def _find_order_line(
-    lines: Optional[Iterable[OrderLine]],
+    lines: Iterable[OrderLine] | None,
     order_line: OrderLine,
 ) -> OrderLine:
     """Return order line from provided lines.
@@ -461,7 +490,7 @@ def order_line_unit(
     order: Order,
     order_line: OrderLine,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ) -> OrderTaxedPricesData:
@@ -490,7 +519,7 @@ def order_line_total(
     order: Order,
     order_line: OrderLine,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ) -> OrderTaxedPricesData:
@@ -521,10 +550,10 @@ def order_line_tax_rate(
     order: Order,
     order_line: OrderLine,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
-) -> Optional[Decimal]:
+) -> Decimal | None:
     """Return the tax rate of provided line.
 
     It takes into account all plugins.
@@ -546,7 +575,7 @@ def order_line_unit_discount(
     order: Order,
     order_line: OrderLine,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
 ) -> Decimal:
     """Return the line unit discount.
@@ -569,7 +598,7 @@ def order_line_unit_discount_value(
     order: Order,
     order_line: OrderLine,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
 ) -> Decimal:
     """Return the line unit discount value.
@@ -587,9 +616,9 @@ def order_line_unit_discount_type(
     order: Order,
     order_line: OrderLine,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
-) -> Optional[str]:
+) -> str | None:
     """Return the line unit discount type.
 
     It takes into account all plugins.
@@ -604,7 +633,7 @@ def order_line_unit_discount_type(
 def order_undiscounted_shipping(
     order: Order,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ) -> TaxedMoney:
@@ -628,7 +657,7 @@ def order_undiscounted_shipping(
 def order_shipping(
     order: Order,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ) -> TaxedMoney:
@@ -652,10 +681,10 @@ def order_shipping(
 def order_shipping_tax_rate(
     order: Order,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
-) -> Optional[Decimal]:
+) -> Decimal | None:
     """Return the shipping tax rate of the order.
 
     It takes into account all plugins.
@@ -675,7 +704,7 @@ def order_shipping_tax_rate(
 def order_subtotal(
     order: Order,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ):
@@ -701,7 +730,7 @@ def order_subtotal(
 def order_total(
     order: Order,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ) -> TaxedMoney:
@@ -725,7 +754,7 @@ def order_total(
 def order_undiscounted_total(
     order: Order,
     manager: PluginsManager,
-    lines: Optional[Iterable[OrderLine]] = None,
+    lines: Iterable[OrderLine] | None = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ) -> TaxedMoney:

@@ -1,9 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Optional
 
-from ..checkout.fetch import CheckoutInfo, CheckoutLineInfo
-
 if TYPE_CHECKING:
+    from ..checkout.fetch import CheckoutInfo, CheckoutLineInfo
     from ..payment.interface import (
         CustomerSource,
         GatewayResponse,
@@ -17,10 +16,10 @@ class PaymentInterface(ABC):
     @abstractmethod
     def list_payment_gateways(
         self,
-        currency: Optional[str] = None,
+        currency: str | None = None,
         checkout_info: Optional["CheckoutInfo"] = None,
-        checkout_lines: Optional[list["CheckoutLineInfo"]] = None,
-        channel_slug: Optional[str] = None,
+        checkout_lines: list["CheckoutLineInfo"] | None = None,
+        channel_slug: str | None = None,
         active_only: bool = True,
     ) -> list["PaymentGateway"]:
         pass

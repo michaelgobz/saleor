@@ -1,8 +1,9 @@
 from collections import defaultdict
+from collections.abc import Callable
 from copy import copy
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from django.core.handlers.wsgi import WSGIRequest
 from django.http import HttpResponse
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from ..core.middleware import Requestor
     from ..core.notify import NotifyEventType
     from ..core.taxes import TaxData, TaxType
+    from ..core.utils.translations import Translation
     from ..csv.models import ExportFile
     from ..discount.models import Promotion, PromotionRule, Voucher, VoucherCode
     from ..giftcard.models import GiftCard
@@ -90,16 +92,16 @@ class ConfigurationTypeField:
 
 @dataclass
 class ExternalAccessTokens:
-    token: Optional[str] = None
-    refresh_token: Optional[str] = None
-    csrf_token: Optional[str] = None
+    token: str | None = None
+    refresh_token: str | None = None
+    csrf_token: str | None = None
     user: Optional["User"] = None
 
 
 @dataclass
 class ExcludedShippingMethod:
     id: str
-    reason: Optional[str]
+    reason: str | None
 
 
 class BasePlugin:
@@ -131,14 +133,14 @@ class BasePlugin:
         configuration: PluginConfigurationType,
         active: bool,
         channel: Optional["Channel"] = None,
-        requestor_getter: Optional[Callable[[], "Requestor"]] = None,
+        requestor_getter: Callable[[], "Requestor"] | None = None,
         db_config: Optional["PluginConfiguration"] = None,
         allow_replica: bool = True,
     ):
         self.configuration = self.get_plugin_configuration(configuration)
         self.active = active
         self.channel = channel
-        self.requestor: Optional[RequestorOrLazyObject] = (
+        self.requestor: RequestorOrLazyObject | None = (
             SimpleLazyObject(requestor_getter) if requestor_getter else requestor_getter
         )
         self.db_config = db_config
@@ -169,9 +171,7 @@ class BasePlugin:
     #
     # Note: this method is deprecated in Saleor 3.20 and will be removed in Saleor 3.21.
     # Webhook-related functionality will be moved from plugin to core modules.
-    account_confirmation_requested: Callable[
-        ["User", str, str, Optional[str], None], None
-    ]
+    account_confirmation_requested: Callable[["User", str, str, str | None, None], None]
 
     # Trigger when account change email is requested.
     #
@@ -516,7 +516,7 @@ class BasePlugin:
     channel_metadata_updated: Callable[["Channel", None], None]
 
     change_user_address: Callable[
-        ["Address", Union[str, None], Union["User", None], bool, "Address"], "Address"
+        ["Address", str | None, Union["User", None], bool, "Address"], "Address"
     ]
 
     # Retrieves the balance remaining on a shopper's gift card
@@ -725,7 +725,7 @@ class BasePlugin:
     # Note: This method is deprecated in Saleor 3.20 and will be removed in Saleor 3.21.
     # Webhook-related functionality will be moved from the plugin to core modules.
     get_taxes_for_checkout: Callable[
-        ["CheckoutInfo", list["CheckoutLineInfo"], str, Any, Optional[dict]],
+        ["CheckoutInfo", list["CheckoutLineInfo"], str, Any, dict | None],
         Optional["TaxData"],
     ]
 
@@ -850,7 +850,7 @@ class BasePlugin:
     draft_order_deleted: Callable[["Order", Any, None], Any]
 
     initialize_payment: Callable[
-        [dict, Optional[InitializedPaymentResponse]], InitializedPaymentResponse
+        [dict, InitializedPaymentResponse | None], InitializedPaymentResponse
     ]
 
     # Trigger before invoice is deleted.
@@ -866,7 +866,7 @@ class BasePlugin:
     # May return Invoice object.
     # Overwrite to create invoice with proper data, call invoice.update_invoice.
     invoice_request: Callable[
-        ["Order", "Invoice", Union[str, None], Any], Optional["Invoice"]
+        ["Order", "Invoice", str | None, Any], Optional["Invoice"]
     ]
 
     # Trigger after invoice is sent.
@@ -1176,7 +1176,7 @@ class BasePlugin:
     preprocess_order_creation: Callable[
         [
             "CheckoutInfo",
-            Union[list["CheckoutLineInfo"], None],
+            list["CheckoutLineInfo"] | None,
             Any,
         ],
         Any,
@@ -1201,7 +1201,7 @@ class BasePlugin:
     payment_gateway_initialize_session: Callable[
         [
             Decimal,
-            Optional[list["PaymentGatewayData"]],
+            list["PaymentGatewayData"] | None,
             Union["Checkout", "Order"],
             None,
         ],
@@ -1228,6 +1228,24 @@ class BasePlugin:
     # Note: This method is deprecated in Saleor 3.20 and will be removed in Saleor 3.21.
     # Webhook-related functionality will be moved from the plugin to core modules.
     transaction_item_metadata_updated: Callable[["TransactionItem", Any], Any]
+
+    # Trigger when transaction item metadata is updated.
+    #
+    # Overwrite this method if you need to trigger specific logic when a transaction
+    # item metadata is updated.
+    #
+    # Note: This method is deprecated in Saleor 3.20 and will be removed in Saleor 3.21.
+    # Webhook-related functionality will be moved from the plugin to core modules.
+    translations_created: Callable[[list["Translation"], None, None], Any]
+
+    # Trigger when transaction item metadata is updated.
+    #
+    # Overwrite this method if you need to trigger specific logic when a transaction
+    # item metadata is updated.
+    #
+    # Note: This method is deprecated in Saleor 3.20 and will be removed in Saleor 3.21.
+    # Webhook-related functionality will be moved from the plugin to core modules.
+    translations_updated: Callable[[list["Translation"], None, None], Any]
 
     # Trigger when product is created.
     #
@@ -1695,9 +1713,9 @@ class BasePlugin:
 
     def get_payment_gateways(
         self,
-        currency: Optional[str],
+        currency: str | None,
         checkout_info: Optional["CheckoutInfo"],
-        checkout_lines: Optional[list["CheckoutLineInfo"]],
+        checkout_lines: list["CheckoutLineInfo"] | None,
         previous_value,
     ) -> list["PaymentGateway"]:
         payment_config = (
@@ -1878,9 +1896,9 @@ class BasePlugin:
 
     def resolve_plugin_configuration(
         self, request
-    ) -> Union[PluginConfigurationType, Promise[PluginConfigurationType]]:
+    ) -> PluginConfigurationType | Promise[PluginConfigurationType]:
         # Override this function to customize resolving plugin configuration in API.
         return self.configuration
 
-    def is_event_active(self, event: str, channel=Optional[str]):
+    def is_event_active(self, event: str, channel: str | None = None):
         return hasattr(self, event)

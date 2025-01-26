@@ -8,7 +8,7 @@ import uuid
 from collections import defaultdict
 from decimal import Decimal
 from functools import lru_cache
-from typing import Any, Union, cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import graphene
@@ -346,7 +346,7 @@ def create_product_variant_channel_listings(product_variant_channel_listings_dat
 
 
 def assign_attributes_to_product_types(
-    association_model: Union[type[AttributeProduct], type[AttributeVariant]],
+    association_model: type[AttributeProduct] | type[AttributeVariant],
     attributes: list,
 ):
     for value in attributes:
@@ -1463,7 +1463,7 @@ def create_vouchers():
             defaults={"discount_value": 100, "currency": channel.currency_code},
         )
     if created:
-        yield "Voucher #%d" % voucher.id
+        yield f"Voucher #{voucher.pk}"
     else:
         yield "Shipping voucher already exists"
 
@@ -1492,7 +1492,7 @@ def create_vouchers():
             },
         )
     if created:
-        yield "Voucher #%d" % voucher.id
+        yield f"Voucher #{voucher.pk}"
     else:
         yield "Value voucher already exists"
 
@@ -1512,7 +1512,7 @@ def create_vouchers():
             defaults={"discount_value": 5, "currency": channel.currency_code},
         )
     if created:
-        yield "Voucher #%d" % voucher.id
+        yield f"Voucher #{voucher.pk}"
     else:
         yield "Value voucher already exists"
 
@@ -1526,7 +1526,7 @@ def create_gift_cards(how_many=5):
     for i in range(how_many):
         staff_user = User.objects.filter(is_staff=True).order_by("?").first()
         gift_card, created = GiftCard.objects.get_or_create(
-            code=f"Gift_card_{i+1}",
+            code=f"Gift_card_{i + 1}",
             defaults={
                 "created_by": staff_user,
                 "initial_balance": Money(50, DEFAULT_CURRENCY),
@@ -1536,13 +1536,13 @@ def create_gift_cards(how_many=5):
         gift_card.tags.add(tag)
         gift_card_events.gift_card_issued_event(gift_card, staff_user, None)
         if created:
-            yield "Gift card #%d" % gift_card.id
+            yield f"Gift card #{gift_card.pk}"
         else:
             yield "Gift card already exists"
 
         user = User.objects.filter(is_superuser=False).order_by("?").first()
         gift_card, created = GiftCard.objects.get_or_create(
-            code=f"Gift_card_1{i+1}",
+            code=f"Gift_card_1{i + 1}",
             defaults={
                 "created_by": user,
                 "product_id": product_pk,
@@ -1555,7 +1555,7 @@ def create_gift_cards(how_many=5):
             raise Exception("No orders found")
         gift_card_events.gift_cards_bought_event([gift_card], order, user, None)
         if created:
-            yield "Gift card #%d" % gift_card.id
+            yield f"Gift card #{gift_card.pk}"
         else:
             yield "Gift card already exists"
 

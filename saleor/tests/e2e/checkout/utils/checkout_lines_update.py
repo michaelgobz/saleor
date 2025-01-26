@@ -19,6 +19,7 @@ mutation checkoutLinesUpdate($checkoutId: ID!, $lines: [CheckoutLineUpdateInput!
         }
       }
       lines {
+        id
         quantity
         undiscountedTotalPrice {
           amount
@@ -40,6 +41,10 @@ mutation checkoutLinesUpdate($checkoutId: ID!, $lines: [CheckoutLineUpdateInput!
             amount
           }
         }
+      }
+      shippingMethods {
+        id
+        name
       }
     }
     errors {

@@ -3,7 +3,7 @@ import logging
 import os
 import os.path
 import warnings
-from typing import Optional, cast
+from typing import cast
 from urllib.parse import urlparse
 
 import dj_database_url
@@ -49,7 +49,7 @@ def get_bool_from_env(name, default_value):
     return value.lower() in ("true", "1")
 
 
-def get_url_from_env(name, *, schemes=None) -> Optional[str]:
+def get_url_from_env(name, *, schemes=None) -> str | None:
     if name in os.environ:
         value = os.environ[name]
         message = f"{value} is an invalid value for {name}"
@@ -167,7 +167,7 @@ ENABLE_SSL: bool = get_bool_from_env("ENABLE_SSL", False)
 
 # URL on which Saleor is hosted (e.g., https://api.example.com/). This has precedence
 # over ENABLE_SSL and Shop.domain when generating URLs pointing to itself.
-PUBLIC_URL: Optional[str] = get_url_from_env("PUBLIC_URL", schemes=["http", "https"])
+PUBLIC_URL: str | None = get_url_from_env("PUBLIC_URL", schemes=["http", "https"])
 if PUBLIC_URL:
     if os.environ.get("ENABLE_SSL") is not None:
         warnings.warn(
@@ -672,6 +672,9 @@ EVENT_PAYLOAD_DELETE_PERIOD = datetime.timedelta(
 EVENT_PAYLOAD_DELETE_TASK_TIME_LIMIT = datetime.timedelta(
     seconds=parse(os.environ.get("EVENT_PAYLOAD_DELETE_TASK_TIME_LIMIT", "1 hour"))
 )
+EVENT_DELIVERY_ATTEMPT_RESPONSE_SIZE_LIMIT = int(
+    os.environ.get("EVENT_DELIVERY_ATTEMPT_RESPONSE_SIZE_LIMIT", 1024)
+)
 # Time between marking app "to remove" and removing the app from the database.
 # App is not visible for the user after removing, but it still exists in the database.
 # Saleor needs time to process sending `APP_DELETED` webhook and possible retrying,
@@ -961,8 +964,10 @@ REQUESTS_CONN_EST_TIMEOUT = 2
 # Default timeout for external requests.
 COMMON_REQUESTS_TIMEOUT = (REQUESTS_CONN_EST_TIMEOUT, 18)
 
-WEBHOOK_TIMEOUT = (REQUESTS_CONN_EST_TIMEOUT, 18)
-WEBHOOK_SYNC_TIMEOUT = (REQUESTS_CONN_EST_TIMEOUT, 18)
+WEBHOOK_WAITING_FOR_RESPONSE_TIMEOUT = 18
+
+WEBHOOK_TIMEOUT = (REQUESTS_CONN_EST_TIMEOUT, WEBHOOK_WAITING_FOR_RESPONSE_TIMEOUT)
+WEBHOOK_SYNC_TIMEOUT = (REQUESTS_CONN_EST_TIMEOUT, WEBHOOK_WAITING_FOR_RESPONSE_TIMEOUT)
 
 # The max number of rules with order_predicate defined
 ORDER_RULES_LIMIT = os.environ.get("ORDER_RULES_LIMIT", 100)

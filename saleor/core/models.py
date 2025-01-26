@@ -158,7 +158,7 @@ class EventPayloadManager(models.Manager["EventPayload"]):
         self, objs: Iterable["EventPayload"], payloads=Iterable[str]
     ) -> list["EventPayload"]:
         created_objs = self.bulk_create(objs)
-        for obj, payload_data in zip(created_objs, payloads):
+        for obj, payload_data in zip(created_objs, payloads, strict=False):
             obj.save_payload_file(payload_data, save_instance=False)
         self.bulk_update(created_objs, ["payload_file"])
         return created_objs
@@ -175,6 +175,7 @@ class EventPayload(models.Model):
 
     objects = EventPayloadManager()
 
+    # TODO (PE-568): change typing of return payload to `bytes` to avoid unnecessary decoding.
     def get_payload(self):
         if self.payload_file:
             with self.payload_file.open("rb") as f:

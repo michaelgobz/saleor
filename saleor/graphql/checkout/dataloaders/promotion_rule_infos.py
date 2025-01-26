@@ -28,9 +28,9 @@ class VariantPromotionRuleInfoByCheckoutLineIdLoader(
     def batch_load(self, keys):
         def with_checkout_lines(checkout_lines):
             def with_checkouts(checkouts):
-                variants_pks = [line.variant_id for line in checkout_lines]
+                variants_pks = [line.variant_id for line in checkout_lines if line]
                 if not variants_pks:
-                    return []
+                    return [None] * len(keys) if keys else []
 
                 channel_pks = [checkout.channel_id for checkout in checkouts]
 
@@ -41,7 +41,9 @@ class VariantPromotionRuleInfoByCheckoutLineIdLoader(
                         rule_ids: list[int] = []
                         rule_ids_language_codes: list[tuple[int, str]] = []
                         for listing_promotion_rules, language_code in zip(
-                            variant_listing_promotion_rules, language_codes
+                            variant_listing_promotion_rules,
+                            language_codes,
+                            strict=False,
                         ):
                             for listing_promotion_rule in listing_promotion_rules:
                                 rule_ids.append(
@@ -60,33 +62,46 @@ class VariantPromotionRuleInfoByCheckoutLineIdLoader(
                             promotion_ids_language_codes = [
                                 (rule.promotion_id, language_code)
                                 for rule, (_rule_id, language_code) in zip(
-                                    promotion_rules, rule_ids_language_codes
+                                    promotion_rules,
+                                    rule_ids_language_codes,
+                                    strict=False,
                                 )
                             ]
 
                             def with_promotion_translations(promotion_translations):
                                 channel_listings_map = dict(
-                                    zip(variant_ids_channel_ids, channel_listings)
+                                    zip(
+                                        variant_ids_channel_ids,
+                                        channel_listings,
+                                        strict=False,
+                                    )
                                 )
                                 listing_promotion_rules_map = dict(
                                     zip(
                                         channel_listing_ids,
                                         variant_listing_promotion_rules,
+                                        strict=False,
                                     )
                                 )
-                                rule_map = dict(zip(rule_ids, promotion_rules))
+                                rule_map = dict(
+                                    zip(rule_ids, promotion_rules, strict=False)
+                                )
                                 rule_id_to_promotion_map = dict(
-                                    zip(rule_ids, promotions)
+                                    zip(rule_ids, promotions, strict=False)
                                 )
                                 rule_id_to_rule_translation = dict(
-                                    zip(rule_ids, rule_translations)
+                                    zip(rule_ids, rule_translations, strict=False)
                                 )
                                 rule_id_to_promotion_translation = dict(
-                                    zip(rule_ids, promotion_translations)
+                                    zip(rule_ids, promotion_translations, strict=False)
                                 )
 
                                 rules_info_map = defaultdict(list)
-                                for checkout, line in zip(checkouts, checkout_lines):
+                                for checkout, line in zip(
+                                    checkouts, checkout_lines, strict=False
+                                ):
+                                    if not line:
+                                        continue
                                     channel_listing = channel_listings_map[
                                         (line.variant_id, checkout.channel_id)
                                     ]
@@ -114,7 +129,7 @@ class VariantPromotionRuleInfoByCheckoutLineIdLoader(
                                         for listing_rule in listing_promotion_rules
                                     ]
 
-                                return [rules_info_map[key] for key in keys]
+                                return [rules_info_map.get(key) for key in keys]
 
                             return (
                                 PromotionTranslationByIdAndLanguageCodeLoader(
@@ -153,7 +168,10 @@ class VariantPromotionRuleInfoByCheckoutLineIdLoader(
 
                 variant_ids_channel_ids = [
                     (line.variant_id, channel_id)
-                    for line, channel_id in zip(checkout_lines, channel_pks)
+                    for line, channel_id in zip(
+                        checkout_lines, channel_pks, strict=False
+                    )
+                    if line
                 ]
                 language_codes = [checkout.language_code for checkout in checkouts]
 
@@ -163,7 +181,7 @@ class VariantPromotionRuleInfoByCheckoutLineIdLoader(
                     .then(with_channel_listings)
                 )
 
-            checkout_tokens = [line.checkout_id for line in checkout_lines]
+            checkout_tokens = [line.checkout_id for line in checkout_lines if line]
             return (
                 CheckoutByTokenLoader(self.context)
                 .load_many(checkout_tokens)

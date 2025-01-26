@@ -1,5 +1,5 @@
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from django.conf import settings
 from prices import Money, TaxedMoney
@@ -245,7 +245,10 @@ def propagate_order_discount_on_order_lines_prices(
                 share = (
                     line.base_unit_price_amount * line.quantity / base_subtotal.amount
                 )
-                discount = min(share * subtotal_discount, base_subtotal)
+                discount = quantize_price(
+                    min(share * subtotal_discount, base_subtotal),
+                    base_subtotal.currency,
+                )
                 yield (
                     line,
                     _get_total_price_with_subtotal_discount_for_order_line(
@@ -267,7 +270,7 @@ def get_total_price_with_subtotal_discount_for_order_line(
     lines: Iterable["OrderLine"],
     base_subtotal: Money,
     subtotal_discount: Money,
-) -> Optional[Money]:
+) -> Money | None:
     for order_line, total_price in propagate_order_discount_on_order_lines_prices(
         lines, base_subtotal, subtotal_discount
     ):
@@ -290,8 +293,7 @@ def apply_subtotal_discount_to_order_lines(
 
 
 def assign_order_line_prices(line: "OrderLine", total_price: Money):
-    currency = total_price.currency
-    line.total_price_net = quantize_price(total_price, currency)
+    line.total_price_net = total_price
     line.total_price_gross = line.total_price_net
     line.undiscounted_total_price_gross_amount = (
         line.undiscounted_total_price_net_amount
@@ -303,7 +305,7 @@ def assign_order_line_prices(line: "OrderLine", total_price: Money):
         line.unit_price_net = unit_price
         line.unit_price_gross = unit_price
 
-        undiscounted_unit_price = line.undiscounted_total_price_net_amount / quantity
+        undiscounted_unit_price = line.undiscounted_base_unit_price_amount
         line.undiscounted_unit_price_net_amount = undiscounted_unit_price
         line.undiscounted_unit_price_gross_amount = undiscounted_unit_price
 

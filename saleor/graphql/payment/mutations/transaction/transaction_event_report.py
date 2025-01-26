@@ -26,6 +26,7 @@ from .....payment.utils import (
     create_failed_transaction_event,
     get_already_existing_event,
     get_transaction_event_amount,
+    truncate_transaction_event_message,
 )
 from .....permission.auth_filters import AuthorizationFilters
 from .....permission.enums import PaymentPermissions
@@ -109,7 +110,12 @@ class TransactionEventReport(ModelMutation):
                 "payment provider page with event details."
             )
         )
-        message = graphene.String(description="The message related to the event.")
+        message = graphene.String(
+            description=(
+                "The message related to the event. The maximum length is 512 "
+                "characters; any text exceeding this limit will be truncated."
+            )
+        )
         available_actions = graphene.List(
             graphene.NonNull(TransactionActionEnum),
             description="List of all possible actions for the transaction",
@@ -175,10 +181,10 @@ class TransactionEventReport(ModelMutation):
         manager: "PluginsManager",
         transaction: payment_models.TransactionItem,
         transaction_event: payment_models.TransactionEvent,
-        available_actions: Optional[list[str]] = None,
+        available_actions: list[str] | None = None,
         app: Optional["App"] = None,
-        metadata: Optional[list[dict]] = None,
-        private_metadata: Optional[list[dict]] = None,
+        metadata: list[dict] | None = None,
+        private_metadata: list[dict] | None = None,
     ):
         fields_to_update = [
             "authorized_value",
@@ -225,7 +231,7 @@ class TransactionEventReport(ModelMutation):
     @classmethod
     def get_related_granted_refund(
         cls, event_psp_reference: str, transaction: payment_models.TransactionItem
-    ) -> Optional[order_models.OrderGrantedRefund]:
+    ) -> order_models.OrderGrantedRefund | None:
         request_refund = (
             payment_models.TransactionEvent.objects.filter(
                 psp_reference=event_psp_reference,
@@ -239,7 +245,7 @@ class TransactionEventReport(ModelMutation):
 
     @classmethod
     def clean_amount_value(
-        cls, amount: Optional[float], event_type: str, psp_reference: str, currency: str
+        cls, amount: float | None, event_type: str, psp_reference: str, currency: str
     ):
         if amount is None:
             if event_type not in OPTIONAL_AMOUNT_EVENTS:
@@ -280,8 +286,8 @@ class TransactionEventReport(ModelMutation):
         external_url=None,
         message=None,
         available_actions=None,
-        transaction_metadata: Optional[list[dict]] = None,
-        transaction_private_metadata: Optional[list[dict]] = None,
+        transaction_metadata: list[dict] | None = None,
+        transaction_private_metadata: list[dict] | None = None,
     ):
         validate_one_of_args_is_in_mutation("id", id, "token", token)
         transaction = get_transaction_item(id, token)
@@ -312,6 +318,9 @@ class TransactionEventReport(ModelMutation):
                 psp_reference, transaction
             )
 
+        message = (
+            truncate_transaction_event_message(message) if message is not None else ""
+        )
         transaction_event_data = {
             "psp_reference": psp_reference,
             "type": type,
@@ -319,7 +328,7 @@ class TransactionEventReport(ModelMutation):
             "currency": transaction.currency,
             "created_at": time or timezone.now(),
             "external_url": external_url or "",
-            "message": message or "",
+            "message": message,
             "transaction": transaction,
             "app_identifier": app_identifier,
             "app": app,
@@ -349,6 +358,12 @@ class TransactionEventReport(ModelMutation):
             # The mutation can be called multiple times by the app. That can cause a
             # thread race. We need to be sure, that we will always create a single event
             # on our side for specific action.
+            _transaction = (
+                payment_models.TransactionItem.objects.filter(pk=transaction.pk)
+                .select_for_update(of=("self",))
+                .first()
+            )
+
             existing_event = get_already_existing_event(transaction_event)
             if existing_event and existing_event.amount != transaction_event.amount:
                 error_code = TransactionEventReportErrorCode.INCORRECT_DETAILS.value

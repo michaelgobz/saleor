@@ -2,7 +2,6 @@ import sys
 from collections import defaultdict
 from dataclasses import asdict
 from decimal import Decimal
-from typing import Optional
 
 import graphene
 from graphene import relay
@@ -57,6 +56,7 @@ from ...core.connection import (
 )
 from ...core.context import get_database_connection_name
 from ...core.descriptions import (
+    ADDED_IN_321,
     DEPRECATED_IN_3X_FIELD,
     DEPRECATED_IN_3X_INPUT,
     RICH_CONTENT,
@@ -145,8 +145,9 @@ from ..dataloaders import (
     VariantsChannelListingByProductIdAndChannelSlugLoader,
 )
 from ..enums import ProductMediaType, ProductTypeKindEnum, VariantAttributeScope
+from ..filters import ProductVariantFilterInput, ProductVariantWhereInput
 from ..resolvers import resolve_product_variants, resolve_products
-from ..sorters import MediaSortingInput
+from ..sorters import MediaSortingInput, ProductVariantSortingInput
 from .channels import ProductChannelListing, ProductVariantChannelListing
 from .digital_contents import DigitalContent
 
@@ -222,8 +223,7 @@ class ProductPricingInfo(BasePricingInfo):
     price_range_local_currency = graphene.Field(
         TaxedMoneyRange,
         description=(
-            "The discounted price range of the product variants "
-            "in the local currency."
+            "The discounted price range of the product variants in the local currency."
         ),
         deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Always returns `null`.",
     )
@@ -566,7 +566,7 @@ class ProductVariant(ChannelContextTypeWithMetadata[models.ProductVariant]):
     def resolve_attributes(
         root: ChannelContext[models.ProductVariant],
         info,
-        variant_selection: Optional[str] = None,
+        variant_selection: str | None = None,
     ):
         def apply_variant_selection_filter(selected_attributes):
             if not variant_selection or variant_selection == VariantAttributeScope.ALL:
@@ -947,6 +947,20 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
             "include the unpublished items: "
             f"{', '.join([p.name for p in ALL_PRODUCTS_PERMISSIONS])}."
         ),
+        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Use `productVariants` field instead.",
+    )
+    product_variants = FilterConnectionField(
+        ProductVariantCountableConnection,
+        filter=ProductVariantFilterInput(
+            description="Filtering options for product variant."
+        ),
+        where=ProductVariantWhereInput(description="Where filtering options."),
+        sort_by=ProductVariantSortingInput(description="Sort products variants."),
+        description=(
+            "List of variants for the product. Requires the following permissions to "
+            "include the unpublished items: "
+            f"{', '.join([p.name for p in ALL_PRODUCTS_PERMISSIONS])}." + ADDED_IN_321
+        ),
     )
     media = NonNullList(
         lambda: ProductMedia,
@@ -1072,7 +1086,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
         info,
         *,
         size: int = 256,
-        format: Optional[str] = None,
+        format: str | None = None,
     ):
         format = get_thumbnail_format(format)
         size = get_thumbnail_size(size)
@@ -1278,7 +1292,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
     def resolve_attribute(root: ChannelContext[models.Product], info, slug):
         def get_selected_attribute_by_slug(
             attributes: list[SelectedAttribute],
-        ) -> Optional[SelectedAttribute]:
+        ) -> SelectedAttribute | None:
             return next(
                 (atr for atr in attributes if atr["attribute"].slug == slug),
                 None,
@@ -1375,7 +1389,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
 
         def get_product_variant(
             product_variants,
-        ) -> Optional[ProductVariant]:
+        ) -> ProductVariant | None:
             if id:
                 id_type, variant_id = graphene.Node.from_global_id(id)
                 if id_type != "ProductVariant":
@@ -1427,6 +1441,32 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
             ]
 
         return variants.then(map_channel_context)
+
+    @staticmethod
+    def resolve_product_variants(root: ChannelContext[models.Product], info, **kwargs):
+        requestor = get_user_or_app_from_context(info.context)
+
+        def _resolve_product_variants(channel_obj):
+            qs = resolve_product_variants(
+                info,
+                channel=channel_obj,
+                product_id=root.node.pk,
+                limited_channel_access=True,
+                requestor=requestor,
+            )
+            kwargs["channel"] = qs.channel_slug
+            qs = filter_connection_queryset(
+                qs, kwargs, allow_replica=info.context.allow_replica
+            )
+            return create_connection_slice(
+                qs, info, kwargs, ProductVariantCountableConnection
+            )
+
+        return (
+            ChannelBySlugLoader(info.context)
+            .load(root.channel_slug)
+            .then(_resolve_product_variants)
+        )
 
     @staticmethod
     def resolve_channel_listings(root: ChannelContext[models.Product], info):
@@ -1751,7 +1791,7 @@ class ProductType(ModelObjectType[models.ProductType]):
     def resolve_variant_attributes(
         root: models.ProductType,
         info,
-        variant_selection: Optional[str] = None,
+        variant_selection: str | None = None,
     ):
         def apply_variant_selection_filter(attributes):
             if not variant_selection or variant_selection == VariantAttributeScope.ALL:
@@ -1787,7 +1827,7 @@ class ProductType(ModelObjectType[models.ProductType]):
     def resolve_assigned_variant_attributes(
         root: models.ProductType,
         info,
-        variant_selection: Optional[str] = None,
+        variant_selection: str | None = None,
     ):
         def apply_variant_selection_filter(attributes):
             if not variant_selection or variant_selection == VariantAttributeScope.ALL:
@@ -1912,8 +1952,8 @@ class ProductMedia(ModelObjectType[models.ProductMedia]):
         root: models.ProductMedia,
         info,
         *,
-        size: Optional[int] = None,
-        format: Optional[str] = None,
+        size: int | None = None,
+        format: str | None = None,
     ) -> str | None | Promise[str]:
         if root.external_url:
             return root.external_url
@@ -1981,8 +2021,8 @@ class ProductImage(BaseObjectType):
         root: models.ProductMedia,
         info,
         *,
-        size: Optional[int] = None,
-        format: Optional[str] = None,
+        size: int | None = None,
+        format: str | None = None,
     ) -> None | str | Promise[str]:
         if not root.image:
             return None

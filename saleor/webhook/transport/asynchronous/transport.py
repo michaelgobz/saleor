@@ -2,9 +2,9 @@ import datetime
 import json
 import logging
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from celery import group
@@ -61,10 +61,8 @@ MAX_WEBHOOK_EVENTS_IN_DB_BULK = 100
 @dataclass
 class WebhookPayloadData:
     subscribable_object: Any
-    legacy_data_generator: Optional[Callable[[], str]] = None
-    data: Optional[str] = (
-        None  # deprecated, legacy_data_generator should be used instead
-    )
+    legacy_data_generator: Callable[[], str] | None = None
+    data: str | None = None  # deprecated, legacy_data_generator should be used instead
 
 
 def create_deliveries_for_multiple_subscription_objects(
@@ -73,8 +71,8 @@ def create_deliveries_for_multiple_subscription_objects(
     webhooks,
     requestor=None,
     allow_replica=False,
-    pre_save_payloads: Optional[dict] = None,
-    request_time: Optional[datetime.datetime] = None,
+    pre_save_payloads: dict | None = None,
+    request_time: datetime.datetime | None = None,
 ) -> list[EventDelivery]:
     """Create event deliveries with payloads based on multiple subscription objects.
 
@@ -194,8 +192,8 @@ def create_deliveries_for_subscriptions(
     webhooks: Sequence["Webhook"],
     requestor=None,
     allow_replica=False,
-    pre_save_payloads: Optional[dict] = None,
-    request_time: Optional[datetime.datetime] = None,
+    pre_save_payloads: dict | None = None,
+    request_time: datetime.datetime | None = None,
 ) -> list[EventDelivery]:
     """Create a list of event deliveries with payloads based on subscription query.
 
@@ -317,6 +315,14 @@ def trigger_webhooks_async_for_multiple_objects(
     :param allow_replica: use a replica database.
     :param queue: defines the queue to which the event should be sent.
     """
+    if transaction.get_connection().in_atomic_block:
+        # Async webhooks should be delivered after the transaction is committed.
+        # Otherwise the delivery task may not be able to fetch all the required data and
+        # the delivery may fail.
+        logger.warning(
+            "Async webhook was triggered inside a transaction: %s", event_type
+        )
+
     legacy_webhooks, subscription_webhooks = group_webhooks_by_subscription(webhooks)
 
     is_deferred_payload = WebhookEventAsyncType.EVENT_MAP.get(event_type, {}).get(
@@ -468,9 +474,11 @@ def generate_deferred_payloads(
     self,
     event_delivery_ids: list,
     deferred_payload_data: dict,
-    send_webhook_queue: Optional[str] = None,
+    send_webhook_queue: str | None = None,
 ):
-    deliveries = list(get_multiple_deliveries_for_webhooks(event_delivery_ids).values())
+    deliveries = list(
+        get_multiple_deliveries_for_webhooks(event_delivery_ids)[0].values()
+    )
     args_obj = DeferredPayloadData(**deferred_payload_data)
     requestor = None
     if args_obj.requestor_object_id and args_obj.requestor_model_name in (
@@ -560,14 +568,15 @@ def generate_deferred_payloads(
 )
 @allow_writer()
 def send_webhook_request_async(self, event_delivery_id) -> None:
-    delivery = get_delivery_for_webhook(event_delivery_id)
+    delivery, not_found = get_delivery_for_webhook(event_delivery_id)
     if not delivery:
+        if not_found:
+            raise self.retry(countdown=1)
         return
 
     webhook = delivery.webhook
     domain = get_domain()
     attempt = create_attempt(delivery, self.request.id)
-    delivery_status = EventDeliveryStatus.SUCCESS
 
     try:
         if not delivery.payload:
@@ -575,7 +584,13 @@ def send_webhook_request_async(self, event_delivery_id) -> None:
                 f"Event delivery id: %{event_delivery_id}r has no payload."
             )
         data = delivery.payload.get_payload()
-        with webhooks_opentracing_trace(delivery.event_type, domain, app=webhook.app):
+        # Covert payload to bytes if it's not already.
+        data = data if isinstance(data, bytes) else data.encode("utf-8")
+        # Count payload size in bytes.
+        payload_size = len(data)
+        with webhooks_opentracing_trace(
+            delivery.event_type, domain, payload_size, app=webhook.app
+        ):
             response = send_webhook_using_scheme_method(
                 webhook.target_url,
                 domain,
@@ -585,10 +600,10 @@ def send_webhook_request_async(self, event_delivery_id) -> None:
                 webhook.custom_headers,
             )
 
-        attempt_update(attempt, response)
         if response.status == EventDeliveryStatus.FAILED:
+            attempt_update(attempt, response)
             handle_webhook_retry(self, webhook, response, delivery, attempt)
-            delivery_status = EventDeliveryStatus.FAILED
+            delivery_update(delivery, EventDeliveryStatus.FAILED)
         elif response.status == EventDeliveryStatus.SUCCESS:
             task_logger.info(
                 "[Webhook ID:%r] Payload sent to %r for event %r. Delivery id: %r",
@@ -597,7 +612,9 @@ def send_webhook_request_async(self, event_delivery_id) -> None:
                 delivery.event_type,
                 delivery.id,
             )
-        delivery_update(delivery, delivery_status)
+            delivery.status = EventDeliveryStatus.SUCCESS
+            # update attempt without save to provide proper data in observability
+            attempt_update(attempt, response, with_save=False)
     except ValueError as e:
         response = WebhookResponse(content=str(e), status=EventDeliveryStatus.FAILED)
         attempt_update(attempt, response)

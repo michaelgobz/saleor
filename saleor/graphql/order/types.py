@@ -1,6 +1,5 @@
 import logging
 from decimal import Decimal
-from typing import Optional
 from uuid import UUID
 
 import graphene
@@ -788,9 +787,6 @@ class OrderLine(ModelObjectType[models.OrderLine]):
     quantity_fulfilled = graphene.Int(
         required=True, description="Number of variant items fulfilled."
     )
-    unit_discount_reason = graphene.String(
-        description="Reason for any discounts applied on a product in the order."
-    )
     tax_rate = graphene.Float(
         required=True, description="Rate of tax applied on product variant."
     )
@@ -798,26 +794,54 @@ class OrderLine(ModelObjectType[models.OrderLine]):
     thumbnail = ThumbnailField()
     unit_price = graphene.Field(
         TaxedMoney,
-        description="Price of the single item in the order line.",
+        description=(
+            "Price of the single item in the order line with all the line-level "
+            "discounts and order-level discount portions applied."
+        ),
         required=True,
     )
     undiscounted_unit_price = graphene.Field(
         TaxedMoney,
         description=(
-            "Price of the single item in the order line without applied an order line "
-            "discount."
+            "Price of the single item in the order line without any discount applied."
         ),
         required=True,
     )
     unit_discount = graphene.Field(
         Money,
-        description="The discount applied to the single order line.",
+        description=(
+            "Sum of the line-level discounts applied to the order line. "
+            "Order-level discounts which affect the line are not visible in this field."
+            " For order-level discount portion (if any), please query `order.discounts`"
+            " field."
+        ),
         required=True,
+    )
+    unit_discount_reason = graphene.String(
+        description=(
+            "Reason for line-level discounts applied on the order line. Order-level "
+            "discounts which affect the line are not visible in this field. For "
+            "order-level discount reason (if any), please query `order.discounts` "
+            "field."
+        )
     )
     unit_discount_value = graphene.Field(
         PositiveDecimal,
-        description="Value of the discount. Can store fixed value or percent value",
+        description=(
+            "Value of the discount. Can store fixed value or percent value. "
+            "This field shouldn't be used when multiple discounts affect the line. "
+            "There is a limitation, that after running `checkoutComplete` mutation "
+            "the field always stores fixed value."
+        ),
         required=True,
+    )
+    unit_discount_type = graphene.Field(
+        DiscountValueTypeEnum,
+        description=(
+            "Type of the discount: `fixed` or `percent`. This field shouldn't be used "
+            "when multiple discounts affect the line. There is a limitation, that after"
+            " running `checkoutComplete` mutation the field is always set to `fixed`."
+        ),
     )
     total_price = graphene.Field(
         TaxedMoney, description="Price of the order line.", required=True
@@ -864,10 +888,6 @@ class OrderLine(ModelObjectType[models.OrderLine]):
     quantity_to_fulfill = graphene.Int(
         required=True, description="A quantity of items remaining to be fulfilled."
     )
-    unit_discount_type = graphene.Field(
-        DiscountValueTypeEnum,
-        description="Type of the discount: fixed or percent",
-    )
     tax_class = PermissionsField(
         TaxClass,
         description=("Denormalized tax class of the product in this order line."),
@@ -910,7 +930,7 @@ class OrderLine(ModelObjectType[models.OrderLine]):
     @staticmethod
     @traced_resolver
     def resolve_thumbnail(
-        root: models.OrderLine, info, *, size: int = 256, format: Optional[str] = None
+        root: models.OrderLine, info, *, size: int = 256, format: str | None = None
     ):
         if not root.variant_id:
             return None
@@ -1581,7 +1601,7 @@ class Order(ModelObjectType[models.Order]):
     @staticmethod
     @traced_resolver
     def resolve_discount(root: models.Order, info):
-        def return_voucher_discount(discounts) -> Optional[Money]:
+        def return_voucher_discount(discounts) -> Money | None:
             if not discounts:
                 return None
             for discount in discounts:
@@ -1600,7 +1620,7 @@ class Order(ModelObjectType[models.Order]):
     @staticmethod
     @traced_resolver
     def resolve_discount_name(root: models.Order, info):
-        def return_voucher_name(discounts) -> Optional[Money]:
+        def return_voucher_name(discounts) -> Money | None:
             if not discounts:
                 return None
             for discount in discounts:
@@ -1617,7 +1637,7 @@ class Order(ModelObjectType[models.Order]):
     @staticmethod
     @traced_resolver
     def resolve_translated_discount_name(root: models.Order, info):
-        def return_voucher_translated_name(discounts) -> Optional[Money]:
+        def return_voucher_translated_name(discounts) -> Money | None:
             if not discounts:
                 return None
             for discount in discounts:
@@ -2093,7 +2113,7 @@ class Order(ModelObjectType[models.Order]):
                     shipping_method.tax_class_id
                 )
 
-            def calculate_price(data) -> Optional[ShippingMethodData]:
+            def calculate_price(data) -> ShippingMethodData | None:
                 listing, tax_class = data
                 if not listing:
                     return None

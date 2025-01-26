@@ -106,49 +106,16 @@ class CheckoutLinesAdd(BaseMutation):
         )
 
     @classmethod
-    def clean_input(
+    def process_lines_input(
         cls,
         info,
         checkout,
         variants,
         checkout_lines_data,
         checkout_info,
-        lines,
-        manager,
-        replace,
+        replace=False,
+        raise_error_for_missing_lines=False,
     ):
-        channel_slug = checkout_info.channel.slug
-
-        cls.validate_checkout_lines(
-            info,
-            variants,
-            checkout_lines_data,
-            checkout.get_country(),
-            channel_slug,
-            checkout_info.delivery_method_info,
-            lines=lines,
-        )
-
-        variants_ids_to_validate = {
-            variant.id
-            for variant, line_data in zip(variants, checkout_lines_data)
-            if line_data.quantity_to_update and line_data.quantity != 0
-        }
-
-        # validate variant only when line quantity is bigger than 0
-        if variants_ids_to_validate:
-            validate_variants_available_for_purchase(
-                variants_ids_to_validate, checkout.channel_id
-            )
-            validate_variants_available_in_channel(
-                variants_ids_to_validate,
-                checkout.channel_id,
-                CheckoutErrorCode.UNAVAILABLE_VARIANT_IN_CHANNEL.value,
-            )
-            validate_variants_are_published(
-                variants_ids_to_validate, checkout.channel_id
-            )
-
         if variants and checkout_lines_data:
             site = get_site_promise(info.context).get()
             checkout = add_variants_to_checkout(
@@ -161,6 +128,7 @@ class CheckoutLinesAdd(BaseMutation):
                 reservation_length=get_reservation_length(
                     site=site, user=info.context.user
                 ),
+                raise_error_for_missing_lines=raise_error_for_missing_lines,
             )
 
         lines, _ = fetch_checkout_lines(checkout)
@@ -176,6 +144,47 @@ class CheckoutLinesAdd(BaseMutation):
         return lines
 
     @classmethod
+    def clean_input(
+        cls,
+        info,
+        checkout,
+        variants,
+        checkout_lines_data,
+        checkout_info,
+        lines,
+    ):
+        channel_slug = checkout_info.channel.slug
+
+        cls.validate_checkout_lines(
+            info,
+            variants,
+            checkout_lines_data,
+            checkout.get_country(),
+            channel_slug,
+            checkout_info.delivery_method_info,
+            lines=lines,
+        )
+
+        variants_ids_to_validate = {
+            variant.id
+            for variant, line_data in zip(variants, checkout_lines_data, strict=False)
+            if line_data.quantity_to_update and line_data.quantity != 0
+        }
+        # validate variant only when line quantity is bigger than 0
+        if variants_ids_to_validate:
+            validate_variants_available_for_purchase(
+                variants_ids_to_validate, checkout.channel_id
+            )
+            validate_variants_available_in_channel(
+                variants_ids_to_validate,
+                checkout.channel_id,
+                CheckoutErrorCode.UNAVAILABLE_VARIANT_IN_CHANNEL.value,
+            )
+            validate_variants_are_published(
+                variants_ids_to_validate, checkout.channel_id
+            )
+
+    @classmethod
     def perform_mutation(  # type: ignore[override]
         cls,
         _root,
@@ -186,7 +195,6 @@ class CheckoutLinesAdd(BaseMutation):
         checkout_id=None,
         token=None,
         id=None,
-        replace=False,
     ):
         app = get_app_promise(info.context).get()
         check_permissions_for_custom_prices(app, lines)
@@ -202,15 +210,20 @@ class CheckoutLinesAdd(BaseMutation):
             checkout, skip_lines_with_unavailable_variants=False
         )
         input_lines_data = cls._get_grouped_lines_data(lines, existing_lines_info)
-        lines = cls.clean_input(
+        cls.clean_input(
             info,
             checkout,
             variants,
             input_lines_data,
             checkout_info,
             existing_lines_info,
-            manager,
-            replace,
+        )
+        lines = cls.process_lines_input(
+            info,
+            checkout,
+            variants,
+            input_lines_data,
+            checkout_info,
         )
 
         update_checkout_external_shipping_method_if_invalid(checkout_info, lines)

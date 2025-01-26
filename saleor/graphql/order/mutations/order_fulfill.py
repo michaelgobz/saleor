@@ -1,15 +1,14 @@
 from collections import defaultdict
-from typing import Optional
 from uuid import UUID
 
 import graphene
 from django.core.exceptions import ValidationError
-from django.template.defaultfilters import pluralize
 
 from ....core.exceptions import InsufficientStock
 from ....order import models as order_models
 from ....order.actions import OrderFulfillmentLineInfo, create_fulfillments
 from ....order.error_codes import OrderErrorCode
+from ....order.utils import clean_order_line_quantities
 from ....permission.enums import OrderPermissions
 from ....webhook.event_types import WebhookEventAsyncType
 from ...app.dataloaders import get_app_promise
@@ -126,29 +125,7 @@ class OrderFulfill(BaseMutation):
 
     @classmethod
     def clean_lines(cls, order_lines, quantities_for_lines):
-        for order_line, line_quantities in zip(order_lines, quantities_for_lines):
-            line_total_quantity = sum(line_quantities)
-            line_quantity_unfulfilled = order_line.quantity_unfulfilled
-
-            if line_total_quantity > line_quantity_unfulfilled:
-                msg = (
-                    "Only %(quantity)d item%(item_pluralize)s remaining to fulfill."
-                ) % {
-                    "quantity": line_quantity_unfulfilled,
-                    "item_pluralize": pluralize(line_quantity_unfulfilled),
-                }
-                order_line_global_id = graphene.Node.to_global_id(
-                    "OrderLine", order_line.pk
-                )
-                raise ValidationError(
-                    {
-                        "order_line_id": ValidationError(
-                            msg,
-                            code=OrderErrorCode.FULFILL_ORDER_LINE.value,
-                            params={"order_lines": [order_line_global_id]},
-                        )
-                    }
-                )
+        clean_order_line_quantities(order_lines, quantities_for_lines)
 
     @classmethod
     def check_warehouses_for_duplicates(cls, warehouse_ids):
@@ -254,7 +231,7 @@ class OrderFulfill(BaseMutation):
         lines_for_warehouses: defaultdict[UUID, list[OrderFulfillmentLineInfo]] = (
             defaultdict(list)
         )
-        for line, order_line in zip(lines, order_lines):
+        for line, order_line in zip(lines, order_lines, strict=False):
             for stock in line["stocks"]:
                 if stock["quantity"] > 0:
                     warehouse_pk = UUID(
@@ -272,7 +249,7 @@ class OrderFulfill(BaseMutation):
 
     @classmethod
     def perform_mutation(  # type: ignore[override]
-        cls, _root, info: ResolveInfo, /, *, input, order: Optional[str] = None
+        cls, _root, info: ResolveInfo, /, *, input, order: str | None = None
     ):
         instance = cls.get_node_or_error(
             info,

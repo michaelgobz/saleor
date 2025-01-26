@@ -35,6 +35,9 @@ from ...tax.dataloaders import TaxClassByVariantIdLoader, TaxConfigurationByChan
 from ...warehouse.dataloaders import (
     WarehouseByIdLoader,
 )
+from ...webhook.dataloaders.pregenerated_payloads_for_checkout_filter_shipping_methods import (
+    PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader,
+)
 from .models import CheckoutByTokenLoader, CheckoutLinesByCheckoutTokenLoader
 from .promotion_rule_infos import VariantPromotionRuleInfoByCheckoutLineIdLoader
 
@@ -44,7 +47,13 @@ class CheckoutInfoByCheckoutTokenLoader(DataLoader[str, CheckoutInfo]):
 
     def batch_load(self, keys):
         def with_checkout(data):
-            checkouts, checkout_line_infos, checkout_discounts, manager = data
+            (
+                checkouts,
+                checkout_line_infos,
+                checkout_discounts,
+                manager,
+                pregenerated_payloads_for_excluded_shipping_methods,
+            ) = data
 
             channel_pks = [checkout.channel_id for checkout in checkouts]
 
@@ -133,12 +142,21 @@ class CheckoutInfoByCheckoutTokenLoader(DataLoader[str, CheckoutInfo]):
                     }
 
                     checkout_info_map = {}
-                    for key, checkout, channel, checkout_lines, discounts in zip(
+                    for (
+                        key,
+                        checkout,
+                        channel,
+                        checkout_lines,
+                        discounts,
+                        pregenerated_payloads_for_excluded_shipping_method,
+                    ) in zip(
                         keys,
                         checkouts,
                         channels,
                         checkout_line_infos,
                         checkout_discounts,
+                        pregenerated_payloads_for_excluded_shipping_methods,
+                        strict=False,
                     ):
                         shipping_method = shipping_method_map.get(
                             checkout.shipping_method_id
@@ -177,6 +195,9 @@ class CheckoutInfoByCheckoutTokenLoader(DataLoader[str, CheckoutInfo]):
                             voucher=voucher_code.voucher if voucher_code else None,
                             voucher_code=voucher_code,
                             database_connection_name=self.database_connection_name,
+                            pregenerated_payloads_for_excluded_shipping_method=(
+                                pregenerated_payloads_for_excluded_shipping_method
+                            ),
                         )
                         checkout_info_map[key] = checkout_info
 
@@ -206,9 +227,20 @@ class CheckoutInfoByCheckoutTokenLoader(DataLoader[str, CheckoutInfo]):
         ).load_many(keys)
         discounts = CheckoutDiscountByCheckoutIdLoader(self.context).load_many(keys)
         manager = get_plugin_manager_promise(self.context)
-        return Promise.all([checkouts, checkout_line_infos, discounts, manager]).then(
-            with_checkout
+        pregenerated_payloads_for_excluded_shipping_methods_loader = (
+            PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader(
+                self.context
+            ).load_many(keys)
         )
+        return Promise.all(
+            [
+                checkouts,
+                checkout_line_infos,
+                discounts,
+                manager,
+                pregenerated_payloads_for_excluded_shipping_methods_loader,
+            ]
+        ).then(with_checkout)
 
 
 class CheckoutLinesInfoByCheckoutTokenLoader(
@@ -247,19 +279,21 @@ class CheckoutLinesInfoByCheckoutTokenLoader(
                     checkout_lines_discounts,
                     variant_promotion_rules_info,
                 ) = results
-                variants_map = dict(zip(variants_pks, variants))
-                products_map = dict(zip(variants_pks, products))
-                product_types_map = dict(zip(variants_pks, product_types))
-                collections_map = dict(zip(variants_pks, collections))
-                tax_class_map = dict(zip(variants_pks, tax_classes))
+                variants_map = dict(zip(variants_pks, variants, strict=False))
+                products_map = dict(zip(variants_pks, products, strict=False))
+                product_types_map = dict(zip(variants_pks, product_types, strict=False))
+                collections_map = dict(zip(variants_pks, collections, strict=False))
+                tax_class_map = dict(zip(variants_pks, tax_classes, strict=False))
                 channel_listings_map = dict(
-                    zip(variant_ids_channel_ids, channel_listings)
+                    zip(variant_ids_channel_ids, channel_listings, strict=False)
                 )
-                channels = dict(zip(channel_pks, channels))
+                channels = dict(zip(channel_pks, channels, strict=False))
                 checkout_lines_discounts = dict(
-                    zip(lines_pks, checkout_lines_discounts)
+                    zip(lines_pks, checkout_lines_discounts, strict=False)
                 )
-                rules_info_map = dict(zip(lines_pks, variant_promotion_rules_info))
+                rules_info_map = dict(
+                    zip(lines_pks, variant_promotion_rules_info, strict=False)
+                )
 
                 lines_info_map = defaultdict(list)
                 voucher_infos_map = {
@@ -267,7 +301,7 @@ class CheckoutLinesInfoByCheckoutTokenLoader(
                     for voucher_info in voucher_infos
                     if voucher_info is not None and voucher_info.voucher_code
                 }
-                for checkout, lines in zip(checkouts, checkout_lines):
+                for checkout, lines in zip(checkouts, checkout_lines, strict=False):
                     lines_info_map[checkout.pk].extend(
                         [
                             CheckoutLineInfo(
@@ -342,7 +376,7 @@ class CheckoutLinesInfoByCheckoutTokenLoader(
             )
 
             variant_ids_channel_ids = []
-            for channel_id, lines in zip(channel_pks, checkout_lines):
+            for channel_id, lines in zip(channel_pks, checkout_lines, strict=False):
                 variant_ids_channel_ids.extend(
                     [(line.variant_id, channel_id) for line in lines]
                 )
