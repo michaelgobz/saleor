@@ -11,12 +11,13 @@ from typing import TYPE_CHECKING, Any
 import dateutil.parser
 import i18naddress
 import pybars
+from babel.core import Locale
 from babel.numbers import format_currency
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.core.mail.backends.smtp import EmailBackend
 from django.core.validators import EmailValidator
-from django_prices.utils.locale import get_locale_data
 from lxml import etree
 from lxml import html as lxml_html
 
@@ -120,6 +121,8 @@ DEFAULT_EMAIL_CONFIG_STRUCTURE = {
     },
 }
 
+REQUIRED_EMAIL_CONFIG_FIELDS = ("host", "port", "sender_address")
+
 
 def format_address(this, address, include_phone=True, inline=False, latin=False):
     address["name"] = f"{address.get('first_name', '')} {address.get('last_name', '')}"
@@ -176,8 +179,9 @@ def price(this, net_amount, gross_amount, currency, display_gross=False):
     except (TypeError, InvalidOperation):
         return ""
 
-    locale, locale_code = get_locale_data()
-    pattern = locale.currency_formats.get("standard").pattern
+    locale_code = settings.LANGUAGE_CODE
+    locale = Locale(locale_code)
+    pattern = locale.currency_formats["standard"].pattern
 
     pattern = re.sub("(\xa4+)", '<span class="currency">\\1</span>', pattern)
 
@@ -297,7 +301,7 @@ def validate_default_email_configuration(
     )
 
     errors = {}
-    for field in ("host", "port", "sender_address"):
+    for field in REQUIRED_EMAIL_CONFIG_FIELDS:
         if not getattr(config, field):
             errors[field] = ValidationError(
                 f"Missing {field.replace('_', ' ')} value.",

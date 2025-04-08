@@ -13,6 +13,7 @@ from ....permission.enums import OrderPermissions
 from ....webhook.event_types import WebhookEventAsyncType
 from ...app.dataloaders import get_app_promise
 from ...core import ResolveInfo
+from ...core.context import SyncWebhookControlContext
 from ...core.doc_category import DOC_CATEGORY_ORDERS
 from ...core.mutations import BaseMutation
 from ...core.types import BaseInputObjectType, NonNullList, OrderError
@@ -286,13 +287,19 @@ class OrderFulfill(BaseMutation):
                 dict(lines_for_warehouses),
                 manager,
                 site.settings,
-                notify_customer,
+                notify_customer=notify_customer,
                 allow_stock_to_be_exceeded=allow_stock_to_be_exceeded,
-                approved=approved,
+                auto_approved=approved,
                 tracking_number=tracking_number,
             )
         except InsufficientStock as e:
             errors = prepare_insufficient_stock_order_validation_errors(e)
             raise ValidationError({"stocks": errors}) from e
 
-        return OrderFulfill(fulfillments=fulfillments, order=instance)
+        return OrderFulfill(
+            fulfillments=[
+                SyncWebhookControlContext(node=fulfillment)
+                for fulfillment in fulfillments
+            ],
+            order=SyncWebhookControlContext(instance),
+        )

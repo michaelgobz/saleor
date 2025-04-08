@@ -1516,6 +1516,7 @@ def test_checkout_lines_update_triggers_webhooks(
     api_client,
     checkout_with_items,
     product_with_single_variant,
+    address,
 ):
     # given
     mocked_send_webhook_using_scheme_method.return_value = WebhookResponse(content="")
@@ -1533,6 +1534,12 @@ def test_checkout_lines_update_triggers_webhooks(
         checkout_with_items, [], get_plugins_manager(allow_replica=False)
     )
     add_variant_to_checkout(checkout_info, variant, 1)
+
+    # Ensure shipping is set so shipping webhooks are emitted
+    checkout_with_items.shipping_address = address
+    checkout_with_items.billing_address = address
+
+    checkout_with_items.save()
 
     variables = {
         "id": to_global_id_or_none(checkout_with_items),
@@ -1615,3 +1622,295 @@ def test_checkout_lines_update_when_line_deleted(user_api_client, checkout_with_
     assert len(data["errors"]) == 1
     assert data["errors"][0]["field"] == "lineId"
     assert data["errors"][0]["code"] == CheckoutErrorCode.GRAPHQL_ERROR.name
+
+
+def test_checkout_lines_update_with_metadata(
+    user_api_client,
+    checkout_with_item,
+):
+    # given
+    checkout = checkout_with_item
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+    variant = line.variant
+
+    assert not line.metadata.get("test_key")
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    # when
+    variables = {
+        "id": to_global_id_or_none(checkout_with_item),
+        "lines": [
+            {
+                "variantId": variant_id,
+                "quantity": 1,
+                "metadata": [{"key": "test_key", "value": "test_value"}],
+            }
+        ],
+    }
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_LINES_UPDATE, variables)
+
+    # then
+    content = get_graphql_content(response)
+
+    data = content["data"]["checkoutLinesUpdate"]
+
+    assert not data["errors"]
+
+    checkout.refresh_from_db()
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+
+    assert line.metadata["test_key"] == "test_value"
+
+    assert line.variant == variant
+
+
+def test_checkout_lines_update_with_metadata_overwrite_key(
+    user_api_client,
+    checkout_with_item,
+):
+    # given
+    checkout = checkout_with_item
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+    variant = line.variant
+
+    line.metadata["test_key"] = "old_value"
+
+    line.save(update_fields=["metadata"])
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    # when
+    variables = {
+        "id": to_global_id_or_none(checkout_with_item),
+        "lines": [
+            {
+                "variantId": variant_id,
+                "quantity": 1,
+                "metadata": [{"key": "test_key", "value": "test_value"}],
+            }
+        ],
+    }
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_LINES_UPDATE, variables)
+
+    # then
+    content = get_graphql_content(response)
+
+    data = content["data"]["checkoutLinesUpdate"]
+
+    assert not data["errors"]
+
+    checkout.refresh_from_db()
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+
+    assert line.metadata["test_key"] == "test_value"
+
+    assert line.variant == variant
+
+
+def test_checkout_lines_update_with_metadata_empty_list(
+    user_api_client,
+    checkout_with_item,
+):
+    # given
+    checkout = checkout_with_item
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+    variant = line.variant
+
+    line.metadata["test_key"] = "old_value"
+
+    line.save(update_fields=["metadata"])
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    # when
+    variables = {
+        "id": to_global_id_or_none(checkout_with_item),
+        "lines": [
+            {
+                "variantId": variant_id,
+                "quantity": 1,
+                # Empty list should not prune metadata
+                "metadata": [],
+            }
+        ],
+    }
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_LINES_UPDATE, variables)
+
+    # then
+    content = get_graphql_content(response)
+
+    data = content["data"]["checkoutLinesUpdate"]
+
+    assert not data["errors"]
+
+    checkout.refresh_from_db()
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+
+    assert line.metadata["test_key"] == "old_value"
+
+    assert line.variant == variant
+
+
+def test_checkout_lines_update_with_invalid_metadata(
+    user_api_client,
+    checkout_with_item,
+):
+    # given
+    checkout = checkout_with_item
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+    variant = line.variant
+
+    assert not line.metadata.get("test_key")
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    # when
+    variables = {
+        "id": to_global_id_or_none(checkout_with_item),
+        "lines": [
+            {
+                "variantId": variant_id,
+                "quantity": 1,
+                # Key can't be empty
+                "metadata": [{"key": "", "value": "test_value"}],
+            }
+        ],
+    }
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_LINES_UPDATE, variables)
+
+    # then
+    content = get_graphql_content(response)
+
+    data = content["data"]["checkoutLinesUpdate"]
+
+    expected_error = data["errors"][0]
+
+    assert expected_error["field"] == "metadata"
+    assert expected_error["code"] == "REQUIRED"
+
+
+def test_checkout_lines_update_with_empty_metadata_preserve_old(
+    user_api_client,
+    checkout_with_item,
+):
+    # given
+    checkout = checkout_with_item
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+
+    line.metadata["test_key"] = "old_value"
+    line.save(update_fields=["metadata"])
+
+    variant = line.variant
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    # when
+    variables = {
+        "id": to_global_id_or_none(checkout_with_item),
+        "lines": [
+            {
+                "variantId": variant_id,
+                "quantity": 1,
+                # Leave input empty to ensure it will not affect existing entries
+                "metadata": [],
+            }
+        ],
+    }
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_LINES_UPDATE, variables)
+
+    # then
+    content = get_graphql_content(response)
+
+    data = content["data"]["checkoutLinesUpdate"]
+
+    assert not data["errors"]
+
+    checkout.refresh_from_db()
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+
+    assert line.metadata["test_key"] == "old_value"
+
+    assert line.variant == variant
+
+
+def test_checkout_lines_update_with_new_metadata_merge_old(
+    user_api_client,
+    checkout_with_item,
+):
+    # given
+    checkout = checkout_with_item
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+
+    line.metadata["test_key"] = "old_value"
+    line.save(update_fields=["metadata"])
+
+    variant = line.variant
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    # when
+    variables = {
+        "id": to_global_id_or_none(checkout_with_item),
+        "lines": [
+            {
+                "variantId": variant_id,
+                "quantity": 1,
+                "metadata": [
+                    {
+                        "key": "new_key",
+                        "value": "new_value",
+                    }
+                ],
+            }
+        ],
+    }
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_LINES_UPDATE, variables)
+
+    # then
+    content = get_graphql_content(response)
+
+    data = content["data"]["checkoutLinesUpdate"]
+
+    assert not data["errors"]
+
+    checkout.refresh_from_db()
+
+    assert checkout.lines.count() == 1
+
+    line = checkout.lines.first()
+
+    assert line.metadata["test_key"] == "old_value"
+    assert line.metadata["new_key"] == "new_value"
+
+    assert line.variant == variant

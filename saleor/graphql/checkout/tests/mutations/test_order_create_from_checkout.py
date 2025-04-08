@@ -4,17 +4,19 @@ from unittest.mock import ANY, patch
 
 import graphene
 import pytest
+from django.db import transaction
 from django.db.models.aggregates import Sum
 from django.utils import timezone
 from prices import Money, TaxedMoney
 
+from .....channel import MarkAsPaidStrategy
 from .....checkout import calculations
 from .....checkout.error_codes import OrderCreateFromCheckoutErrorCode
 from .....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from .....checkout.models import Checkout, CheckoutLine
+from .....checkout.payment_utils import update_checkout_payment_statuses
 from .....core.taxes import (
     TaxDataError,
-    TaxDataErrorMessage,
     TaxError,
     zero_money,
     zero_taxed_money,
@@ -41,6 +43,7 @@ mutation orderCreateFromCheckout(
         ){
         order{
             id
+            status
             token
             original
             origin
@@ -117,20 +120,26 @@ def test_order_from_checkout(
     checkout_with_gift_card,
     gift_card,
     address,
+    address_usa,
     shipping_method,
+    customer_user,
 ):
     assert not gift_card.last_used_on
 
     checkout = checkout_with_gift_card
     checkout.shipping_address = address
     checkout.shipping_method = shipping_method
-    checkout.billing_address = address
+    checkout.billing_address = address_usa
     checkout.metadata_storage.store_value_in_metadata(items={"accepted": "true"})
     checkout.metadata_storage.store_value_in_private_metadata(
         items={"accepted": "false"}
     )
+    checkout.user = customer_user
     checkout.save()
     checkout.metadata_storage.save()
+
+    customer_user.addresses.clear()
+    user_address_count = customer_user.addresses.count()
 
     checkout_line = checkout.lines.first()
 
@@ -210,6 +219,8 @@ def test_order_from_checkout(
         gift_card=gift_card, type=GiftCardEvents.USED_IN_ORDER
     )
 
+    assert customer_user.addresses.count() == user_address_count + 2
+
     order_confirmed_mock.assert_called_once_with(order, webhooks=set())
     recalculate_with_plugins_mock.assert_not_called()
 
@@ -255,6 +266,60 @@ def test_order_from_checkout_with_transaction(
     assert order.status == OrderStatus.UNFULFILLED
     assert order.origin == OrderOrigin.CHECKOUT
     assert not order.original
+
+
+def test_order_from_checkout_saving_addresses_off(
+    app_api_client,
+    site_settings,
+    checkout_with_item_and_transaction_item,
+    permission_handle_checkouts,
+    permission_manage_checkouts,
+    address,
+    shipping_method,
+    customer_user,
+):
+    # given
+    checkout = checkout_with_item_and_transaction_item
+    checkout.shipping_address = address
+    checkout.shipping_method = shipping_method
+    checkout.billing_address = address
+    checkout.save_shipping_address = False
+    checkout.save_billing_address = False
+    checkout.user = customer_user
+    checkout.save()
+
+    channel = checkout.channel
+    channel.automatically_confirm_all_new_orders = True
+    channel.save()
+
+    customer_user.addresses.clear()
+    user_address_count = customer_user.addresses.count()
+
+    variables = {
+        "id": graphene.Node.to_global_id("Checkout", checkout.pk),
+    }
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_ORDER_CREATE_FROM_CHECKOUT,
+        variables,
+        permissions=[permission_handle_checkouts, permission_manage_checkouts],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["orderCreateFromCheckout"]
+    assert not data["errors"]
+
+    order = Order.objects.first()
+
+    assert order.status == OrderStatus.UNFULFILLED
+    assert order.origin == OrderOrigin.CHECKOUT
+    assert not order.original
+
+    assert order.billing_address
+    assert order.shipping_address
+    assert customer_user.addresses.count() == user_address_count
 
 
 @pytest.mark.parametrize(
@@ -1723,16 +1788,17 @@ def test_order_from_checkout_with_digital(
     permission_handle_checkouts,
     checkout_with_digital_item,
     address,
+    customer_user,
 ):
     """Ensure it is possible to complete a digital checkout without shipping."""
 
-    order_count = Order.objects.count()
     checkout = checkout_with_digital_item
     variables = {"id": graphene.Node.to_global_id("Checkout", checkout.pk)}
 
     # Set a billing address
     checkout.billing_address = address
-    checkout.save(update_fields=["billing_address"])
+    checkout.user = customer_user
+    checkout.save(update_fields=["billing_address", "user"])
 
     # Send the creation request
     response = app_api_client.post_graphql(
@@ -1743,10 +1809,100 @@ def test_order_from_checkout_with_digital(
     content = get_graphql_content(response)["data"]["orderCreateFromCheckout"]
     assert not content["errors"]
 
+    order = Order.objects.first()
     # Ensure the order was actually created
-    assert Order.objects.count() == order_count + 1, (
-        "The order should have been created"
+    assert order, "The order should have been created"
+
+    assert not order.shipping_address
+    assert order.billing_address
+
+
+def test_order_from_checkout_with_digital_and_shipping_address(
+    app_api_client,
+    permission_handle_checkouts,
+    checkout_with_digital_item,
+    address,
+    customer_user,
+):
+    """Ensure it is possible to complete a digital checkout without shipping."""
+    checkout = checkout_with_digital_item
+    variables = {"id": graphene.Node.to_global_id("Checkout", checkout.pk)}
+
+    # Set a billing address
+    checkout.billing_address = address
+    checkout.shipping_address = address
+    checkout.user = customer_user
+    checkout.save(update_fields=["billing_address", "shipping_address", "user"])
+
+    # Send the creation request
+    response = app_api_client.post_graphql(
+        MUTATION_ORDER_CREATE_FROM_CHECKOUT,
+        variables,
+        permissions=[permission_handle_checkouts],
     )
+    content = get_graphql_content(response)["data"]["orderCreateFromCheckout"]
+    assert not content["errors"]
+
+    order = Order.objects.first()
+    # Ensure the order was actually created
+    assert order, "The order should have been created"
+
+    assert order.shipping_address
+    assert order.billing_address
+    assert order.draft_save_billing_address is None
+    assert order.draft_save_shipping_address is None
+
+
+def test_order_from_checkout_with_digital_saving_addresses_off(
+    app_api_client,
+    permission_handle_checkouts,
+    checkout_with_digital_item,
+    address,
+    customer_user,
+):
+    # given
+    checkout = checkout_with_digital_item
+    variables = {"id": graphene.Node.to_global_id("Checkout", checkout.pk)}
+
+    # Set a billing address
+    checkout.billing_address = address
+    checkout.shipping_address = address
+    checkout.user = customer_user
+    checkout.save_shipping_address = False
+    checkout.save_billing_address = False
+    checkout.save(
+        update_fields=[
+            "billing_address",
+            "shipping_address",
+            "user",
+            "save_shipping_address",
+            "save_billing_address",
+        ]
+    )
+
+    customer_user.addresses.clear()
+    user_address_count = customer_user.addresses.count()
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_ORDER_CREATE_FROM_CHECKOUT,
+        variables,
+        permissions=[permission_handle_checkouts],
+    )
+
+    # then
+    content = get_graphql_content(response)["data"]["orderCreateFromCheckout"]
+    assert not content["errors"]
+
+    order = Order.objects.first()
+    # Ensure the order was actually created
+    assert order, "The order should have been created"
+
+    assert order.shipping_address
+    assert order.billing_address
+    assert order.draft_save_billing_address is None
+    assert order.draft_save_shipping_address is None
+    assert customer_user.addresses.count() == user_address_count
 
 
 @pytest.mark.integration
@@ -2001,7 +2157,7 @@ def test_order_from_checkout_raises_invalid_shipping_method_when_warehouse_disab
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
     assert not checkout_info.valid_pick_up_points
-    assert not checkout_info.delivery_method_info.is_method_in_valid_methods(
+    assert not checkout_info.get_delivery_method_info().is_method_in_valid_methods(
         checkout_info
     )
 
@@ -2131,7 +2287,7 @@ def test_order_from_draft_create_click_collect_preorder_fails_for_disabled_wareh
     checkout_info = fetch_checkout_info(checkout, lines, manager)
 
     assert not checkout_info.valid_pick_up_points
-    assert not checkout_info.delivery_method_info.is_method_in_valid_methods(
+    assert not checkout_info.get_delivery_method_info().is_method_in_valid_methods(
         checkout_info
     )
 
@@ -2509,16 +2665,18 @@ def test_order_from_draft_create_0_total_value_from_giftcard(
     )
 
 
-@patch("saleor.checkout.calculations.validate_tax_data")
+@patch(
+    "saleor.checkout.calculations._get_taxes_for_checkout",
+    side_effect=TaxDataError("Invalid data"),
+)
 def test_order_from_checkout_tax_error(
-    mock_validate_tax_data,
+    mocked_get_taxes_for_order,
     app_api_client,
     permission_handle_checkouts,
     checkout_with_items_and_shipping,
     caplog,
 ):
     # given
-    mock_validate_tax_data.side_effect = TaxDataError(TaxDataErrorMessage.EMPTY)
     checkout = checkout_with_items_and_shipping
     variables = {"id": graphene.Node.to_global_id("Checkout", checkout.pk)}
 
@@ -2536,3 +2694,152 @@ def test_order_from_checkout_tax_error(
     assert data["errors"][0]["field"] is None
     assert not Order.objects.exists()
     assert "Tax app error for checkout" in caplog.text
+
+
+def test_order_from_checkout_with_transaction_empty_product_translation(
+    app_api_client,
+    site_settings,
+    checkout_with_item,
+    permission_handle_checkouts,
+    permission_manage_checkouts,
+    address,
+    shipping_method,
+):
+    # given
+    checkout = checkout_with_item
+    checkout.shipping_address = address
+    checkout.shipping_method = shipping_method
+    checkout.billing_address = address
+    checkout.save()
+
+    checkout_line = checkout.lines.first()
+    checkout_line_variant = checkout_line.variant
+    checkout_line_product = checkout_line_variant.product
+    checkout_line_product.translations.create(language_code="en")
+    checkout_line_variant.translations.create(language_code="en")
+
+    variables = {
+        "id": graphene.Node.to_global_id("Checkout", checkout.pk),
+    }
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_ORDER_CREATE_FROM_CHECKOUT,
+        variables,
+        permissions=[permission_handle_checkouts, permission_manage_checkouts],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["orderCreateFromCheckout"]
+    assert not data["errors"]
+
+    order = Order.objects.first()
+
+    assert order.status == OrderStatus.UNCONFIRMED
+    assert order.origin == OrderOrigin.CHECKOUT
+    assert not order.original
+
+    order_line = order.lines.first()
+    assert order_line.translated_product_name == ""
+    assert order_line.translated_variant_name == ""
+
+
+def test_order_from_checkout_with_translation_equal_name(
+    app_api_client,
+    site_settings,
+    checkout_with_item,
+    permission_handle_checkouts,
+    permission_manage_checkouts,
+    address,
+    shipping_method,
+):
+    # given
+    checkout = checkout_with_item
+    checkout.shipping_address = address
+    checkout.shipping_method = shipping_method
+    checkout.billing_address = address
+    checkout.save()
+
+    checkout_line = checkout.lines.first()
+    checkout_line_variant = checkout_line.variant
+    checkout_line_product = checkout_line_variant.product
+    checkout_line_product.name = "Product name"
+    checkout_line_product.save()
+    checkout_line_variant.name = "Variant name"
+    checkout_line_variant.save()
+    product_translation = checkout_line_product.translations.create(
+        language_code=checkout.language_code, name=checkout_line_product.name
+    )
+    variant_translation = checkout_line_variant.translations.create(
+        language_code=checkout.language_code, name=checkout_line_variant.name
+    )
+
+    variables = {
+        "id": graphene.Node.to_global_id("Checkout", checkout.pk),
+    }
+
+    # when
+    response = app_api_client.post_graphql(
+        MUTATION_ORDER_CREATE_FROM_CHECKOUT,
+        variables,
+        permissions=[permission_handle_checkouts, permission_manage_checkouts],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["orderCreateFromCheckout"]
+    assert not data["errors"]
+
+    order = Order.objects.first()
+    order_line = order.lines.first()
+    assert order_line.translated_product_name == product_translation.name
+    assert order_line.translated_variant_name == variant_translation.name
+
+
+def test_order_from_checkout_order_status_changed_after_creation(
+    checkout_with_item_total_0,
+    customer_user,
+    app_api_client,
+    permission_handle_checkouts,
+):
+    """Ensure order status is valid in the mutation response.
+
+    In case that order is created with `UNCONFIRMED` and then changed into `UNFULFILLED`
+    in post commit action, the returned order status should be upt-to-date.
+    """
+    # given
+    checkout = checkout_with_item_total_0
+
+    channel = checkout.channel
+    channel.order_mark_as_paid_strategy = MarkAsPaidStrategy.TRANSACTION_FLOW
+    channel.save(update_fields=["order_mark_as_paid_strategy"])
+
+    checkout.billing_address = customer_user.default_billing_address
+    checkout.save()
+
+    update_checkout_payment_statuses(
+        checkout, zero_money(checkout.currency), checkout_has_lines=True
+    )
+
+    variables = {"id": graphene.Node.to_global_id("Checkout", checkout.pk)}
+
+    def immediate_on_commit(func):
+        func()
+
+    # when
+    with patch.object(transaction, "on_commit", side_effect=immediate_on_commit):
+        response = app_api_client.post_graphql(
+            MUTATION_ORDER_CREATE_FROM_CHECKOUT,
+            variables,
+            permissions=[permission_handle_checkouts],
+        )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["orderCreateFromCheckout"]
+    assert not data["errors"]
+
+    order = data["order"]
+    assert order
+    assert order["status"] == OrderStatus.UNFULFILLED.upper()

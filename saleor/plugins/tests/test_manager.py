@@ -34,6 +34,7 @@ from ...payment.interface import (
     TransactionSessionResult,
 )
 from ...product.models import Product
+from ...shipping.interface import ShippingMethodData
 from ..base_plugin import ExternalAccessTokens
 from ..manager import PluginsManager, get_plugins_manager
 from ..models import PluginConfiguration
@@ -46,7 +47,6 @@ from ..tests.sample_plugins import (
     InactivePaymentGateway,
     PluginInactive,
     PluginSample,
-    sample_tax_data,
 )
 
 
@@ -534,49 +534,6 @@ def test_manager_calculates_order_line(order_line, plugins, amount):
 )
 def test_manager_uses_get_tax_rate_choices(plugins, tax_rate_list):
     assert tax_rate_list == PluginsManager(plugins=plugins).get_tax_rate_type_choices()
-
-
-def sample_none_data(obj):
-    return None
-
-
-@pytest.mark.parametrize(
-    ("plugins", "expected_tax_data"),
-    [
-        ([], sample_none_data),
-        (["saleor.plugins.tests.sample_plugins.PluginSample"], sample_tax_data),
-    ],
-)
-def test_manager_get_taxes_for_checkout(
-    checkout,
-    plugins,
-    expected_tax_data,
-):
-    lines, _ = fetch_checkout_lines(checkout)
-    manager = get_plugins_manager(allow_replica=False)
-    checkout_info = fetch_checkout_info(checkout, lines, manager)
-    app_identifier = None
-    assert PluginsManager(plugins=plugins).get_taxes_for_checkout(
-        checkout_info, lines, app_identifier
-    ) == expected_tax_data(checkout)
-
-
-@pytest.mark.parametrize(
-    ("plugins", "expected_tax_data"),
-    [
-        ([], sample_none_data),
-        (["saleor.plugins.tests.sample_plugins.PluginSample"], sample_tax_data),
-    ],
-)
-def test_manager_get_taxes_for_order(
-    order,
-    plugins,
-    expected_tax_data,
-):
-    app_identifier = None
-    assert PluginsManager(plugins=plugins).get_taxes_for_order(
-        order, app_identifier
-    ) == expected_tax_data(order)
 
 
 def test_manager_sale_created(promotion_converted_from_sale):
@@ -1627,3 +1584,136 @@ def test_run_plugin_method_until_first_success_for_active_plugins_only(
     # then
     assert result is None
     assert mock_run_method.call_count == calls
+
+
+def test_manager_skips_external_shipping_with_different_currency_than_checkout_currency(
+    checkout_with_item,
+):
+    # given
+    plugins = ["saleor.plugins.tests.sample_plugins.PluginSample"]
+
+    # when
+    shipping_methods = PluginsManager(
+        plugins=plugins
+    ).list_shipping_methods_for_checkout(
+        checkout=checkout_with_item,
+        channel_slug=checkout_with_item.channel.slug,
+    )
+
+    # then
+    assert len(shipping_methods) == 1
+    assert shipping_methods[0].price.currency == checkout_with_item.currency
+
+
+@mock.patch(
+    "saleor.plugins.manager.PluginsManager._PluginsManager__run_method_on_plugins"
+)
+def test_excluded_shipping_methods_for_checkout_run_webhook_on_existing_shipping_methods(
+    mock__run_method_on_plugins, channel_USD, checkout
+):
+    plugins = [
+        "saleor.plugins.tests.sample_plugins.PluginSample",
+    ]
+
+    manager = PluginsManager(plugins=plugins)
+
+    # given shipping methods contain at least 1 method
+
+    shipping_method = ShippingMethodData(
+        id="123",
+        price=Money(Decimal("10.59"), "USD"),
+    )
+
+    non_empty_shipping_methods = [shipping_method]
+
+    # when manager executes for shipping methods exclusion
+
+    manager.excluded_shipping_methods_for_checkout(
+        checkout, channel_USD, non_empty_shipping_methods
+    )
+
+    # then webhook should be emitted
+
+    mock__run_method_on_plugins.assert_called_once()
+
+
+@mock.patch(
+    "saleor.plugins.manager.PluginsManager._PluginsManager__run_method_on_plugins"
+)
+def test_excluded_shipping_methods_for_checkout_dont_run_webhook_on_missing_shipping_methods(
+    mock__run_method_on_plugins, channel_USD, checkout
+):
+    plugins = [
+        "saleor.plugins.tests.sample_plugins.PluginSample",
+    ]
+
+    manager = PluginsManager(plugins=plugins)
+
+    # given shipping methods are empty
+
+    empty_shipping_methods = []
+
+    # when manager executes for shipping methods exclusion
+
+    manager.excluded_shipping_methods_for_checkout(
+        checkout, channel_USD, empty_shipping_methods
+    )
+
+    # then webhook should not be emitted
+
+    mock__run_method_on_plugins.assert_not_called()
+
+
+@mock.patch(
+    "saleor.plugins.manager.PluginsManager._PluginsManager__run_method_on_plugins"
+)
+def test_excluded_shipping_methods_for_order_run_webhook_on_existing_shipping_methods(
+    mock__run_method_on_plugins, draft_order
+):
+    plugins = [
+        "saleor.plugins.tests.sample_plugins.PluginSample",
+    ]
+
+    manager = PluginsManager(plugins=plugins)
+
+    # given shipping methods contain at least 1 method
+
+    shipping_method = ShippingMethodData(
+        id="123",
+        price=Money(Decimal("10.59"), "USD"),
+    )
+
+    non_empty_shipping_methods = [shipping_method]
+
+    # when manager executes for shipping methods exclusion
+
+    manager.excluded_shipping_methods_for_order(draft_order, non_empty_shipping_methods)
+
+    # then webhook should be emitted
+
+    mock__run_method_on_plugins.assert_called_once()
+
+
+@mock.patch(
+    "saleor.plugins.manager.PluginsManager._PluginsManager__run_method_on_plugins"
+)
+def test_excluded_shipping_methods_for_order_dont_run_webhook_on_missing_shipping_methods(
+    mock__run_method_on_plugins, draft_order
+):
+    plugins = [
+        "saleor.plugins.tests.sample_plugins.PluginSample",
+    ]
+
+    manager = PluginsManager(plugins=plugins)
+
+    # given shipping methods are empty
+
+    empty_shipping_methods = []
+
+    # when manager executes for shipping methods exclusion
+
+    manager.excluded_shipping_methods_for_order(draft_order, empty_shipping_methods)
+
+    # then webhook should not be emitted
+
+    mock__run_method_on_plugins.assert_not_called()

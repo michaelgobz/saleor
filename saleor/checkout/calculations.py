@@ -30,7 +30,6 @@ from ..tax.utils import (
     get_tax_app_identifier_for_checkout,
     get_tax_calculation_strategy_for_checkout,
     normalize_tax_rate_for_db,
-    validate_tax_data,
 )
 from .fetch import find_checkout_line_info
 from .models import Checkout
@@ -52,6 +51,7 @@ def checkout_shipping_price(
     address: Optional["Address"],
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
     pregenerated_subscription_payloads: dict | None = None,
+    allow_sync_webhooks: bool = True,
 ) -> "TaxedMoney":
     """Return checkout shipping price.
 
@@ -67,6 +67,7 @@ def checkout_shipping_price(
         address=address,
         database_connection_name=database_connection_name,
         pregenerated_subscription_payloads=pregenerated_subscription_payloads,
+        allow_sync_webhooks=allow_sync_webhooks,
     )
     return quantize_price(checkout_info.checkout.shipping_price, currency)
 
@@ -78,6 +79,7 @@ def checkout_shipping_tax_rate(
     lines: list["CheckoutLineInfo"],
     address: Optional["Address"],
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
+    allow_sync_webhooks: bool = True,
 ) -> Decimal:
     """Return checkout shipping tax rate.
 
@@ -89,6 +91,7 @@ def checkout_shipping_tax_rate(
         lines=lines,
         address=address,
         database_connection_name=database_connection_name,
+        allow_sync_webhooks=allow_sync_webhooks,
     )
     return checkout_info.checkout.shipping_tax_rate
 
@@ -101,6 +104,7 @@ def checkout_subtotal(
     address: Optional["Address"],
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
     pregenerated_subscription_payloads: dict | None = None,
+    allow_sync_webhooks: bool = True,
 ) -> "TaxedMoney":
     """Return the total cost of all the checkout lines, taxes included.
 
@@ -116,6 +120,7 @@ def checkout_subtotal(
         address=address,
         database_connection_name=database_connection_name,
         pregenerated_subscription_payloads=pregenerated_subscription_payloads,
+        allow_sync_webhooks=allow_sync_webhooks,
     )
     return quantize_price(checkout_info.checkout.subtotal, currency)
 
@@ -128,6 +133,7 @@ def calculate_checkout_total_with_gift_cards(
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
     pregenerated_subscription_payloads: dict | None = None,
     force_update: bool = False,
+    allow_sync_webhooks: bool = True,
 ) -> "TaxedMoney":
     if pregenerated_subscription_payloads is None:
         pregenerated_subscription_payloads = {}
@@ -139,6 +145,7 @@ def calculate_checkout_total_with_gift_cards(
         database_connection_name=database_connection_name,
         pregenerated_subscription_payloads=pregenerated_subscription_payloads,
         force_update=force_update,
+        allow_sync_webhooks=allow_sync_webhooks,
     ) - checkout_info.checkout.get_total_gift_cards_balance(database_connection_name)
 
     return max(total, zero_taxed_money(total.currency))
@@ -153,6 +160,7 @@ def checkout_total(
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
     pregenerated_subscription_payloads: dict | None = None,
     force_update: bool = False,
+    allow_sync_webhooks: bool = True,
 ) -> "TaxedMoney":
     """Return the total cost of the checkout.
 
@@ -172,6 +180,7 @@ def checkout_total(
         database_connection_name=database_connection_name,
         pregenerated_subscription_payloads=pregenerated_subscription_payloads,
         force_update=force_update,
+        allow_sync_webhooks=allow_sync_webhooks,
     )
     return quantize_price(checkout_info.checkout.total, currency)
 
@@ -184,6 +193,7 @@ def checkout_line_total(
     checkout_line_info: "CheckoutLineInfo",
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
     pregenerated_subscription_payloads: dict | None = None,
+    allow_sync_webhooks: bool = True,
 ) -> TaxedMoney:
     """Return the total price of provided line, taxes included.
 
@@ -200,6 +210,7 @@ def checkout_line_total(
         address=address,
         database_connection_name=database_connection_name,
         pregenerated_subscription_payloads=pregenerated_subscription_payloads,
+        allow_sync_webhooks=allow_sync_webhooks,
     )
     checkout_line = find_checkout_line_info(lines, checkout_line_info.line.id).line
     return quantize_price(checkout_line.total_price, currency)
@@ -213,6 +224,7 @@ def checkout_line_unit_price(
     checkout_line_info: "CheckoutLineInfo",
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
     pregenerated_subscription_payloads: dict | None = None,
+    allow_sync_webhooks: bool = True,
 ) -> TaxedMoney:
     """Return the unit price of provided line, taxes included.
 
@@ -229,6 +241,7 @@ def checkout_line_unit_price(
         address=address,
         database_connection_name=database_connection_name,
         pregenerated_subscription_payloads=pregenerated_subscription_payloads,
+        allow_sync_webhooks=allow_sync_webhooks,
     )
     checkout_line = find_checkout_line_info(lines, checkout_line_info.line.id).line
     unit_price = checkout_line.total_price / checkout_line.quantity
@@ -242,6 +255,7 @@ def checkout_line_tax_rate(
     lines: list["CheckoutLineInfo"],
     checkout_line_info: "CheckoutLineInfo",
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
+    allow_sync_webhooks: bool = True,
 ) -> Decimal:
     """Return the tax rate of provided line.
 
@@ -254,6 +268,7 @@ def checkout_line_tax_rate(
         lines=lines,
         address=address,
         database_connection_name=database_connection_name,
+        allow_sync_webhooks=allow_sync_webhooks,
     )
     checkout_line_info = find_checkout_line_info(lines, checkout_line_info.line.id)
     return checkout_line_info.line.tax_rate
@@ -319,6 +334,7 @@ def _fetch_checkout_prices_if_expired(
     checkout_info: "CheckoutInfo",
     manager: "PluginsManager",
     lines: list["CheckoutLineInfo"],
+    allow_sync_webhooks: bool,
     address: Optional["Address"] = None,
     force_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
@@ -346,6 +362,13 @@ def _fetch_checkout_prices_if_expired(
     tax_calculation_strategy = get_tax_calculation_strategy_for_checkout(
         checkout_info, lines, database_connection_name=database_connection_name
     )
+
+    if (
+        tax_calculation_strategy == TaxCalculationStrategy.TAX_APP
+        and not allow_sync_webhooks
+    ):
+        return checkout_info, lines
+
     prices_entered_with_tax = tax_configuration.prices_entered_with_tax
     charge_taxes = get_charge_taxes_for_checkout(
         checkout_info, lines, database_connection_name=database_connection_name
@@ -382,9 +405,10 @@ def _fetch_checkout_prices_if_expired(
             )
         except TaxDataError as e:
             if str(e) != TaxDataErrorMessage.EMPTY:
-                logger.warning(
-                    str(e), extra=checkout_info_for_logs(checkout_info, lines)
-                )
+                extra = checkout_info_for_logs(checkout_info, lines)
+                if e.errors:
+                    extra["errors"] = e.errors
+                logger.warning(str(e), extra=extra)
             _set_checkout_base_prices(checkout, checkout_info, lines)
             checkout.tax_error = str(e)
 
@@ -413,9 +437,10 @@ def _fetch_checkout_prices_if_expired(
                 )
             except TaxDataError as e:
                 if str(e) != TaxDataErrorMessage.EMPTY:
-                    logger.warning(
-                        str(e), extra=checkout_info_for_logs(checkout_info, lines)
-                    )
+                    extra = checkout_info_for_logs(checkout_info, lines)
+                    if e.errors:
+                        extra["errors"] = e.errors
+                    logger.warning(str(e), extra=extra)
                 _set_checkout_base_prices(checkout, checkout_info, lines)
                 checkout.tax_error = str(e)
         else:
@@ -430,6 +455,7 @@ def _fetch_checkout_prices_if_expired(
         "subtotal_gross_amount",
         "shipping_price_net_amount",
         "shipping_price_gross_amount",
+        "undiscounted_base_shipping_price_amount",
         "shipping_tax_rate",
         "translated_discount_name",
         "discount_amount",
@@ -475,8 +501,6 @@ def _calculate_and_add_tax(
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
     pregenerated_subscription_payloads: dict | None = None,
 ):
-    from .utils import log_address_if_validation_skipped_for_checkout
-
     if pregenerated_subscription_payloads is None:
         pregenerated_subscription_payloads = {}
     if tax_calculation_strategy == TaxCalculationStrategy.TAX_APP:
@@ -489,15 +513,16 @@ def _calculate_and_add_tax(
                 checkout, manager, checkout_info, lines, address
             )
             # Get the taxes calculated with apps and apply to checkout.
-            tax_data = manager.get_taxes_for_checkout(
+            # We should allow empty tax_data in case any tax webhook has not been
+            # configured - handled by `allowed_empty_tax_data`
+            tax_data = _get_taxes_for_checkout(
                 checkout_info,
                 lines,
                 tax_app_identifier,
+                manager,
                 pregenerated_subscription_payloads,
+                allowed_empty_tax_data=True,
             )
-            if not tax_data:
-                log_address_if_validation_skipped_for_checkout(checkout_info, logger)
-            validate_tax_data(tax_data, lines, allow_empty_tax_data=True)
             _apply_tax_data(checkout, lines, tax_data)
         else:
             _call_plugin_or_tax_app(
@@ -530,8 +555,6 @@ def _call_plugin_or_tax_app(
     address: Optional["Address"] = None,
     pregenerated_subscription_payloads: dict | None = None,
 ):
-    from .utils import log_address_if_validation_skipped_for_checkout
-
     if pregenerated_subscription_payloads is None:
         pregenerated_subscription_payloads = {}
 
@@ -555,16 +578,50 @@ def _call_plugin_or_tax_app(
         if checkout.tax_error:
             raise TaxDataError(checkout.tax_error)
     else:
+        tax_data = _get_taxes_for_checkout(
+            checkout_info,
+            lines,
+            tax_app_identifier,
+            manager,
+            pregenerated_subscription_payloads,
+        )
+        _apply_tax_data(checkout, lines, tax_data)
+
+
+def _get_taxes_for_checkout(
+    checkout_info: "CheckoutInfo",
+    lines: list["CheckoutLineInfo"],
+    tax_app_identifier: str | None,
+    manager: "PluginsManager",
+    pregenerated_subscription_payloads: dict | None = None,
+    allowed_empty_tax_data: bool = False,
+):
+    """Get taxes for checkout from tax apps.
+
+    The `allowed_empty_tax_data` flag prevents an error from being raised when tax data
+    is missing due to the absence of a configured tax app.
+    """
+    from .utils import log_address_if_validation_skipped_for_checkout
+
+    tax_data = None
+    try:
         tax_data = manager.get_taxes_for_checkout(
             checkout_info,
             lines,
             tax_app_identifier,
             pregenerated_subscription_payloads=pregenerated_subscription_payloads,
         )
+    except TaxDataError as e:
+        raise e from e
+    finally:
+        # log in case the tax_data is missing
         if tax_data is None:
             log_address_if_validation_skipped_for_checkout(checkout_info, logger)
-        validate_tax_data(tax_data, lines)
-        _apply_tax_data(checkout, lines, tax_data)
+
+    if not tax_data and not allowed_empty_tax_data:
+        raise TaxDataError(TaxDataErrorMessage.EMPTY)
+
+    return tax_data
 
 
 def _remove_tax(checkout, lines_info):
@@ -725,6 +782,7 @@ def fetch_checkout_data(
     force_status_update: bool = False,
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
     pregenerated_subscription_payloads: dict | None = None,
+    allow_sync_webhooks: bool = True,
 ):
     """Fetch checkout data.
 
@@ -742,6 +800,7 @@ def fetch_checkout_data(
         force_update=force_update,
         database_connection_name=database_connection_name,
         pregenerated_subscription_payloads=pregenerated_subscription_payloads,
+        allow_sync_webhooks=allow_sync_webhooks,
     )
     current_total_gross = checkout_info.checkout.total.gross
     if current_total_gross != previous_total_gross or force_status_update:

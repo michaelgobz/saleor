@@ -11,15 +11,17 @@ from ....graphql.tests.utils import get_graphql_content
 from ...email_common import (
     DEFAULT_EMAIL_CONFIG_STRUCTURE,
     DEFAULT_EMAIL_VALUE,
+    EmailConfig,
     get_email_template,
 )
 from ...manager import get_plugins_manager
-from ...models import PluginConfiguration
+from ...models import EmailTemplate, PluginConfiguration
 from ..constants import (
     CSV_EXPORT_FAILED_TEMPLATE_FIELD,
     CSV_EXPORT_SUCCESS_TEMPLATE_FIELD,
     SET_STAFF_PASSWORD_TEMPLATE_FIELD,
     STAFF_ORDER_CONFIRMATION_TEMPLATE_FIELD,
+    STAFF_PASSWORD_RESET_TEMPLATE_FIELD,
 )
 from ..notify_events import (
     send_csv_export_failed,
@@ -202,14 +204,23 @@ def test_save_plugin_configuration_incorrect_template(mocked_open, admin_email_p
     mocked_open.assert_called_with()
 
 
-def test_get_email_template(admin_email_plugin, admin_email_template):
-    plugin = admin_email_plugin()
-    default = "Default template"
-    template = get_email_template(plugin, admin_email_template.name, default)
-    assert template == admin_email_template.value
+def test_get_email_template(admin_email_plugin):
+    assert EmailTemplate.objects.exists() is False
 
-    admin_email_template.delete()
-    template = get_email_template(plugin, admin_email_template.name, default)
+    staff_password_reset_template = "Custom staff reset password email template"
+    plugin = admin_email_plugin(
+        staff_password_reset_template=staff_password_reset_template
+    )
+
+    assert EmailTemplate.objects.exists() is True
+
+    default = "Default template"
+    template = get_email_template(plugin, STAFF_PASSWORD_RESET_TEMPLATE_FIELD, default)
+    assert template == staff_password_reset_template
+
+    EmailTemplate.objects.all().delete()
+
+    template = get_email_template(plugin, STAFF_PASSWORD_RESET_TEMPLATE_FIELD, default)
     assert template == default
 
 
@@ -259,10 +270,12 @@ QUERY_GET_PLUGIN = """
 def test_configuration_resolver_returns_email_template_value(
     staff_api_client,
     admin_email_plugin,
-    admin_email_template,
     permission_manage_plugins,
 ):
-    plugin = admin_email_plugin()
+    staff_password_reset_template = "Custom staff reset password email template"
+    plugin = admin_email_plugin(
+        staff_password_reset_template=staff_password_reset_template
+    )
     response = staff_api_client.post_graphql(
         QUERY_GET_PLUGIN,
         {"id": plugin.PLUGIN_ID},
@@ -273,11 +286,11 @@ def test_configuration_resolver_returns_email_template_value(
 
     email_config_item = None
     for config_item in data["globalConfiguration"]["configuration"]:
-        if config_item["name"] == admin_email_template.name:
+        if config_item["name"] == STAFF_PASSWORD_RESET_TEMPLATE_FIELD:
             email_config_item = config_item
 
     assert email_config_item
-    assert email_config_item["value"] == admin_email_template.value
+    assert email_config_item["value"] == staff_password_reset_template
 
 
 def test_plugin_manager_doesnt_load_email_templates_from_db(
@@ -287,6 +300,7 @@ def test_plugin_manager_doesnt_load_email_templates_from_db(
     manager = get_plugins_manager(allow_replica=False)
     manager.get_all_plugins()
     plugin = manager.all_plugins[0]
+    assert EmailTemplate.objects.exists() is True
 
     email_config_item = None
     for config_item in plugin.configuration:
@@ -324,3 +338,109 @@ def test_plugin_dont_change_default_help_text_config_value():
         AdminEmailPlugin.CONFIG_STRUCTURE["use_ssl"]["help_text"]
         != DEFAULT_EMAIL_CONFIG_STRUCTURE["use_ssl"]["help_text"]
     )
+
+
+def test_default_plugin_configuration(
+    default_admin_email_plugin,
+):
+    default_email_from = "default@email.from"
+    plugin = default_admin_email_plugin(
+        default_email_from,
+        email_url="smtp://some-user:secret-password@smtp.sendgrid.net:587/?tls=True",
+    )
+    assert plugin.active
+    assert plugin.config.host == "smtp.sendgrid.net"
+    assert plugin.config.port == "587"
+    assert plugin.config.username == "some-user"
+    assert plugin.config.password == "secret-password"
+    assert plugin.config.sender_name == ""
+    assert plugin.config.sender_address == default_email_from
+    assert plugin.config.use_tls
+    assert not plugin.config.use_ssl
+
+
+@patch("saleor.plugins.email_common.validate_email_config")
+def test_override_default_config(
+    mocked_validate_email_config, default_admin_email_plugin
+):
+    """Assert that user-provided email config is not mixed with defaults."""
+    plugin = default_admin_email_plugin(
+        default_email_from="default@email.from",
+        email_url="smtp://some-user:secret-password@smtp.sendgrid.net:587/?tls=True",
+    )
+    plugin_configuration = PluginConfiguration.objects.create(
+        identifier=plugin.PLUGIN_ID,
+        active=plugin.DEFAULT_ACTIVE,
+        channel=None,
+        configuration=plugin.configuration,
+    )
+    data_to_save = {
+        "configuration": [
+            {"name": "host", "value": "localhost"},
+            {"name": "port", "value": "1025"},
+            {"name": "sender_address", "value": "noreply@exmaple.com"},
+        ]
+    }
+    expected_config = EmailConfig(
+        host="localhost",
+        port="1025",
+        sender_name="",
+        sender_address="noreply@exmaple.com",
+        username="",  # empty as there's no username in data_to_save
+        password="",  # empty as there's no password in data_to_save
+        use_tls=False,
+        use_ssl=False,
+    )
+
+    plugin.save_plugin_configuration(plugin_configuration, data_to_save)
+    mocked_validate_email_config.assert_called_once_with(expected_config)
+
+    # Assert that Django's EmailBackend does not override empty username and password
+    email_backed = EmailBackend(
+        host=expected_config.host,
+        port=expected_config.port,
+        username=expected_config.username,
+        password=expected_config.password,
+        use_ssl=expected_config.use_ssl,
+        use_tls=expected_config.use_tls,
+    )
+    assert not email_backed.username
+    assert not email_backed.password
+
+
+@patch("saleor.plugins.email_common.validate_email_config")
+def test_set_and_unset_custom_email_template(
+    mocked_validate_email_config, admin_email_plugin
+):
+    # Set custom email template
+    plugin = admin_email_plugin()
+    configuration = PluginConfiguration.objects.get()
+    data_to_save = {
+        "configuration": [
+            {
+                "name": STAFF_ORDER_CONFIRMATION_TEMPLATE_FIELD,
+                "value": "custom template",
+            },
+        ]
+    }
+    assert EmailTemplate.objects.exists() is False
+
+    plugin.save_plugin_configuration(configuration, data_to_save)
+
+    email_template = EmailTemplate.objects.get()
+    assert email_template.name == STAFF_ORDER_CONFIRMATION_TEMPLATE_FIELD
+    assert email_template.value == "custom template"
+
+    # Unset custom email template
+    data_to_save = {
+        "configuration": [
+            {
+                "name": STAFF_ORDER_CONFIRMATION_TEMPLATE_FIELD,
+                "value": DEFAULT_EMAIL_VALUE,
+            },
+        ]
+    }
+
+    plugin.save_plugin_configuration(configuration, data_to_save)
+
+    assert EmailTemplate.objects.exists() is False

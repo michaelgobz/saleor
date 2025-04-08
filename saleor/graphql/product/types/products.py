@@ -27,7 +27,7 @@ from ....product.utils.variants import get_variant_selection_attributes
 from ....tax.utils import (
     get_display_gross_prices,
     get_tax_calculation_strategy,
-    get_tax_rate_for_tax_class,
+    get_tax_rate_for_country,
 )
 from ....thumbnail.utils import (
     get_image_or_proxy_url,
@@ -47,7 +47,7 @@ from ...attribute.types import (
 )
 from ...channel import ChannelContext, ChannelQsContext
 from ...channel.dataloaders import ChannelBySlugLoader
-from ...channel.types import ChannelContextType, ChannelContextTypeWithMetadata
+from ...channel.types import ChannelContextType
 from ...channel.utils import get_default_channel_slug_or_graphql_error
 from ...core.connection import (
     CountableConnection,
@@ -55,12 +55,7 @@ from ...core.connection import (
     filter_connection_queryset,
 )
 from ...core.context import get_database_connection_name
-from ...core.descriptions import (
-    ADDED_IN_321,
-    DEPRECATED_IN_3X_FIELD,
-    DEPRECATED_IN_3X_INPUT,
-    RICH_CONTENT,
-)
+from ...core.descriptions import ADDED_IN_321, DEPRECATED_IN_3X_INPUT, RICH_CONTENT
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
 from ...core.enums import ReportingPeriod
 from ...core.federation import federated_entity, resolve_federation_references
@@ -99,10 +94,9 @@ from ...site.dataloaders import load_site_callback
 from ...tax.dataloaders import (
     ProductChargeTaxesByTaxClassIdLoader,
     TaxClassByIdLoader,
-    TaxClassByProductIdLoader,
-    TaxClassByVariantIdLoader,
     TaxClassCountryRateByTaxClassIDLoader,
     TaxClassDefaultRateByCountryLoader,
+    TaxClassIdByProductIdLoader,
     TaxConfigurationByChannelId,
     TaxConfigurationPerCountryByTaxConfigurationIDLoader,
 )
@@ -180,7 +174,7 @@ class BasePricingInfo(BaseObjectType):
     discount_local_currency = graphene.Field(
         TaxedMoney,
         description="The discount amount in the local currency.",
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Always returns `null`.",
+        deprecation_reason="Always returns `null`.",
     )
 
     class Meta:
@@ -203,12 +197,12 @@ class VariantPricingInfo(BasePricingInfo):
     discount_local_currency = graphene.Field(
         TaxedMoney,
         description="The discount amount in the local currency.",
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Always returns `null`.",
+        deprecation_reason="Always returns `null`.",
     )
     price_local_currency = graphene.Field(
         TaxedMoney,
         description="The discounted price in the local currency.",
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Always returns `null`.",
+        deprecation_reason="Always returns `null`.",
     )
 
     class Meta:
@@ -240,7 +234,7 @@ class ProductPricingInfo(BasePricingInfo):
         description=(
             "The discounted price range of the product variants in the local currency."
         ),
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Always returns `null`.",
+        deprecation_reason="Always returns `null`.",
     )
 
     class Meta:
@@ -277,7 +271,7 @@ class PreorderData(BaseObjectType):
 
 
 @federated_entity("id channel")
-class ProductVariant(ChannelContextTypeWithMetadata[models.ProductVariant]):
+class ProductVariant(ChannelContextType[models.ProductVariant]):
     id = graphene.GlobalID(required=True, description="The ID of the product variant.")
     name = graphene.String(
         required=True, description="The name of the product variant."
@@ -352,7 +346,7 @@ class ProductVariant(ChannelContextTypeWithMetadata[models.ProductVariant]):
     images = NonNullList(
         lambda: ProductImage,
         description="List of images for the product variant.",
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Use the `media` field instead.",
+        deprecation_reason="Use the `media` field instead.",
     )
     media = NonNullList(
         lambda: ProductMedia,
@@ -633,14 +627,16 @@ class ProductVariant(ChannelContextTypeWithMetadata[models.ProductVariant]):
             context
         ).load((root.node.id, channel_slug))
         channel = ChannelBySlugLoader(context).load(channel_slug)
-        tax_class = TaxClassByVariantIdLoader(context).load(root.node.id)
+        tax_class_id_loader = TaxClassIdByProductIdLoader(context).load(
+            root.node.product_id
+        )
 
         def load_tax_configuration(data):
             (
                 product_channel_listing,
                 variant_channel_listing,
                 channel,
-                tax_class,
+                tax_class_id,
             ) = data
 
             if not variant_channel_listing or not product_channel_listing:
@@ -669,8 +665,8 @@ class ProductVariant(ChannelContextTypeWithMetadata[models.ProductVariant]):
                             if default_country_rate_obj
                             else Decimal(0)
                         )
-                        tax_rate = get_tax_rate_for_tax_class(
-                            tax_class, country_rates, default_tax_rate, country_code
+                        tax_rate = get_tax_rate_for_country(
+                            country_rates, default_tax_rate, country_code
                         )
 
                         availability = get_variant_availability(
@@ -688,9 +684,9 @@ class ProductVariant(ChannelContextTypeWithMetadata[models.ProductVariant]):
 
                     country_rates = (
                         TaxClassCountryRateByTaxClassIDLoader(context).load(
-                            tax_class.pk
+                            tax_class_id
                         )
-                        if tax_class
+                        if tax_class_id
                         else []
                     )
                     default_rate = TaxClassDefaultRateByCountryLoader(context).load(
@@ -717,7 +713,7 @@ class ProductVariant(ChannelContextTypeWithMetadata[models.ProductVariant]):
                 product_channel_listing,
                 variant_channel_listing,
                 channel,
-                tax_class,
+                tax_class_id_loader,
             ]
         ).then(load_tax_configuration)
 
@@ -853,7 +849,7 @@ class ProductVariantCountableConnection(CountableConnection):
 
 
 @federated_entity("id channel")
-class Product(ChannelContextTypeWithMetadata[models.Product]):
+class Product(ChannelContextType[models.Product]):
     id = graphene.GlobalID(required=True, description="The ID of the product.")
     seo_title = graphene.String(description="SEO title of the product.")
     seo_description = graphene.String(description="SEO description of the product.")
@@ -873,10 +869,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
     )
     charge_taxes = graphene.Boolean(
         required=True,
-        deprecation_reason=(
-            f"{DEPRECATED_IN_3X_FIELD} Use `Channel.taxConfiguration` field to "
-            "determine whether tax collection is enabled."
-        ),
+        deprecation_reason="Use `Channel.taxConfiguration` field to determine whether tax collection is enabled.",
     )
     weight = graphene.Field(Weight, description="Weight of the product.")
     default_variant = graphene.Field(
@@ -891,9 +884,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
     )
     description_json = JSONString(
         description="Description of the product." + RICH_CONTENT,
-        deprecation_reason=(
-            f"{DEPRECATED_IN_3X_FIELD} Use the `description` field instead."
-        ),
+        deprecation_reason="Use the `description` field instead.",
     )
     thumbnail = ThumbnailField(description="Thumbnail of the product.")
     pricing = graphene.Field(
@@ -914,7 +905,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
     tax_type = graphene.Field(
         TaxType,
         description="A type of tax. Assigned by enabled tax gateway",
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Use `taxClass` field instead.",
+        deprecation_reason="Use `taxClass` field instead.",
     )
     attribute = graphene.Field(
         SelectedAttribute,
@@ -944,16 +935,14 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
         lambda: ProductImage,
         id=graphene.Argument(graphene.ID, description="ID of a product image."),
         description="Get a single product image by ID.",
-        deprecation_reason=(
-            f"{DEPRECATED_IN_3X_FIELD} Use the `mediaById` field instead."
-        ),
+        deprecation_reason="Use the `mediaById` field instead.",
     )
     variant = graphene.Field(
         ProductVariant,
         id=graphene.Argument(graphene.ID, description="ID of the variant."),
         sku=graphene.Argument(graphene.String, description="SKU of the variant."),
         description="Get a single variant by SKU or ID.",
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Use top-level `variant` query.",
+        deprecation_reason="Use top-level `variant` query.",
     )
     variants = NonNullList(
         ProductVariant,
@@ -962,7 +951,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
             "include the unpublished items: "
             f"{', '.join([p.name for p in ALL_PRODUCTS_PERMISSIONS])}."
         ),
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Use `productVariants` field instead.",
+        deprecation_reason="Use `productVariants` field instead.",
     )
     product_variants = FilterConnectionField(
         ProductVariantCountableConnection,
@@ -985,7 +974,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
     images = NonNullList(
         lambda: ProductImage,
         description="List of images for the product.",
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Use the `media` field instead.",
+        deprecation_reason="Use the `media` field instead.",
     )
     collections = NonNullList(
         "saleor.graphql.product.types.collections.Collection",
@@ -1002,11 +991,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
     )
     available_for_purchase = Date(
         description="Date when product is available for purchase.",
-        deprecation_reason=(
-            f"{DEPRECATED_IN_3X_FIELD} "
-            "Use the `availableForPurchaseAt` field to fetch "
-            "the available for purchase date."
-        ),
+        deprecation_reason="Use the `availableForPurchaseAt` field to fetch the available for purchase date.",
     )
     available_for_purchase_at = DateTime(
         description="Date when product is available for purchase."
@@ -1155,14 +1140,14 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
                 (root.node.id, channel_slug)
             )
         )
-        tax_class = TaxClassByProductIdLoader(context).load(root.node.id)
+        tax_class_id_loader = TaxClassIdByProductIdLoader(context).load(root.node.id)
 
         def load_tax_configuration(data):
             (
                 channel,
                 product_channel_listing,
                 variants_channel_listing,
-                tax_class,
+                tax_class_id,
             ) = data
 
             if not variants_channel_listing:
@@ -1194,8 +1179,8 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
                             if default_country_rate_obj
                             else Decimal(0)
                         )
-                        tax_rate = get_tax_rate_for_tax_class(
-                            tax_class, country_rates, default_tax_rate, country_code
+                        tax_rate = get_tax_rate_for_country(
+                            country_rates, default_tax_rate, country_code
                         )
 
                         availability = get_product_availability(
@@ -1212,9 +1197,9 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
 
                     country_rates = (
                         TaxClassCountryRateByTaxClassIDLoader(context).load(
-                            tax_class.pk
+                            tax_class_id
                         )
-                        if tax_class
+                        if tax_class_id
                         else []
                     )
                     default_rate = TaxClassDefaultRateByCountryLoader(context).load(
@@ -1241,7 +1226,7 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
                 channel,
                 product_channel_listing,
                 variants_channel_listing,
-                tax_class,
+                tax_class_id_loader,
             ]
         ).then(load_tax_configuration)
 
@@ -1462,11 +1447,12 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
         requestor = get_user_or_app_from_context(info.context)
 
         def _resolve_product_variants(channel_obj):
+            limited_channel_access = False if channel_slug is None else True
             qs = resolve_product_variants(
                 info,
                 channel=channel_obj,
                 product_id=root.node.pk,
-                limited_channel_access=True,
+                limited_channel_access=limited_channel_access,
                 requestor=requestor,
             )
             kwargs["channel"] = qs.channel_slug
@@ -1477,11 +1463,13 @@ class Product(ChannelContextTypeWithMetadata[models.Product]):
                 qs, info, kwargs, ProductVariantCountableConnection
             )
 
-        return (
-            ChannelBySlugLoader(info.context)
-            .load(root.channel_slug)
-            .then(_resolve_product_variants)
-        )
+        if channel_slug := root.channel_slug:
+            return (
+                ChannelBySlugLoader(info.context)
+                .load(channel_slug)
+                .then(_resolve_product_variants)
+            )
+        return _resolve_product_variants(None)
 
     @staticmethod
     def resolve_channel_listings(root: ChannelContext[models.Product], info):
@@ -1702,15 +1690,12 @@ class ProductType(ModelObjectType[models.ProductType]):
             description="Slug of a channel for which the data should be returned."
         ),
         description="List of products of this type.",
-        deprecation_reason=(
-            f"{DEPRECATED_IN_3X_FIELD} "
-            "Use the top-level `products` query with the `productTypes` filter."
-        ),
+        deprecation_reason="Use the top-level `products` query with the `productTypes` filter.",
     )
     tax_type = graphene.Field(
         TaxType,
         description="A type of tax. Assigned by enabled tax gateway",
-        deprecation_reason=f"{DEPRECATED_IN_3X_FIELD} Use `taxClass` field instead.",
+        deprecation_reason="Use `taxClass` field instead.",
     )
     tax_class = PermissionsField(
         TaxClass,
@@ -1731,9 +1716,7 @@ class ProductType(ModelObjectType[models.ProductType]):
             VariantAttributeScope,
             description="Define scope of returned attributes.",
         ),
-        deprecation_reason=(
-            f"{DEPRECATED_IN_3X_FIELD} Use `assignedVariantAttributes` instead."
-        ),
+        deprecation_reason="Use `assignedVariantAttributes` instead.",
     )
     assigned_variant_attributes = NonNullList(
         AssignedVariantAttribute,

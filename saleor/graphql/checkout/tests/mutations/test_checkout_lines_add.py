@@ -734,6 +734,92 @@ def test_checkout_lines_add_with_new_variant_and_metadata(
     assert line.metadata == {metadata_key: metadata_value}
 
 
+def test_checkout_lines_add_with_invalid_metadata(
+    user_api_client,
+    checkout_with_item,
+    stock,
+):
+    # given
+    checkout = checkout_with_item
+
+    old_meta = {"old_key": "old_value"}
+    # Empty key is invalid and should throw
+    metadata_key = ""
+    metadata_value = "md value"
+
+    line = checkout.lines.first()
+    line.store_value_in_metadata(old_meta)
+    line.save(update_fields=["metadata"])
+
+    lines, _ = fetch_checkout_lines(checkout)
+    assert calculate_checkout_quantity(lines) == 3
+    variant_id = graphene.Node.to_global_id("ProductVariant", line.variant_id)
+
+    variables = {
+        "id": to_global_id_or_none(checkout),
+        "lines": [
+            {
+                "variantId": variant_id,
+                "quantity": 1,
+                "metadata": [{"key": metadata_key, "value": metadata_value}],
+            }
+        ],
+        "channelSlug": checkout.channel.slug,
+    }
+
+    # when
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_LINES_ADD, variables)
+    content = get_graphql_content(response)
+    data = content["data"]["checkoutLinesAdd"]
+
+    # then
+    errors = data["errors"]
+
+    assert errors[0]["code"] == "REQUIRED"
+    assert errors[0]["field"] == "metadata"
+
+
+def test_checkout_lines_add_with_empty_metadata_and_old_exist(
+    user_api_client,
+    checkout_with_item,
+    stock,
+):
+    # given
+    checkout = checkout_with_item
+
+    old_meta = {"old_key": "old_value"}
+
+    line = checkout.lines.first()
+    line.store_value_in_metadata(old_meta)
+    line.save(update_fields=["metadata"])
+
+    lines, _ = fetch_checkout_lines(checkout)
+    assert calculate_checkout_quantity(lines) == 3
+    variant_id = graphene.Node.to_global_id("ProductVariant", line.variant_id)
+
+    variables = {
+        "id": to_global_id_or_none(checkout),
+        "lines": [
+            {
+                "variantId": variant_id,
+                "quantity": 1,
+                "metadata": [],
+            }
+        ],
+        "channelSlug": checkout.channel.slug,
+    }
+
+    # when
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_LINES_ADD, variables)
+    get_graphql_content(response)
+
+    # then
+    checkout.refresh_from_db()
+    line = checkout.lines.last()
+
+    assert line.metadata.get("old_key") == "old_value"
+
+
 @mock.patch(
     "saleor.graphql.checkout.mutations.checkout_lines_add."
     "update_checkout_shipping_method_if_invalid",
@@ -1910,6 +1996,7 @@ def test_checkout_lines_add_triggers_webhooks(
     user_api_client,
     checkout_with_item,
     stock,
+    address,
 ):
     # given
     mocked_send_webhook_using_scheme_method.return_value = WebhookResponse(content="")
@@ -1924,6 +2011,12 @@ def test_checkout_lines_add_triggers_webhooks(
     variant = stock.product_variant
 
     checkout = checkout_with_item
+
+    # Ensure shipping is set so shipping webhooks are emitted
+    checkout.shipping_address = address
+    checkout.billing_address = address
+
+    checkout.save()
 
     lines, _ = fetch_checkout_lines(checkout)
     assert calculate_checkout_quantity(lines) == 3

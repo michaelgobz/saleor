@@ -9,10 +9,10 @@ RUN apt-get -y update \
 
 # Install Python dependencies
 WORKDIR /app
-RUN --mount=type=cache,mode=0755,target=/root/.cache/pip pip install poetry==2.0.1
+RUN --mount=type=cache,mode=0755,target=/root/.cache/pip pip install poetry==2.1.1
 RUN poetry config virtualenvs.create false
 COPY poetry.lock pyproject.toml /app/
-RUN --mount=type=cache,mode=0755,target=/root/.cache/pypoetry poetry sync
+RUN --mount=type=cache,mode=0755,target=/root/.cache/pypoetry poetry install
 
 ### Final image
 FROM python:3.12-slim
@@ -30,6 +30,8 @@ RUN apt-get update \
   libtiff6 \
   libwebp7 \
   libpq5 \
+  # Required by celery[sqs] which uses pycurl for AWS SQS support
+  libcurl4 \
   shared-mime-info \
   mime-support \
   && apt-get clean \

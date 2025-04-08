@@ -15,14 +15,14 @@ from ....discount import (
     VoucherType,
 )
 from ....discount.models import PromotionRule
+from ....discount.utils.voucher import (
+    create_or_update_voucher_discount_objects_for_order,
+)
 from ....graphql.core.utils import to_global_id_or_none
 from ....order import OrderStatus
 from ....order.calculations import fetch_order_prices_if_expired
 from ....order.models import Order
-from ....order.utils import (
-    create_order_discount_for_order,
-    update_discount_for_order_line,
-)
+from ....order.utils import create_manual_order_discount, update_discount_for_order_line
 from ....plugins.manager import get_plugins_manager
 from ....tax import TaxableObjectDiscountType
 from ...event_types import WebhookEventSyncType
@@ -924,6 +924,7 @@ def test_order_calculate_taxes_specific_product_voucher(
     voucher_listing.discount_value = unit_discount_amount
     voucher_listing.save(update_fields=["discount_value"])
     voucher_specific_product_type.variants.add(order_line.variant)
+    create_or_update_voucher_discount_objects_for_order(order)
 
     manager = get_plugins_manager(allow_replica=False)
     fetch_order_prices_if_expired(order, manager, order.lines.all(), True)
@@ -1266,12 +1267,11 @@ def test_order_calculate_taxes_order_voucher_and_manual_discount(
     order.save(update_fields=["voucher_id"])
 
     manual_reward = Decimal(10)
-    create_order_discount_for_order(
+    create_manual_order_discount(
         order=order,
         reason="Manual discount",
         value_type=DiscountValueType.FIXED,
         value=manual_reward,
-        type=DiscountType.MANUAL,
     )
 
     subtotal_manual_reward_portion = (subtotal_amount / total_amount) * manual_reward
@@ -1371,12 +1371,11 @@ def test_order_calculate_taxes_order_promotion_and_manual_discount(
     assert rule.reward_type == RewardType.SUBTOTAL_DISCOUNT
 
     manual_reward = Decimal(10)
-    create_order_discount_for_order(
+    create_manual_order_discount(
         order=order,
         reason="Manual discount",
         value_type=DiscountValueType.FIXED,
         value=manual_reward,
-        type=DiscountType.MANUAL,
     )
 
     subtotal_manual_reward_portion = (subtotal_amount / total_amount) * manual_reward
@@ -1467,14 +1466,14 @@ def test_order_calculate_taxes_free_shipping_voucher_and_manual_discount_fixed(
     assert voucher.type == VoucherType.SHIPPING
     order.voucher = voucher
     order.save(update_fields=["voucher_id"])
+    create_or_update_voucher_discount_objects_for_order(order)
 
     manual_reward = Decimal(10)
-    create_order_discount_for_order(
+    create_manual_order_discount(
         order=order,
         reason="Manual discount",
         value_type=DiscountValueType.FIXED,
         value=manual_reward,
-        type=DiscountType.MANUAL,
     )
 
     # Since shipping is free, whole manual discount should be applied to subtotal
@@ -1567,15 +1566,15 @@ def test_order_calculate_taxes_free_shipping_voucher_and_manual_discount_percent
     assert voucher.type == VoucherType.SHIPPING
     order.voucher = voucher
     order.save(update_fields=["voucher_id"])
+    create_or_update_voucher_discount_objects_for_order(order)
     total_amount -= shipping_price_amount
 
     manual_reward = Decimal(10)
-    create_order_discount_for_order(
+    create_manual_order_discount(
         order=order,
         reason="Manual discount",
         value_type=DiscountValueType.PERCENTAGE,
         value=manual_reward,
-        type=DiscountType.MANUAL,
     )
 
     # Since shipping is free, whole manual discount should be applied to subtotal
