@@ -38,7 +38,7 @@ from ...order.utils import (
 from ...payment import ChargeStatus, TransactionKind
 from ...payment.dataloaders import PaymentsByOrderIdLoader
 from ...payment.model_helpers import get_last_payment, get_total_authorized
-from ...permission.auth_filters import AuthorizationFilters
+from ...permission.auth_filters import AuthorizationFilters, is_app, is_staff_user
 from ...permission.enums import (
     AccountPermissions,
     AppPermission,
@@ -1436,8 +1436,15 @@ class OrderLine(
         def with_manager_and_order(data):
             manager, order = data
 
-            def handle_line_discount_from_checkout(line_discounts):
-                if order.origin != OrderOrigin.CHECKOUT:
+            def handle_line_discount_from_checkout(data):
+                channel, line_discounts = data
+
+                # For legacy propagation, voucher discount was returned as OrderDiscount
+                # when legacy is disabled, return the voucher discount as
+                # OrderLineDiscount. It is a temporary solution to provide a grace
+                # period for migration
+                use_legacy = channel.use_legacy_line_discount_propagation_for_order
+                if order.origin != OrderOrigin.CHECKOUT or not use_legacy:
                     return line_discounts
 
                 discounts_to_return = []
@@ -1454,11 +1461,12 @@ class OrderLine(
                 fetch_order_prices_if_expired(
                     order, manager, allow_sync_webhooks=root.allow_sync_webhooks
                 )
-
-            return (
-                OrderLineDiscountsByOrderLineIDLoader(info.context)
-                .load(line.id)
-                .then(handle_line_discount_from_checkout)
+            channel_loader = ChannelByIdLoader(info.context).load(order.channel_id)
+            order_line_discounts = OrderLineDiscountsByOrderLineIDLoader(
+                info.context
+            ).load(line.id)
+            return Promise.all([channel_loader, order_line_discounts]).then(
+                handle_line_discount_from_checkout
             )
 
         manager = get_plugin_manager_promise(info.context)
@@ -1858,8 +1866,17 @@ class Order(SyncWebhookControlContextModelObjectType[ModelObjectType[models.Orde
 
         # Line-lvl voucher discounts are represented as OrderDiscount objects for order
         # created from checkout.
-        def wrap_line_discounts_from_checkout(order_discounts):
+        def wrap_line_discounts_from_checkout(data):
+            channel, order_discounts = data
+
             if order.origin != OrderOrigin.CHECKOUT:
+                return order_discounts
+
+            # voucher discount is stored as OrderLineDiscount object in DB.
+            # for backward compatibility, when legacy propagation is enabled
+            # we convert the order-line-discounts into single OrderDiscount
+            # It is a temporary solution to provide a grace period for migration
+            if not channel.use_legacy_line_discount_propagation_for_order:
                 return order_discounts
 
             def wrap_order_line(order_lines):
@@ -1919,11 +1936,10 @@ class Order(SyncWebhookControlContextModelObjectType[ModelObjectType[models.Orde
                 fetch_order_prices_if_expired(
                     order, manager, allow_sync_webhooks=root.allow_sync_webhooks
                 )
-
-            return (
-                OrderDiscountsByOrderIDLoader(info.context)
-                .load(order.id)
-                .then(wrap_line_discounts_from_checkout)
+            channel_loader = ChannelByIdLoader(info.context).load(order.channel_id)
+            order_discounts = OrderDiscountsByOrderIDLoader(info.context).load(order.id)
+            return Promise.all([channel_loader, order_discounts]).then(
+                wrap_line_discounts_from_checkout
             )
 
         return get_plugin_manager_promise(info.context).then(with_manager)
@@ -2277,8 +2293,11 @@ class Order(SyncWebhookControlContextModelObjectType[ModelObjectType[models.Orde
     @staticmethod
     def resolve_fulfillments(root: SyncWebhookControlContext[models.Order], info):
         def _resolve_fulfillments(fulfillments):
-            user = info.context.user
-            if user and user.is_staff:
+            return_all_fulfillments = is_staff_user(info.context) or is_app(
+                info.context
+            )
+
+            if return_all_fulfillments:
                 fulfillments_to_return = fulfillments
             else:
                 fulfillments_to_return = filter(
@@ -2470,11 +2489,17 @@ class Order(SyncWebhookControlContextModelObjectType[ModelObjectType[models.Orde
 
         def _resolve_user_email(user):
             requester = get_user_or_app_from_context(info.context)
+            email_to_return = None
+            if order.user_email:
+                email_to_return = order.user_email
+            elif user:
+                email_to_return = user.email
+
             if order.use_old_id is False or is_owner_or_has_one_of_perms(
                 requester, user, OrderPermissions.MANAGE_ORDERS
             ):
-                return user.email if user else order.user_email
-            return obfuscate_email(user.email if user else order.user_email)
+                return email_to_return
+            return obfuscate_email(email_to_return)
 
         if not order.user_id:
             return _resolve_user_email(None)
@@ -2789,7 +2814,13 @@ class Order(SyncWebhookControlContextModelObjectType[ModelObjectType[models.Orde
         def _resolve_total_refund(data):
             payments, transactions = data
             last_payment = get_last_payment(payments)
-            if last_payment and last_payment.is_active:
+            payment_is_active = last_payment and last_payment.is_active
+            payment_is_fully_refunded = (
+                last_payment
+                and last_payment.charge_status == ChargeStatus.FULLY_REFUNDED
+            )
+
+            if payment_is_active or payment_is_fully_refunded:
                 return (
                     TransactionByPaymentIdLoader(info.context)
                     .load(last_payment.id)

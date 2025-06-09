@@ -281,6 +281,8 @@ def test_checkout_complete(
     assert order_payment == payment
     assert payment.transactions.count() == 1
 
+    assert order.lines_count == len(lines)
+
     gift_card.refresh_from_db()
     assert gift_card.current_balance == zero_money(gift_card.currency)
     assert gift_card.last_used_on
@@ -680,6 +682,7 @@ def test_checkout_complete_gift_card_bought(
     checkout.metadata_storage.store_value_in_private_metadata(
         items={"accepted": "false"}
     )
+    checkout.email = customer_user.email
     checkout.user = customer_user
     checkout.save()
     checkout.metadata_storage.save()
@@ -909,8 +912,22 @@ def test_checkout_complete_requires_confirmation(
     recalculate_with_plugins_mock.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    (
+        "legacy_discount_propagation",
+        "expected_unit_discount_amount",
+        "expected_unit_discount_reason",
+    ),
+    [
+        (True, Decimal(1), "Entire order voucher code: saleor"),
+        (False, Decimal(0), None),
+    ],
+)
 @pytest.mark.integration
 def test_checkout_with_voucher_complete(
+    legacy_discount_propagation,
+    expected_unit_discount_amount,
+    expected_unit_discount_reason,
     user_api_client,
     checkout_with_voucher_percentage,
     voucher_percentage,
@@ -919,6 +936,10 @@ def test_checkout_with_voucher_complete(
     shipping_method,
 ):
     # given
+    channel = checkout_with_voucher_percentage.channel
+    channel.use_legacy_line_discount_propagation_for_order = legacy_discount_propagation
+    channel.save()
+
     code = voucher_percentage.codes.first()
     voucher_used_count = code.used
     voucher_percentage.usage_limit = voucher_used_count + 1
@@ -995,11 +1016,9 @@ def test_checkout_with_voucher_complete(
     order_payment = order.payments.first()
     assert order_payment == payment
     assert payment.transactions.count() == 1
-    assert (
-        order_line.unit_discount_amount
-        == (discount_amount / checkout_line_quantity).amount
-    )
-    assert order_line.unit_discount_reason
+
+    assert order_line.unit_discount_amount == expected_unit_discount_amount
+    assert order_line.unit_discount_reason == expected_unit_discount_reason
 
     code.refresh_from_db()
     assert code.used == voucher_used_count + 1
@@ -1017,16 +1036,140 @@ def test_checkout_with_voucher_complete(
     )
 
 
+@pytest.mark.parametrize(
+    (
+        "legacy_propagation",
+        "expected_unit_discount_amount",
+    ),
+    [
+        (True, Decimal("1.67")),
+        (False, Decimal(0)),
+    ],
+)
+@pytest.mark.integration
+def test_checkout_with_order_promotion_complete(
+    legacy_propagation,
+    expected_unit_discount_amount,
+    user_api_client,
+    checkout_with_item_and_order_discount,
+    payment_dummy,
+    address,
+    shipping_method,
+):
+    # given
+    checkout = checkout_with_item_and_order_discount
+
+    channel = checkout.channel
+    channel.use_legacy_line_discount_propagation_for_order = legacy_propagation
+    channel.save()
+
+    checkout.shipping_address = address
+    checkout.shipping_method = shipping_method
+    checkout.billing_address = address
+    checkout.save()
+
+    discount_amount = checkout.discount
+
+    checkout_line = checkout.lines.first()
+    checkout_line_quantity = checkout_line.quantity
+    checkout_line_variant = checkout_line.variant
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    total = calculations.checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines, address=address
+    )
+    payment = payment_dummy
+    payment.is_active = True
+    payment.order = None
+    payment.total = total.gross.amount
+    payment.currency = total.gross.currency
+    payment.checkout = checkout
+    payment.save()
+    assert not payment.transactions.exists()
+
+    orders_count = Order.objects.count()
+    variables = {
+        "id": to_global_id_or_none(checkout),
+        "redirectUrl": "https://www.example.com",
+    }
+
+    # when
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_COMPLETE, variables)
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["checkoutComplete"]
+    assert not data["errors"]
+
+    order_token = data["order"]["token"]
+    order_id = data["order"]["id"]
+    assert Order.objects.count() == orders_count + 1
+    order = Order.objects.first()
+    assert str(order.id) == order_token
+    assert order_id == graphene.Node.to_global_id("Order", order.id)
+    assert order.metadata == checkout.metadata_storage.metadata
+    assert order.private_metadata == checkout.metadata_storage.private_metadata
+
+    subtotal = get_subtotal(order.lines.all(), order.currency)
+    assert order.subtotal == subtotal
+    assert data["order"]["subtotal"]["gross"]["amount"] == subtotal.gross.amount
+    assert order.total == total
+    assert order.undiscounted_total == total + discount_amount
+
+    order_line = order.lines.first()
+    assert checkout_line_quantity == order_line.quantity
+    assert checkout_line_variant == order_line.variant
+    assert order.shipping_address == address
+    assert order.shipping_method == checkout.shipping_method
+    assert order.payments.exists()
+    order_payment = order.payments.first()
+    assert order_payment == payment
+    assert payment.transactions.count() == 1
+
+    assert order_line.unit_discount_amount == expected_unit_discount_amount
+    assert order_line.unit_discount_reason is None
+
+    order_discount = order.discounts.filter(type=DiscountType.ORDER_PROMOTION).first()
+    assert order_discount
+    assert (
+        order_discount.amount_value
+        == (order.undiscounted_total - order.total).gross.amount
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "use_legacy_discount_propagation",
+        "expected_voucher_discount_value_type",
+        "expected_voucher_discount_value",
+    ),
+    [
+        (True, DiscountValueType.FIXED, Decimal("1")),
+        (False, DiscountValueType.PERCENTAGE, Decimal(10)),
+    ],
+)
 @pytest.mark.integration
 def test_checkout_complete_with_voucher_apply_once_per_order(
+    use_legacy_discount_propagation,
+    expected_voucher_discount_value_type,
+    expected_voucher_discount_value,
     user_api_client,
     checkout_with_voucher_percentage,
     voucher_percentage,
     payment_dummy,
     address,
     shipping_method,
+    channel_USD,
 ):
     # given
+    channel_USD.use_legacy_line_discount_propagation_for_order = (
+        use_legacy_discount_propagation
+    )
+    channel_USD.save()
+
     code = voucher_percentage.codes.first()
     voucher_used_count = code.used
     voucher_percentage.usage_limit = voucher_used_count + 1
@@ -1119,10 +1262,13 @@ def test_checkout_complete_with_voucher_apply_once_per_order(
     assert order_line_discount.type == DiscountType.VOUCHER
     assert order_line_discount.voucher == voucher_percentage
     assert order_line_discount.voucher_code == code.code
-    assert order_line_discount.value_type == DiscountValueType.FIXED
+    assert order_line_discount.value_type == expected_voucher_discount_value_type
+    assert order_line_discount.value == expected_voucher_discount_value
 
     assert order.voucher == voucher_percentage
     assert order.voucher.code == code.code
+
+    assert not order.discounts.exists()
 
     assert not Checkout.objects.filter(pk=checkout.pk).exists(), (
         "Checkout should have been deleted"
@@ -1283,15 +1429,35 @@ def test_checkout_with_voucher_complete_product_on_promotion(
     )
 
 
+@pytest.mark.parametrize(
+    (
+        "use_legacy_discount_propagation",
+        "expected_voucher_discount_value_type",
+        "expected_voucher_discount_value",
+    ),
+    [
+        (True, DiscountValueType.FIXED, Decimal("3")),
+        (False, DiscountValueType.PERCENTAGE, Decimal(10)),
+    ],
+)
 def test_checkout_with_voucher_on_specific_product_complete(
+    use_legacy_discount_propagation,
+    expected_voucher_discount_value_type,
+    expected_voucher_discount_value,
     user_api_client,
     checkout_with_item_and_voucher_specific_products,
     voucher_specific_product_type,
     payment_dummy,
     address,
     shipping_method,
+    channel_USD,
 ):
     # given
+    channel_USD.use_legacy_line_discount_propagation_for_order = (
+        use_legacy_discount_propagation
+    )
+    channel_USD.save()
+
     code = voucher_specific_product_type.codes.first()
     voucher_used_count = code.used
     voucher_specific_product_type.usage_limit = voucher_used_count + 1
@@ -1378,12 +1544,15 @@ def test_checkout_with_voucher_on_specific_product_complete(
     assert order_line_discount.type == DiscountType.VOUCHER
     assert order_line_discount.voucher == voucher_specific_product_type
     assert order_line_discount.voucher_code == code.code
-    assert order_line_discount.value_type == DiscountValueType.FIXED
+    assert order_line_discount.value_type == expected_voucher_discount_value_type
+    assert order_line_discount.value == expected_voucher_discount_value
 
     code.refresh_from_db()
     assert code.used == voucher_used_count + 1
     assert order.voucher == voucher_specific_product_type
     assert order.voucher.code == code.code
+
+    assert not order.discounts.exists()
 
     assert not Checkout.objects.filter(pk=checkout.pk).exists(), (
         "Checkout should have been deleted"
@@ -2364,7 +2533,21 @@ def test_checkout_complete_product_on_old_sale(
     )
 
 
+@pytest.mark.parametrize(
+    (
+        "use_legacy_discount_propagation",
+        "expected_voucher_discount_value_type",
+        "expected_voucher_discount_value",
+    ),
+    [
+        (True, DiscountValueType.FIXED, Decimal("1.5")),
+        (False, DiscountValueType.PERCENTAGE, Decimal(10)),
+    ],
+)
 def test_checkout_with_voucher_on_specific_product_complete_with_product_on_promotion(
+    use_legacy_discount_propagation,
+    expected_voucher_discount_value_type,
+    expected_voucher_discount_value,
     user_api_client,
     checkout_with_item_and_voucher_specific_products,
     voucher_specific_product_type,
@@ -2372,8 +2555,14 @@ def test_checkout_with_voucher_on_specific_product_complete_with_product_on_prom
     payment_dummy,
     address,
     shipping_method,
+    channel_USD,
 ):
     # given
+    channel_USD.use_legacy_line_discount_propagation_for_order = (
+        use_legacy_discount_propagation
+    )
+    channel_USD.save()
+
     code = voucher_specific_product_type.codes.first()
     voucher_used_count = code.used
     voucher_specific_product_type.usage_limit = voucher_used_count + 1
@@ -2504,7 +2693,8 @@ def test_checkout_with_voucher_on_specific_product_complete_with_product_on_prom
 
     line_voucher_discount = order_line.discounts.get(type=DiscountType.VOUCHER)
     assert line_voucher_discount.voucher == voucher_specific_product_type
-    assert line_voucher_discount.value_type == DiscountValueType.FIXED
+    assert line_voucher_discount.value_type == expected_voucher_discount_value_type
+    assert line_voucher_discount.value == expected_voucher_discount_value
     assert line_voucher_discount.type == DiscountType.VOUCHER
     assert line_voucher_discount.voucher_code == code.code
     unit_discount = (
@@ -2533,6 +2723,8 @@ def test_checkout_with_voucher_on_specific_product_complete_with_product_on_prom
     assert code.used == voucher_used_count + 1
     assert order.voucher == voucher_specific_product_type
     assert order.voucher.code == code.code
+
+    assert not order.discounts.exists()
 
     assert not Checkout.objects.filter(pk=checkout.pk).exists(), (
         "Checkout should have been deleted"
@@ -5702,3 +5894,51 @@ def test_checkout_complete_with_external_shipping(
         order.private_metadata[PRIVATE_META_APP_SHIPPING_ID]
         == graphql_externa_method_id
     )
+
+
+def test_checkout_complete_with_different_email_than_user_email(
+    user_api_client,
+    checkout_ready_to_complete,
+    payment_dummy,
+    address,
+):
+    # given
+    checkout = checkout_ready_to_complete
+    checkout.email = "different_email@example.com"
+    checkout.user = user_api_client.user
+    checkout.save(update_fields=["email", "user"])
+    assert checkout.user is not None
+    assert checkout.user.email != checkout.email
+
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    total = calculations.checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines, address=address
+    )
+    payment = payment_dummy
+    payment.is_active = True
+    payment.order = None
+    payment.total = total.gross.amount
+    payment.currency = total.gross.currency
+    payment.checkout = checkout
+    payment.save()
+    assert not payment.transactions.exists()
+
+    variables = {
+        "id": to_global_id_or_none(checkout),
+        "redirectUrl": "https://www.example.com",
+    }
+
+    # when
+    response = user_api_client.post_graphql(MUTATION_CHECKOUT_COMPLETE, variables)
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["checkoutComplete"]
+    assert not data["errors"]
+
+    order = Order.objects.first()
+    assert order.user_email == checkout.email
+    assert order.user.email == checkout.user.email

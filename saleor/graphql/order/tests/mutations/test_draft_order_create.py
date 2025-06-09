@@ -1,7 +1,7 @@
 import datetime
 from datetime import timedelta
 from decimal import Decimal
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import graphene
 import pytest
@@ -276,6 +276,7 @@ def test_draft_order_create_with_voucher_entire_order(
     ).get_total()
     assert order.base_shipping_price == shipping_total
     assert order.undiscounted_base_shipping_price == shipping_total
+    assert order.lines_count == len(variant_list)
 
     # Ensure the correct event was created
     created_draft_event = OrderEvent.objects.get(
@@ -570,6 +571,7 @@ def test_draft_order_create_with_voucher_code(
     assert order.external_reference == external_reference
     assert order.base_shipping_price == shipping_total
     assert order.undiscounted_base_shipping_price == shipping_total
+    assert order.lines_count == len(variant_list)
 
     # Ensure the correct event was created
     created_draft_event = OrderEvent.objects.get(
@@ -821,6 +823,7 @@ def test_draft_order_create_with_voucher_specific_product(
     ).get_total()
     assert order.base_shipping_price == shipping_total
     assert order.undiscounted_base_shipping_price == shipping_total
+    assert order.lines_count == len(variant_list)
 
     lines_data = data["lines"]
     discounted_line_data, line_1_data = lines_data
@@ -975,6 +978,7 @@ def test_draft_order_create_with_voucher_apply_once_per_order(
     ).get_total()
     assert order.base_shipping_price == shipping_total
     assert order.undiscounted_base_shipping_price == shipping_total
+    assert order.lines_count == len(variant_list)
 
     lines_data = data["lines"]
     discounted_line_data, line_1_data = lines_data
@@ -1569,6 +1573,7 @@ def test_draft_order_create_with_same_variant_and_force_new_line(
     ).get_total()
     assert order.base_shipping_price == shipping_total
     assert order.undiscounted_base_shipping_price == shipping_total
+    assert order.lines_count == len(variant_list)
 
     # Ensure the correct event was created
     created_draft_event = OrderEvent.objects.get(
@@ -3770,7 +3775,10 @@ def test_draft_order_create_triggers_webhooks(
         webhook_id=draft_order_created_webhook.id
     )
     mocked_send_webhook_request_async.assert_called_once_with(
-        kwargs={"event_delivery_id": draft_order_created_delivery.id},
+        kwargs={
+            "event_delivery_id": draft_order_created_delivery.id,
+            "telemetry_context": ANY,
+        },
         queue=settings.ORDER_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
         bind=True,
         retry_backoff=10,

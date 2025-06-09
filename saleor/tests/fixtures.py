@@ -17,6 +17,7 @@ from ..account.models import Address, Group, StaffNotificationRecipient
 from ..core import JobStatus
 from ..core.models import EventDelivery, EventDeliveryAttempt, EventPayload
 from ..core.payments import PaymentInterface
+from ..core.telemetry import initialize_telemetry, meter, tracer
 from ..csv.events import ExportEvents
 from ..csv.models import ExportEvent, ExportFile
 from ..discount import PromotionEvents
@@ -92,6 +93,36 @@ def _assert_num_queries(context, *, config, num, exact=True, info=None):
     else:
         msg += " (add -v option to show queries)"
     pytest.fail(msg)
+
+
+@pytest.fixture(scope="session")
+def initialize_test_telemetry():
+    initialize_telemetry()
+
+
+@pytest.fixture
+def trace_context_propagation(initialize_test_telemetry):
+    tracer._tracer._inject_context = True
+    yield
+    tracer._tracer._inject_context = False
+
+
+@pytest.fixture
+def get_test_spans(initialize_test_telemetry):
+    # Clear any existing spans from the buffer before test execution
+    tracer._tracer.span_exporter.clear()
+    yield tracer._tracer.span_exporter.get_finished_spans
+    # Clean up by clearing the buffer after test completion
+    tracer._tracer.span_exporter.clear()
+
+
+@pytest.fixture
+def get_test_metrics_data(initialize_test_telemetry):
+    # Clear any existing metrics data from the buffer before test execution
+    meter._meter.metric_reader.get_metrics_data()
+    yield meter._meter.metric_reader.get_metrics_data
+    # Clean up by clearing the buffer after test completion
+    meter._meter.metric_reader.get_metrics_data()
 
 
 @pytest.fixture

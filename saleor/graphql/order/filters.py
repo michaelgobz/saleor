@@ -11,25 +11,59 @@ from graphql.error import GraphQLError
 from ...core.postgres import FlatConcat
 from ...giftcard import GiftCardEvents
 from ...giftcard.models import GiftCardEvent
+from ...invoice.models import Invoice
 from ...order.models import Order, OrderLine
 from ...order.search import search_orders
 from ...payment import ChargeStatus
 from ...product.models import ProductVariant
 from ..channel.filters import get_currency_from_filter_data
+from ..core.doc_category import DOC_CATEGORY_ORDERS
 from ..core.filters import (
+    BooleanWhereFilter,
     GlobalIDMultipleChoiceFilter,
+    GlobalIDMultipleChoiceWhereFilter,
     ListObjectTypeFilter,
     MetadataFilterBase,
     ObjectTypeFilter,
+    ObjectTypeWhereFilter,
+    OperationObjectTypeWhereFilter,
+    WhereFilterSet,
 )
 from ..core.scalars import UUID as UUIDScalar
-from ..core.types import DateRangeInput, DateTimeRangeInput
+from ..core.types import (
+    BaseInputObjectType,
+    DateRangeInput,
+    DateTimeRangeInput,
+    NonNullList,
+)
+from ..core.types.filter_input import (
+    DateTimeFilterInput,
+    FilterInputDescriptions,
+    GlobalIDFilterInput,
+    IntFilterInput,
+    StringFilterInput,
+    UUIDFilterInput,
+    WhereInputObjectType,
+)
 from ..core.utils import from_global_id_or_error
 from ..discount.filters import DiscountedObjectWhere
 from ..payment.enums import PaymentChargeStatusEnum
 from ..utils import resolve_global_ids_to_primary_keys
-from ..utils.filters import filter_range_field, filter_where_by_numeric_field
-from .enums import OrderAuthorizeStatusEnum, OrderChargeStatusEnum, OrderStatusFilter
+from ..utils.filters import (
+    filter_by_ids,
+    filter_range_field,
+    filter_where_by_id_field,
+    filter_where_by_numeric_field,
+    filter_where_by_range_field,
+    filter_where_by_value_field,
+    filter_where_range_field,
+)
+from .enums import (
+    OrderAuthorizeStatusEnum,
+    OrderChargeStatusEnum,
+    OrderStatusEnum,
+    OrderStatusFilter,
+)
 
 
 def filter_payment_status(qs, _, value):
@@ -221,6 +255,15 @@ def filter_by_checkout_tokens(qs, _, values):
     return qs.filter(checkout_token__in=values)
 
 
+def filter_has_invoices(qs, value):
+    if value is None:
+        return qs.none()
+    invoices = Invoice.objects.using(qs.db).filter(order_id=OuterRef("id"))
+    if value:
+        return qs.filter(Exists(invoices))
+    return qs.filter(~Exists(invoices))
+
+
 class DraftOrderFilter(MetadataFilterBase):
     customer = django_filters.CharFilter(method=filter_customer)
     created = ObjectTypeFilter(input_class=DateRangeInput, method=filter_created_range)
@@ -275,6 +318,242 @@ class OrderFilter(DraftOrderFilter):
                 message="'ids' and 'numbers` are not allowed to use together in filter."
             )
         return super().is_valid()
+
+
+class OrderStatusEnumFilterInput(BaseInputObjectType):
+    eq = OrderStatusEnum(description=FilterInputDescriptions.EQ, required=False)
+    one_of = NonNullList(
+        OrderStatusEnum,
+        description=FilterInputDescriptions.ONE_OF,
+        required=False,
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_ORDERS
+        description = "Filter by order status."
+
+
+class OrderAuthorizeStatusEnumFilterInput(BaseInputObjectType):
+    eq = OrderAuthorizeStatusEnum(
+        description=FilterInputDescriptions.EQ, required=False
+    )
+    one_of = NonNullList(
+        OrderAuthorizeStatusEnum,
+        description=FilterInputDescriptions.ONE_OF,
+        required=False,
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_ORDERS
+        description = "Filter by authorize status."
+
+
+class OrderChargeStatusEnumFilterInput(BaseInputObjectType):
+    eq = OrderChargeStatusEnum(description=FilterInputDescriptions.EQ, required=False)
+    one_of = NonNullList(
+        OrderChargeStatusEnum,
+        description=FilterInputDescriptions.ONE_OF,
+        required=False,
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_ORDERS
+        description = "Filter by charge status."
+
+
+class InvoiceFilterInput(BaseInputObjectType):
+    created_at = DateTimeRangeInput(
+        description="Filter invoices by creation date.",
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_ORDERS
+        description = "Filter input for invoices."
+
+
+# TODO: metadata filter will be added later
+class OrderWhere(WhereFilterSet):
+    ids = GlobalIDMultipleChoiceWhereFilter(method=filter_by_ids("Order"))
+    number = OperationObjectTypeWhereFilter(
+        input_class=IntFilterInput,
+        method="filter_number",
+        help_text="Filter by order number.",
+    )
+    channel_id = OperationObjectTypeWhereFilter(
+        input_class=GlobalIDFilterInput,
+        method="filter_channel_id",
+        help_text="Filter by channel.",
+    )
+    created_at = ObjectTypeWhereFilter(
+        input_class=DateTimeFilterInput,
+        method="filter_created_at_range",
+        help_text="Filter order by created at date.",
+    )
+    updated_at = ObjectTypeWhereFilter(
+        input_class=DateTimeFilterInput,
+        method="filter_updated_at_range",
+        help_text="Filter order by updated at date.",
+    )
+    user = OperationObjectTypeWhereFilter(
+        input_class=GlobalIDFilterInput,
+        method="filter_user",
+        help_text="Filter by user.",
+    )
+    user_email = OperationObjectTypeWhereFilter(
+        input_class=StringFilterInput,
+        method="filter_user_email",
+        help_text="Filter by user email.",
+    )
+    authorize_status = OperationObjectTypeWhereFilter(
+        input_class=OrderAuthorizeStatusEnumFilterInput,
+        method="filter_authorize_status",
+        help_text="Filter by authorize status.",
+    )
+    charge_status = OperationObjectTypeWhereFilter(
+        input_class=OrderChargeStatusEnumFilterInput,
+        method="filter_charge_status",
+        help_text="Filter by charge status.",
+    )
+    status = OperationObjectTypeWhereFilter(
+        input_class=OrderStatusEnumFilterInput,
+        method="filter_status",
+        help_text="Filter by order status.",
+    )
+    checkout_token = OperationObjectTypeWhereFilter(
+        UUIDFilterInput,
+        method="filter_checkout_token",
+        help_text="Filter by checkout token.",
+    )
+    checkout_id = OperationObjectTypeWhereFilter(
+        input_class=GlobalIDFilterInput,
+        method="filter_checkout_id",
+        help_text="Filter by checkout id.",
+    )
+    is_click_and_collect = BooleanWhereFilter(
+        method="filter_is_click_and_collect",
+        help_text="Filter by whether the order uses the click and collect delivery method.",
+    )
+    is_preorder = BooleanWhereFilter(
+        method="filter_is_preorder",
+        help_text="Filter by whether the order contains preorder items.",
+    )
+    is_gift_card_used = BooleanWhereFilter(
+        method="filter_is_gift_card_used",
+        help_text="Filter based on whether a gift card was used in the order.",
+    )
+    is_gift_card_bought = BooleanWhereFilter(
+        method="filter_is_gift_card_bought",
+        help_text="Filter based on whether the order includes a gift card purchase.",
+    )
+    voucher_code = OperationObjectTypeWhereFilter(
+        input_class=StringFilterInput,
+        method="filter_voucher_code",
+        help_text="Filter by voucher code used in the order.",
+    )
+    has_invoices = BooleanWhereFilter(
+        method="filter_has_invoices",
+        help_text="Filter by whether the order has any invoices.",
+    )
+    invoices = ObjectTypeWhereFilter(
+        input_class=InvoiceFilterInput,
+        method="filter_invoices",
+        help_text="Filter by invoice data associated with the order.",
+    )
+
+    @staticmethod
+    def filter_number(qs, _, value):
+        return filter_where_by_numeric_field(qs, "number", value)
+
+    @staticmethod
+    def filter_channel_id(qs, _, value):
+        if not value:
+            return qs
+        return filter_where_by_id_field(qs, "channel", value, "Channel")
+
+    @staticmethod
+    def filter_created_at_range(qs, _, value):
+        return filter_where_range_field(qs, "created_at", value)
+
+    @staticmethod
+    def filter_updated_at_range(qs, _, value):
+        return filter_where_range_field(qs, "updated_at", value)
+
+    @staticmethod
+    def filter_user(qs, _, value):
+        return filter_where_by_id_field(qs, "user", value, "User")
+
+    @staticmethod
+    def filter_user_email(qs, _, value):
+        return filter_where_by_value_field(qs, "user_email", value)
+
+    @staticmethod
+    def filter_authorize_status(qs, _, value):
+        return filter_where_by_value_field(qs, "authorize_status", value)
+
+    @staticmethod
+    def filter_charge_status(qs, _, value):
+        return filter_where_by_value_field(qs, "charge_status", value)
+
+    @staticmethod
+    def filter_status(qs, _, value):
+        return filter_where_by_value_field(qs, "status", value)
+
+    @staticmethod
+    def filter_checkout_token(qs, _, value):
+        return filter_where_by_value_field(qs, "checkout_token", value)
+
+    @staticmethod
+    def filter_checkout_id(qs, _, value):
+        return filter_where_by_id_field(qs, "checkout_token", value, "Checkout")
+
+    @staticmethod
+    def filter_is_click_and_collect(qs, _, value):
+        if value is None:
+            return qs.none()
+        return filter_is_click_and_collect(qs, _, value)
+
+    @staticmethod
+    def filter_is_preorder(qs, _, value):
+        if value is None:
+            return qs.none()
+        return filter_is_preorder(qs, _, value)
+
+    @staticmethod
+    def filter_is_gift_card_used(qs, _, value):
+        if value is None:
+            return qs.none()
+        return filter_by_gift_card(qs, value, GiftCardEvents.USED_IN_ORDER)
+
+    @staticmethod
+    def filter_is_gift_card_bought(qs, _, value):
+        if value is None:
+            return qs.none()
+        return filter_by_gift_card(qs, value, GiftCardEvents.BOUGHT)
+
+    @staticmethod
+    def filter_voucher_code(qs, _, value):
+        return filter_where_by_value_field(qs, "voucher_code", value)
+
+    @staticmethod
+    def filter_has_invoices(qs, _, value):
+        return filter_has_invoices(qs, value)
+
+    @staticmethod
+    def filter_invoices(qs, _, value):
+        if value is None:
+            return qs.none()
+        if filter_value := value.get("created_at"):
+            invoices = filter_where_by_range_field(
+                Invoice.objects.using(qs.db), "created_at", filter_value
+            )
+            return qs.filter(Exists(invoices.filter(order_id=OuterRef("id"))))
+        return qs.none()
+
+
+class OrderWhereInput(WhereInputObjectType):
+    class Meta:
+        doc_category = DOC_CATEGORY_ORDERS
+        filterset_class = OrderWhere
 
 
 class OrderDiscountedObjectWhere(DiscountedObjectWhere):

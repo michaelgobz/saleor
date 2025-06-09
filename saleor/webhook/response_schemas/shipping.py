@@ -1,6 +1,6 @@
 import logging
 from decimal import Decimal
-from typing import Annotated, Any, TypeVar
+from typing import Annotated, TypeVar
 
 from graphql.error import GraphQLError
 from prices import Money
@@ -8,20 +8,16 @@ from pydantic import (
     BaseModel,
     Field,
     RootModel,
-    ValidationError,
     ValidationInfo,
-    ValidatorFunctionWrapHandler,
-    WrapValidator,
     field_validator,
 )
-from pydantic_core import PydanticOmit
 
 from ...app.models import App
 from ...graphql.core.utils import from_global_id_or_error
 from ...shipping.models import ShippingMethod
 from ..const import APP_ID_PREFIX
 from ..transport.shipping_helpers import to_shipping_app_id
-from .annotations import DefaultIfNone, Metadata
+from .utils.annotations import DefaultIfNone, Metadata, OnErrorSkip
 
 logger = logging.getLogger(__name__)
 
@@ -30,27 +26,55 @@ name_max_length = ShippingMethod._meta.get_field("name").max_length
 T = TypeVar("T")
 
 
-def skip_invalid_shipping_method(
-    value: Any, handler: ValidatorFunctionWrapHandler
-) -> Any:
-    try:
-        return handler(value)
-    except ValidationError as err:
-        logger.warning("Skipping invalid shipping method: %s", err)
-        raise PydanticOmit() from err
-
-
-OnErrorSkipShippingMethod = Annotated[T, WrapValidator(skip_invalid_shipping_method)]
-
-
 class ShippingMethodSchema(BaseModel):
-    id: Annotated[str, Field(coerce_numbers_to_str=True)]
-    name: Annotated[str, Field(max_length=name_max_length)]
-    amount: Annotated[Decimal, Field(ge=0)]
-    currency: str
-    maximum_delivery_days: Annotated[int, Field(ge=0)] | None = None
-    minimum_delivery_days: Annotated[int, Field(ge=0)] | None = None
-    description: str | None = None
+    id: Annotated[
+        str, Field(coerce_numbers_to_str=True, description="ID of the shipping method.")
+    ]
+    name: Annotated[
+        str,
+        Field(max_length=name_max_length, description="Name of the shipping method."),
+    ]
+    amount: Annotated[
+        Decimal,
+        Field(
+            ge=Decimal("0"),
+            description="Non-negative price the customer pays for delivery using this shipping method.",
+            examples=[Decimal("10.00")],
+        ),
+    ]
+    currency: Annotated[
+        str,
+        Field(
+            description="Currency code for amount. Must match the currency of object for which the methods are defined."
+        ),
+    ]
+    maximum_delivery_days: (
+        Annotated[
+            int,
+            Field(
+                ge=0,
+                description="Maximum delivery days for delivery promise of shipping carrier.",
+            ),
+        ]
+        | None
+    ) = None
+    minimum_delivery_days: (
+        Annotated[
+            int,
+            Field(
+                ge=0,
+                description="Minimum delivery days for delivery promise of shipping carrier.",
+            ),
+        ]
+        | None
+    ) = None
+    description: (
+        Annotated[
+            str,
+            Field(max_length=255, description="Description of the shipping method."),
+        ]
+        | None
+    ) = None
     metadata: DefaultIfNone[Metadata] = {}
 
     @property
@@ -65,9 +89,23 @@ class ShippingMethodSchema(BaseModel):
             raise RuntimeError("Missing app in context")
         return to_shipping_app_id(app, shipping_method_id)
 
+    @field_validator("currency", mode="before")
+    @classmethod
+    def clean_currency(cls, value: str, info: ValidationInfo) -> str:
+        currency: str | None = (
+            info.context.get("currency", None) if info.context else None
+        )
+        if not currency:
+            raise ValueError("Missing currency in context")
+        if value != currency:
+            error_msg = "ShippingMethod currency mismatch: expected %s, got %s"
+            logger.warning(error_msg, currency, value, extra={"value": value})
+            raise ValueError(error_msg % (currency, value))
+        return value.upper()
+
 
 class ListShippingMethodsSchema(RootModel):
-    root: DefaultIfNone[list[OnErrorSkipShippingMethod[ShippingMethodSchema]]] = []
+    root: DefaultIfNone[list[OnErrorSkip[ShippingMethodSchema]]] = []
 
 
 class ExcludedShippingMethodSchema(BaseModel):
@@ -93,5 +131,5 @@ class ExcludedShippingMethodSchema(BaseModel):
 
 class FilterShippingMethodsSchema(BaseModel):
     excluded_methods: DefaultIfNone[
-        list[OnErrorSkipShippingMethod[ExcludedShippingMethodSchema]]
+        list[OnErrorSkip[ExcludedShippingMethodSchema]]
     ] = []
