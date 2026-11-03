@@ -1,4 +1,5 @@
 from collections import defaultdict
+from typing import cast
 
 import graphene
 from django.core.exceptions import ValidationError
@@ -6,30 +7,26 @@ from django.utils.text import slugify
 from graphene.utils.str_converters import to_camel_case
 from text_unidecode import unidecode
 
-from ....attribute import ATTRIBUTE_PROPERTIES_CONFIGURATION, AttributeInputType, models
+from ....attribute import AttributeEntityType, AttributeInputType, models
 from ....attribute.error_codes import AttributeBulkCreateErrorCode
 from ....core.tracing import traced_atomic_transaction
 from ....core.utils import prepare_unique_slug
-from ....permission.enums import PageTypePermissions, ProductTypePermissions
 from ....webhook.event_types import WebhookEventAsyncType
 from ....webhook.utils import get_webhooks_for_event
 from ...core import ResolveInfo
+from ...core.context import ChannelContext
 from ...core.doc_category import DOC_CATEGORY_ATTRIBUTES
 from ...core.enums import ErrorPolicyEnum
 from ...core.mutations import BaseMutation, DeprecatedModelMutation
 from ...core.types import AttributeBulkCreateError, BaseObjectType, NonNullList
 from ...core.utils import WebhookEventInfo, get_duplicated_values
 from ...plugins.dataloaders import get_plugin_manager_promise
-from ..enums import AttributeTypeEnum
 from ..mutations.attribute_create import AttributeCreateInput, AttributeValueCreateInput
 from ..types import Attribute
+from .mixins import AttributeMixin
+from .permissions import ATTRIBUTE_TYPE_PERMISSION_MAP
 
 ONLY_SWATCH_FIELDS = ["file_url", "content_type", "value"]
-DEPRECATED_ATTR_FIELDS = [
-    "storefront_search_position",
-    "filterable_in_storefront",
-    "available_in_grid",
-]
 DEPRECATED_VALUE_FIELDS = ["rich_text", "plain_text"]
 
 
@@ -50,7 +47,7 @@ def validate_value(
         index_error_map[attribute_index].append(
             error_class(
                 path=f"{path_prefix}.{value_index}",
-                message=("Cannot specify both value and file for swatch attribute."),
+                message="Cannot specify both value and file for swatch attribute.",
                 code=error_class.code.INVALID.value,
             )
         )
@@ -89,9 +86,6 @@ def clean_values(
 ):
     cleand_values: list = []
     slugs_list: list = []
-
-    if attribute:
-        slugs_list = list(attribute.values.values_list("slug", flat=True))
 
     duplicated_names = get_duplicated_values(
         [
@@ -167,6 +161,9 @@ def clean_values(
             )
             continue
 
+        if attribute:
+            slugs_list = [value.slug for value in attribute.values.all()]
+
         validate_value(
             value_data,
             input_type,
@@ -197,13 +194,21 @@ class AttributeBulkCreateResult(BaseObjectType):
 def get_results(
     instances_data_with_errors_list: list[dict], reject_everything: bool = False
 ) -> list[AttributeBulkCreateResult]:
-    return [
-        AttributeBulkCreateResult(
-            attribute=None if reject_everything else data.get("instance"),
-            errors=data.get("errors"),
+    results = []
+    for data in instances_data_with_errors_list:
+        if reject_everything:
+            attribute = None
+        else:
+            attribute = data.get("instance")
+            if attribute:
+                attribute = ChannelContext(attribute, None)
+        results.append(
+            AttributeBulkCreateResult(
+                attribute=attribute,
+                errors=data.get("errors"),
+            )
         )
-        for data in instances_data_with_errors_list
-    ]
+    return results
 
 
 class AttributeBulkCreate(BaseMutation):
@@ -311,15 +316,13 @@ class AttributeBulkCreate(BaseMutation):
                 cleaned_inputs_map[attribute_index] = None
                 continue
 
-            if any(key in DEPRECATED_ATTR_FIELDS for key in attribute_data.keys()):
-                message = (
-                    "Deprecated fields 'storefront_search_position', "
-                    "'filterable_in_storefront', 'available_in_grid' and are not "
-                    "allowed in bulk mutation."
-                )
+            try:
+                AttributeMixin.validate_reference_types_limit(attribute_data)
+            except ValidationError as e:
                 index_error_map[attribute_index].append(
                     AttributeBulkCreateError(
-                        message=message,
+                        path="referenceTypes",
+                        message=e.messages[0],
                         code=AttributeBulkCreateErrorCode.INVALID.value,
                     )
                 )
@@ -355,12 +358,21 @@ class AttributeBulkCreate(BaseMutation):
         )
 
         # check permissions based on attribute type
-        permissions: tuple[ProductTypePermissions] | tuple[PageTypePermissions]
-        if cleaned_input["type"] == AttributeTypeEnum.PRODUCT_TYPE.value:
-            permissions = (ProductTypePermissions.MANAGE_PRODUCT_TYPES_AND_ATTRIBUTES,)
-        else:
-            permissions = (PageTypePermissions.MANAGE_PAGE_TYPES_AND_ATTRIBUTES,)
+        attribute_type = cleaned_input["type"]
+        permission = ATTRIBUTE_TYPE_PERMISSION_MAP.get(attribute_type)
+        if permission is None:
+            index_error_map[attribute_index].append(
+                AttributeBulkCreateError(
+                    path="type",
+                    message=(
+                        f"No permission is defined for attribute type {attribute_type}."
+                    ),
+                    code=AttributeBulkCreateErrorCode.INVALID.value,
+                )
+            )
+            return None
 
+        permissions = (permission,)
         if not cls.check_permissions(info.context, permissions):
             index_error_map[attribute_index].append(
                 AttributeBulkCreateError(
@@ -373,8 +385,9 @@ class AttributeBulkCreate(BaseMutation):
             )
             return None
 
-        input_type = cleaned_input.get("input_type")
         entity_type = cleaned_input.get("entity_type")
+        # set the db default input type if not provided
+        input_type = cleaned_input.get("input_type", AttributeInputType.DROPDOWN)
         if input_type == AttributeInputType.REFERENCE and not entity_type:
             index_error_map[attribute_index].append(
                 AttributeBulkCreateError(
@@ -387,23 +400,18 @@ class AttributeBulkCreate(BaseMutation):
             )
             return None
 
-        # check attribute configuration
-        for field in ATTRIBUTE_PROPERTIES_CONFIGURATION.keys():
-            allowed_input_type = ATTRIBUTE_PROPERTIES_CONFIGURATION[field]
-
-            if input_type not in allowed_input_type and cleaned_input.get(field):
-                camel_case_field = to_camel_case(field)
-                index_error_map[attribute_index].append(
-                    AttributeBulkCreateError(
-                        path=camel_case_field,
-                        message=(
-                            f"Cannot set {camel_case_field} on a {input_type} "
-                            "attribute.",
-                        ),
-                        code=AttributeBulkCreateErrorCode.INVALID.value,
-                    )
+        entity_type = cast(str, entity_type)
+        try:
+            AttributeMixin.clean_reference_types(cleaned_input, entity_type, input_type)
+        except ValidationError as e:
+            index_error_map[attribute_index].append(
+                AttributeBulkCreateError(
+                    path="referenceTypes",
+                    message=e.messages[0],
+                    code=AttributeBulkCreateErrorCode.INVALID.value,
                 )
-                return None
+            )
+            return None
 
         # generate slug
         cleaned_input["slug"] = cls._generate_slug(cleaned_input, existing_slugs)
@@ -449,6 +457,8 @@ class AttributeBulkCreate(BaseMutation):
                 continue
 
             values: list = []
+            product_reference_types: list = []
+            page_reference_types: list = []
             values_data = cleaned_input.pop("values", None)
             instance = models.Attribute()
 
@@ -461,6 +471,8 @@ class AttributeBulkCreate(BaseMutation):
                         "instance": instance,
                         "errors": index_error_map[index],
                         "values": values,
+                        "product_reference_types": product_reference_types,
+                        "page_reference_types": page_reference_types,
                     }
                 )
             except ValidationError as exc:
@@ -477,6 +489,10 @@ class AttributeBulkCreate(BaseMutation):
                     {"instance": None, "errors": index_error_map[index]}
                 )
                 continue
+
+            cls.create_reference_types(
+                cleaned_input, instance, product_reference_types, page_reference_types
+            )
 
             if values_data:
                 cls.create_values(instance, values_data, values, index, index_error_map)
@@ -517,11 +533,39 @@ class AttributeBulkCreate(BaseMutation):
                         )
 
     @classmethod
+    def create_reference_types(
+        cls,
+        cleaned_input: dict,
+        attribute: models.Attribute,
+        product_reference_types: list,
+        page_reference_types: list,
+    ):
+        if reference_types_objects := cleaned_input.get("reference_types"):
+            if attribute.entity_type == AttributeEntityType.PAGE:
+                PageReferenceTypeModel = models.Attribute.reference_page_types.through
+                page_reference_types.extend(
+                    PageReferenceTypeModel(attribute=attribute, pagetype=reference_type)
+                    for reference_type in reference_types_objects
+                )
+            else:
+                ProductReferenceTypeModel = (
+                    models.Attribute.reference_product_types.through
+                )
+                product_reference_types.extend(
+                    ProductReferenceTypeModel(
+                        attribute=attribute, producttype=reference_type
+                    )
+                    for reference_type in reference_types_objects
+                )
+
+    @classmethod
     def save(
         cls, instances_data_with_errors_list: list[dict]
     ) -> list[models.Attribute]:
         attributes_to_create: list = []
         values_to_create: list = []
+        product_reference_types_to_create: list = []
+        page_reference_types_to_create: list = []
         for attribute_data in instances_data_with_errors_list:
             attribute = attribute_data["instance"]
 
@@ -533,8 +577,20 @@ class AttributeBulkCreate(BaseMutation):
             if attribute_data["values"]:
                 values_to_create.extend(attribute_data["values"])
 
+            if ref_types := attribute_data["product_reference_types"]:
+                product_reference_types_to_create.extend(ref_types)
+
+            if ref_types := attribute_data["page_reference_types"]:
+                page_reference_types_to_create.extend(ref_types)
+
         models.Attribute.objects.bulk_create(attributes_to_create)
         models.AttributeValue.objects.bulk_create(values_to_create)
+        if product_reference_types_to_create:
+            ReferenceTypeModel = product_reference_types_to_create[0]._meta.model
+            ReferenceTypeModel.objects.bulk_create(product_reference_types_to_create)
+        if page_reference_types_to_create:
+            ReferenceTypeModel = page_reference_types_to_create[0]._meta.model
+            ReferenceTypeModel.objects.bulk_create(page_reference_types_to_create)
 
         return attributes_to_create
 

@@ -414,10 +414,7 @@ def test_handle_successful_payment_intent_checkout_with_voucher_ongoing_completi
     manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    address = customer_user.default_billing_address
-    total = calculate_checkout_total_with_gift_cards(
-        manager, checkout_info, lines, address
-    )
+    total = calculate_checkout_total_with_gift_cards(manager, checkout_info, lines)
 
     # set voucher usage limit to 1
     voucher_free_shipping.usage_limit = 1
@@ -1185,7 +1182,7 @@ def test_handle_fully_refund(stripe_plugin, payment_stripe_for_order, channel_US
 
     assert payment.charge_status == ChargeStatus.FULLY_REFUNDED
     assert payment.is_active is False
-    assert payment.captured_amount == Decimal("0")
+    assert payment.captured_amount == Decimal(0)
 
 
 def test_handle_partial_refund(stripe_plugin, payment_stripe_for_order, channel_USD):
@@ -1204,7 +1201,7 @@ def test_handle_partial_refund(stripe_plugin, payment_stripe_for_order, channel_
     plugin = stripe_plugin()
 
     refund = StripeObject(id="refund_id")
-    refund["amount"] = price_to_minor_unit(Decimal("10"), payment.currency)
+    refund["amount"] = price_to_minor_unit(Decimal(10), payment.currency)
     refund["currency"] = payment.currency
     refund["last_response"] = None
 
@@ -1219,7 +1216,7 @@ def test_handle_partial_refund(stripe_plugin, payment_stripe_for_order, channel_
 
     assert payment.charge_status == ChargeStatus.PARTIALLY_REFUNDED
     assert payment.is_active is True
-    assert payment.captured_amount == payment.total - Decimal("10")
+    assert payment.captured_amount == payment.total - Decimal(10)
 
 
 def test_handle_refund_already_processed(
@@ -1227,7 +1224,7 @@ def test_handle_refund_already_processed(
 ):
     payment = payment_stripe_for_order
     payment.charge_status = ChargeStatus.PARTIALLY_REFUNDED
-    payment.captured_amount = payment.total - Decimal("10")
+    payment.captured_amount = payment.total - Decimal(10)
     payment.save()
 
     refund_id = "refund_abc"
@@ -1243,7 +1240,7 @@ def test_handle_refund_already_processed(
     plugin = stripe_plugin()
 
     refund = StripeObject(id=refund_id)
-    refund["amount"] = price_to_minor_unit(Decimal("10"), payment.currency)
+    refund["amount"] = price_to_minor_unit(Decimal(10), payment.currency)
     refund["currency"] = payment.currency
     refund["last_response"] = None
 
@@ -1258,7 +1255,7 @@ def test_handle_refund_already_processed(
 
     assert payment.charge_status == ChargeStatus.PARTIALLY_REFUNDED
     assert payment.is_active is True
-    assert payment.captured_amount == payment.total - Decimal("10")
+    assert payment.captured_amount == payment.total - Decimal(10)
 
 
 @patch("saleor.payment.gateways.stripe.webhooks.stripe.Charge.retrieve")
@@ -1302,7 +1299,7 @@ def test_handle_refund_missing_refunds(
 
     assert payment.charge_status == ChargeStatus.FULLY_REFUNDED
     assert payment.is_active is False
-    assert payment.captured_amount == Decimal("0")
+    assert payment.captured_amount == Decimal(0)
 
 
 @pytest.mark.parametrize("called", [True, False])

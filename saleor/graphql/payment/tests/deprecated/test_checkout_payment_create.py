@@ -38,8 +38,8 @@ def test_checkout_add_payment_by_checkout_id(
     manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    total = calculations.checkout_total(
-        manager=manager, checkout_info=checkout_info, lines=lines, address=address
+    total = calculations.calculate_checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines
     )
     variables = {
         "checkoutId": checkout_id,
@@ -80,8 +80,8 @@ def test_checkout_add_payment_neither_token_and_id_given(
     manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    total = calculations.checkout_total(
-        manager=manager, checkout_info=checkout_info, lines=lines, address=address
+    total = calculations.calculate_checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines
     )
     variables = {
         "input": {
@@ -114,8 +114,8 @@ def test_checkout_add_payment_both_token_and_id_given(
     manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
-    total = calculations.checkout_total(
-        manager=manager, checkout_info=checkout_info, lines=lines, address=address
+    total = calculations.calculate_checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines
     )
     variables = {
         "checkoutId": checkout_id,

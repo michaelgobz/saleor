@@ -1,4 +1,4 @@
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from urllib.parse import urljoin
 
 import pytest
@@ -7,23 +7,12 @@ from django.db.utils import DataError
 from django.templatetags.static import static
 from django.test import RequestFactory, override_settings
 
-from ...account.models import Address, User
-from ...account.utils import create_superuser
+from ...account.models import User
 from ...attribute.models import AttributeValue
-from ...channel.models import Channel
-from ...discount.models import (
-    Promotion,
-    PromotionRule,
-    Voucher,
-    VoucherChannelListing,
-    VoucherCode,
-)
-from ...giftcard.models import GiftCard, GiftCardEvent
 from ...order.models import Order
 from ...payment.models import TransactionItem
 from ...product import ProductTypeKind
 from ...product.models import ProductType
-from ...shipping.models import ShippingZone
 from ..storages import S3MediaStorage
 from ..utils import (
     build_absolute_uri,
@@ -32,7 +21,6 @@ from ..utils import (
     get_domain,
     is_ssl_enabled,
     prepare_unique_attribute_value_slug,
-    random_data,
 )
 
 type_schema = {
@@ -67,138 +55,6 @@ def test_get_client_ip(ip_address, expected_ip):
     assert get_client_ip(request) == expected_ip
 
 
-def test_create_superuser(db, client, media_root):
-    credentials = {"email": "admin@example.com", "password": "admin"}
-    # Test admin creation
-    assert User.objects.all().count() == 0
-    create_superuser(credentials)
-    assert User.objects.all().count() == 1
-    admin = User.objects.all().first()
-    assert admin.is_superuser
-    assert not admin.avatar
-    # Test duplicating
-    create_superuser(credentials)
-    assert User.objects.all().count() == 1
-
-
-def test_create_shipping_zones(db):
-    assert ShippingZone.objects.all().count() == 0
-    for _ in random_data.create_shipping_zones():
-        pass
-    assert ShippingZone.objects.all().count() == 5
-
-
-def test_create_channels(db):
-    assert Channel.objects.all().count() == 0
-    for _ in random_data.create_channels():
-        pass
-    assert Channel.objects.all().count() == 2
-    assert Channel.objects.get(slug="channel-pln")
-
-
-@override_settings(DEFAULT_CHANNEL_SLUG="test-slug")
-def test_create_channels_with_default_channel_slug(db):
-    assert Channel.objects.all().count() == 0
-    for _ in random_data.create_channels():
-        pass
-    assert Channel.objects.all().count() == 2
-    assert Channel.objects.get(slug="test-slug")
-
-
-def test_create_fake_user(db):
-    assert User.objects.all().count() == 0
-    random_data.create_fake_user("password")
-    assert User.objects.all().count() == 1
-    user = User.objects.all().first()
-    assert not user.is_superuser
-
-
-def test_create_fake_users(db):
-    how_many = 5
-    for _ in random_data.create_users("password", how_many):
-        pass
-    assert User.objects.all().count() == 5
-
-
-def test_create_address(db):
-    assert not Address.objects.exists()
-    random_data.create_address()
-    assert Address.objects.all().count() == 1
-
-
-def test_create_fake_order(db, monkeypatch, image, media_root, warehouse):
-    # Tests shouldn't depend on images present in placeholder folder
-    monkeypatch.setattr(
-        "saleor.core.utils.random_data.get_image", Mock(return_value=image)
-    )
-    for _ in random_data.create_channels():
-        pass
-    for _ in random_data.create_shipping_zones():
-        pass
-    for _ in random_data.create_users("password", 3):
-        pass
-    for _ in random_data.create_page_type():
-        pass
-    for _ in random_data.create_pages():
-        pass
-    random_data.create_products_by_schema("/", False)
-    how_many_orders = 2
-    for _ in random_data.create_orders(how_many_orders):
-        pass
-    assert Order.objects.all().count() == how_many_orders
-
-
-def test_create_catalogue_promotions(db):
-    how_many = 5
-    channel_count = 0
-    for _ in random_data.create_channels():
-        channel_count += 1
-    for _ in random_data.create_catalogue_promotions(how_many):
-        pass
-    assert Promotion.objects.all().count() == how_many
-    assert PromotionRule.objects.all().count() == how_many * 2
-
-
-def test_create_order_promotions(db):
-    how_many = 5
-    channel_count = 0
-    for _ in random_data.create_channels():
-        channel_count += 1
-    for _ in random_data.create_order_promotions(how_many):
-        pass
-    assert Promotion.objects.all().count() == how_many
-    assert PromotionRule.objects.all().count() == how_many * 2
-
-
-def test_create_vouchers(db):
-    voucher_count = 3
-    channel_count = 0
-    for _ in random_data.create_channels():
-        channel_count += 1
-    assert Voucher.objects.all().count() == 0
-    for _ in random_data.create_vouchers():
-        pass
-    assert Voucher.objects.all().count() == voucher_count
-    assert VoucherCode.objects.all().count() == voucher_count
-    assert VoucherChannelListing.objects.all().count() == voucher_count * channel_count
-
-
-def test_create_gift_card(
-    db, product, shippable_gift_card_product, customer_user, staff_user, order
-):
-    product = shippable_gift_card_product
-    product.name = "Gift card 100"
-    product.save(update_fields=["name"])
-
-    amount = 5
-    assert GiftCard.objects.count() == 0
-    assert GiftCardEvent.objects.count() == 0
-    for _ in random_data.create_gift_cards(amount):
-        pass
-    assert GiftCard.objects.count() == amount * 2
-    assert GiftCardEvent.objects.count() == amount * 2
-
-
 @patch("storages.backends.s3boto3.S3Boto3Storage")
 def test_storages_set_s3_bucket_domain(storage, settings):
     settings.AWS_MEDIA_BUCKET_NAME = "media-bucket"
@@ -217,7 +73,7 @@ def test_storages_not_setting_s3_bucket_domain(storage, settings):
     assert storage.custom_domain is None
 
 
-def test_build_absolute_uri(site_settings, settings):
+def test_build_absolute_uri():
     # Case when we are using external service for storing static files,
     # eg. Amazon s3
     url = "https://example.com/static/images/image.jpg"
@@ -225,13 +81,14 @@ def test_build_absolute_uri(site_settings, settings):
 
     # Case when static url is resolved to relative url
     logo_url = build_absolute_uri(static("images/close.svg"))
-    protocol = "https" if settings.ENABLE_SSL else "http"
-    current_url = f"{protocol}://{site_settings.site.domain}"
+    current_url = "https://example.com/"
     logo_location = urljoin(current_url, static("images/close.svg"))
     assert logo_url == logo_location
 
 
-def test_build_absolute_uri_with_host(site_settings, settings):
+def test_build_absolute_uri_with_host(settings):
+    settings.PUBLIC_URL = None
+    settings.ENABLE_SSL = True
     # given
     host = "test.com"
     location = "images/close.svg"
@@ -240,7 +97,7 @@ def test_build_absolute_uri_with_host(site_settings, settings):
     url = build_absolute_uri(location, host)
 
     # then
-    assert url == f"http://{host}/{location}"
+    assert url == f"https://{host}/{location}"
 
 
 @pytest.mark.parametrize(
@@ -248,9 +105,7 @@ def test_build_absolute_uri_with_host(site_settings, settings):
 )
 @pytest.mark.parametrize("enable_ssl", [True, False])
 @pytest.mark.parametrize("host", [None, "test.com"])
-def test_build_absolute_uri_with_public_url(
-    public_url, enable_ssl, host, site_settings, settings
-):
+def test_build_absolute_uri_with_public_url(public_url, enable_ssl, host, settings):
     # given
     location = "images/close.svg"
     settings.PUBLIC_URL = public_url
@@ -261,9 +116,7 @@ def test_build_absolute_uri_with_public_url(
     assert url == f"{public_url}/{location}"
 
 
-def test_build_absolute_uri_with_public_url_and_absolute_location(
-    site_settings, settings
-):
+def test_build_absolute_uri_with_public_url_and_absolute_location(settings):
     # given
     location = "https://example.com/static/images/image.jpg"
     settings.PUBLIC_URL = "https://api.example.com"
@@ -275,6 +128,7 @@ def test_build_absolute_uri_with_public_url_and_absolute_location(
 
 @pytest.mark.parametrize("enable_ssl", [True, False])
 def test_is_ssl_enabled(enable_ssl, settings):
+    settings.PUBLIC_URL = None
     # given
     settings.ENABLE_SSL = enable_ssl
     # then
@@ -295,6 +149,7 @@ def test_is_ssl_enabled_with_public_url(public_url, expected, enable_ssl, settin
 
 
 def test_get_domain(site_settings, settings):
+    settings.PUBLIC_URL = None
     assert get_domain() == site_settings.site.domain
 
 

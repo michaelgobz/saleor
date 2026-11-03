@@ -1,12 +1,16 @@
 import graphene
-from django.db import transaction
 from django.db.models import Exists, OuterRef, Q
 
 from ....attribute import models as models
-from ....permission.enums import ProductTypePermissions
+from ....page import models as page_models
+from ....page.utils import mark_pages_search_vector_as_dirty_in_batches
 from ....product import models as product_models
+from ....product.utils.search_helpers import (
+    mark_products_search_vector_as_dirty_in_batches,
+)
 from ....webhook.event_types import WebhookEventAsyncType
 from ...core import ResolveInfo
+from ...core.context import ChannelContext
 from ...core.mutations import ModelWithExtRefMutation
 from ...core.types import AttributeError
 from ...core.utils import WebhookEventInfo
@@ -14,27 +18,10 @@ from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import Attribute, AttributeValue
 from .attribute_update import AttributeValueUpdateInput
 from .attribute_value_create import AttributeValueCreate
-
-PRODUCTS_BATCH_SIZE = 10000
-
-
-def queryset_in_batches(queryset):
-    """Slice a queryset into batches.
-
-    Input queryset should be sorted be pk.
-    """
-    start_pk = 0
-
-    while True:
-        qs = queryset.filter(pk__gt=start_pk)[:PRODUCTS_BATCH_SIZE]
-        pks = list(qs.values_list("pk", flat=True))
-
-        if not pks:
-            break
-
-        yield pks
-
-        start_pk = pks[-1]
+from .permissions import (
+    check_any_attribute_type_permission,
+    check_attribute_type_permissions,
+)
 
 
 class AttributeValueUpdate(AttributeValueCreate, ModelWithExtRefMutation):
@@ -55,8 +42,13 @@ class AttributeValueUpdate(AttributeValueCreate, ModelWithExtRefMutation):
     class Meta:
         model = models.AttributeValue
         object_type = AttributeValue
-        description = "Updates value of an attribute."
-        permissions = (ProductTypePermissions.MANAGE_PRODUCT_TYPES_AND_ATTRIBUTES,)
+        description = (
+            "Updates value of an attribute.\n\nRequires one of the following "
+            "permissions, depending on the type of the value's attribute: "
+            "MANAGE_PRODUCT_TYPES_AND_ATTRIBUTES for `PRODUCT_TYPE` attributes, "
+            "MANAGE_PAGE_TYPES_AND_ATTRIBUTES for `PAGE_TYPE` attributes, "
+            "MANAGE_CUSTOMER_TYPES_AND_ATTRIBUTES for `CUSTOMER_TYPE` attributes."
+        )
         error_type_class = AttributeError
         error_type_field = "attribute_errors"
         webhook_events_info = [
@@ -82,45 +74,62 @@ class AttributeValueUpdate(AttributeValueCreate, ModelWithExtRefMutation):
 
     @classmethod
     def perform_mutation(cls, root, info: ResolveInfo, /, **data):
+        # Concrete permission is checked once the value's attribute type is known.
+        check_any_attribute_type_permission(cls, info.context)
+        object_id = cls.get_object_id(**data)
+        pk = cls.get_global_id_or_error(object_id, only_type=AttributeValue)
+        attribute_types = models.AttributeValue.objects.filter(pk=pk).values_list(
+            "attribute__type", flat=True
+        )
+        check_attribute_type_permissions(cls, info.context, attribute_types)
         return super(AttributeValueCreate, cls).perform_mutation(root, info, **data)
 
     @classmethod
     def success_response(cls, instance):
         response = super().success_response(instance)
-        response.attribute = instance.attribute
+        response.attribute = ChannelContext(instance.attribute, None)
+        response.attributeValue = ChannelContext(instance, None)
         return response
 
     @classmethod
     def post_save_action(cls, info: ResolveInfo, instance, cleaned_input):
-        with transaction.atomic():
-            variants = product_models.ProductVariant.objects.filter(
-                Exists(instance.variantassignments.filter(variant_id=OuterRef("id")))
-            )
-            # SELECT … FOR UPDATE needs to lock rows in a consistent order
-            # to avoid deadlocks between updates touching the same rows.
-
-            qs = (
-                product_models.Product.objects.select_for_update(of=("self",))
-                .filter(
-                    Q(search_index_dirty=False)
-                    & (
-                        Q(
-                            Exists(
-                                instance.productvalueassignment.filter(
-                                    product_id=OuterRef("id")
-                                )
-                            )
-                        )
-                        | Q(Exists(variants.filter(product_id=OuterRef("id"))))
-                    )
-                )
-                .order_by("pk")
-            )
-            for batch_pks in queryset_in_batches(qs):
-                product_models.Product.objects.filter(pk__in=batch_pks).update(
-                    search_index_dirty=True
-                )
-
+        cls.mark_search_index_dirty(instance)
         manager = get_plugin_manager_promise(info.context).get()
         cls.call_event(manager.attribute_value_updated, instance)
         cls.call_event(manager.attribute_updated, instance.attribute)
+
+    @classmethod
+    def mark_search_index_dirty(cls, instance):
+        cls._mark_products_search_index_dirty(instance)
+        cls._mark_pages_search_index_dirty(instance)
+
+    @classmethod
+    def _mark_products_search_index_dirty(cls, instance):
+        variants = product_models.ProductVariant.objects.filter(
+            Exists(instance.variantassignments.filter(variant_id=OuterRef("id")))
+        )
+        products = product_models.Product.objects.filter(
+            Q(search_index_dirty=False)
+            & (
+                Q(
+                    Exists(
+                        instance.productvalueassignment.filter(
+                            product_id=OuterRef("id")
+                        )
+                    )
+                )
+                | Q(Exists(variants.filter(product_id=OuterRef("id"))))
+            )
+        ).order_by("pk")
+        mark_products_search_vector_as_dirty_in_batches(
+            list(products.values_list("id", flat=True))
+        )
+
+    @classmethod
+    def _mark_pages_search_index_dirty(cls, instance):
+        pages = page_models.Page.objects.filter(
+            Exists(instance.pagevalueassignment.filter(page_id=OuterRef("id")))
+        ).order_by("pk")
+        mark_pages_search_vector_as_dirty_in_batches(
+            list(pages.values_list("id", flat=True))
+        )

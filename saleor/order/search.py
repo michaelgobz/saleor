@@ -2,15 +2,13 @@ from typing import TYPE_CHECKING
 
 import graphene
 from django.conf import settings
-from django.contrib.postgres.search import SearchQuery, SearchRank
-from django.db.models import F, Q, Value, prefetch_related_objects
+from django.db.models import Value, prefetch_related_objects
 
-from ..account.search import generate_address_search_vector_value
+from ..account.search import generate_address_search_vector_value, generate_email_vector
 from ..core.postgres import FlatConcatSearchVector, NoValidationSearchVector
+from . import OrderEvents
 
 if TYPE_CHECKING:
-    from django.db.models import QuerySet
-
     from .models import Order
 
 
@@ -35,22 +33,22 @@ def prepare_order_search_vector_value(
             "discounts",
             "lines",
             "payment_transactions__events",
+            "invoices",
+            "events",
         )
     search_vectors = [
-        NoValidationSearchVector(Value(str(order.number)), config="simple", weight="A")
+        NoValidationSearchVector(Value(str(order.number)), config="simple", weight="A"),
+        NoValidationSearchVector(
+            Value(graphene.Node.to_global_id("Order", order.id)),
+            config="simple",
+            weight="A",
+        ),
     ]
     if order.user_email:
-        search_vectors.append(
-            NoValidationSearchVector(
-                Value(order.user_email), config="simple", weight="A"
-            )
-        )
+        search_vectors.extend(generate_email_vector(order.user_email))
     if order.user:
-        search_vectors.append(
-            NoValidationSearchVector(
-                Value(order.user.email), config="simple", weight="A"
-            )
-        )
+        if order.user.email and order.user.email != order.user_email:
+            search_vectors.extend(generate_email_vector(order.user.email))
         if order.user.first_name:
             search_vectors.append(
                 NoValidationSearchVector(
@@ -64,6 +62,13 @@ def prepare_order_search_vector_value(
                 )
             )
 
+    if order.customer_note:
+        search_vectors.append(
+            NoValidationSearchVector(
+                Value(order.customer_note), config="simple", weight="B"
+            )
+        )
+
     if order.billing_address:
         search_vectors += generate_address_search_vector_value(
             order.billing_address, weight="B"
@@ -72,11 +77,19 @@ def prepare_order_search_vector_value(
         search_vectors += generate_address_search_vector_value(
             order.shipping_address, weight="B"
         )
+    if order.external_reference:
+        search_vectors.append(
+            NoValidationSearchVector(
+                Value(order.external_reference), config="simple", weight="B"
+            )
+        )
 
     search_vectors += generate_order_payments_search_vector_value(order)
     search_vectors += generate_order_discounts_search_vector_value(order)
     search_vectors += generate_order_lines_search_vector_value(order)
     search_vectors += generate_order_transactions_search_vector_value(order)
+    search_vectors += generate_order_invoices_search_vector_value(order)
+    search_vectors += generate_order_events_search_vector_value(order)
     return search_vectors
 
 
@@ -213,11 +226,37 @@ def generate_order_lines_search_vector_value(
     return line_vectors
 
 
-def search_orders(qs: "QuerySet[Order]", value) -> "QuerySet[Order]":
-    if value:
-        query = SearchQuery(value, search_type="websearch", config="simple")
-        lookup = Q(search_vector=query)
-        qs = qs.filter(lookup).annotate(
-            search_rank=SearchRank(F("search_vector"), query)
+def generate_order_invoices_search_vector_value(
+    order: "Order",
+) -> list[NoValidationSearchVector]:
+    invoice_vectors = []
+    for invoice in order.invoices.all().order_by("-created_at")[
+        : settings.SEARCH_ORDERS_MAX_INDEXED_INVOICES
+    ]:
+        invoice_vectors.append(
+            NoValidationSearchVector(
+                Value(graphene.Node.to_global_id("Invoice", invoice.id)),
+                config="simple",
+                weight="D",
+            )
         )
-    return qs
+    return invoice_vectors
+
+
+def generate_order_events_search_vector_value(
+    order: "Order",
+) -> list[NoValidationSearchVector]:
+    event_vectors = []
+    events = order.events.filter(
+        type__in=[OrderEvents.NOTE_ADDED, OrderEvents.NOTE_UPDATED]
+    ).order_by("-date")
+    for event in events[: settings.SEARCH_ORDERS_MAX_INDEXED_EVENTS]:
+        if message := event.parameters.get("message"):
+            event_vectors.append(
+                NoValidationSearchVector(
+                    Value(message),
+                    config="simple",
+                    weight="D",
+                )
+            )
+    return event_vectors

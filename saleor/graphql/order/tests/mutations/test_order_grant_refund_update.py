@@ -32,6 +32,7 @@ mutation OrderGrantRefundUpdate(
         amount
       }
       reason
+      reasonReference { id }
       user {
         id
       }
@@ -65,6 +66,7 @@ mutation OrderGrantRefundUpdate(
         createdAt
         updatedAt
         reason
+        reasonReference { id }
         app{
           id
         }
@@ -734,7 +736,7 @@ def test_grant_refund_update_with_same_line_in_add_and_remove(
     )
     last_order_line = order_with_lines.lines.last()
     last_order_line.quantity = 2
-    last_order_line.save()
+    last_order_line.save(update_fields=["quantity"])
     granted_refund_line_to_remove = granted_refund.lines.create(
         order_line=last_order_line, quantity=1
     )
@@ -2255,57 +2257,3 @@ def test_granted_refund_update_when_status_allows_update(
     ) == quantize_price(
         Decimal(granted_refund_data["amount"]["amount"]), order_with_lines.currency
     )
-
-
-@pytest.mark.parametrize(
-    "granted_refund_status",
-    [OrderGrantedRefundStatus.SUCCESS, OrderGrantedRefundStatus.PENDING],
-)
-def test_granted_refund_updated_when_status_blocks_action_and_only_reason_provided(
-    granted_refund_status,
-    app_api_client,
-    staff_user,
-    permission_manage_orders,
-    order_with_lines,
-    transaction_item_generator,
-):
-    # given
-    max_granted_charged_value = Decimal("1.00")
-    transaction_item = transaction_item_generator(
-        order_id=order_with_lines.id, charged_value=max_granted_charged_value
-    )
-    current_reason = "Granted refund reason."
-    current_amount = Decimal("0.50")
-    granted_refund = order_with_lines.granted_refunds.create(
-        amount_value=current_amount,
-        currency=order_with_lines.currency,
-        reason=current_reason,
-        user=staff_user,
-        status=granted_refund_status,
-        transaction_item=transaction_item,
-    )
-    granted_refund_id = to_global_id_or_none(granted_refund)
-
-    app_api_client.app.permissions.set([permission_manage_orders])
-
-    expected_reason = "New reason"
-    variables = {
-        "id": granted_refund_id,
-        "input": {"reason": expected_reason},
-    }
-
-    # when
-    response = app_api_client.post_graphql(ORDER_GRANT_REFUND_UPDATE, variables)
-
-    # then
-    granted_refund.refresh_from_db()
-    content = get_graphql_content(response)
-    data = content["data"]["orderGrantRefundUpdate"]
-
-    assert not data["errors"]
-
-    assert len(data["order"]["grantedRefunds"]) == 1
-    granted_refund_data = data["order"]["grantedRefunds"][0]
-
-    assert granted_refund.reason == expected_reason
-    assert granted_refund_data["reason"] == expected_reason

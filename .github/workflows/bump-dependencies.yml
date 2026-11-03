@@ -3,33 +3,47 @@ name: Bump dependencies
 on:
   workflow_dispatch:
   schedule:
-    - cron:  '0 8 * * 1' # At 08:00 on Monday.
+    - cron: "0 8 1 * *" # At 08:00 on day-of-month 1
+
+permissions: {}
 
 jobs:
   bump-dependencies:
+    if: ${{ github.event_name != 'schedule' || github.repository == 'saleor/saleor' }}
     runs-on: ubuntu-latest
 
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-python@v2
-        with:
-          python-version: '3.12'
+    permissions:
+      contents: write
+      pull-requests: write
 
-      - run: python -m pip install poetry pre-commit
-      - run: poetry lock
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          # Do not allow cache as other actions could write to that cache
+          # for lateral movement, and the workflow runs too infrequently
+          # thus there isn't any benefit.
+          enable-cache: false
+
+      - run: python -m pip install pre-commit
+      - run: uv lock --upgrade
       - run: pre-commit autoupdate
       - run: git status
 
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@18f7dc018cc2cd597073088f7c7591b9d1c02672
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          token: ${{ secrets.TRIGGER_WORKFLOW_KEY }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           branch: bump-dependencies
           delete-branch: true
           commit-message: Bump dependencies
-          title: 'Bump dependencies'
+          title: "Bump dependencies"
           body: |
-            Weekly update of backend dependencies.
+            Monthly update of backend dependencies.
           labels: |
             :robot: bot
             test deployment

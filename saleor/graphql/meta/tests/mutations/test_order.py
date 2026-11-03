@@ -1,13 +1,15 @@
+import json
 from unittest.mock import ANY, patch
 
 import graphene
+import pytest
 from django.test import override_settings
 
 from .....core.models import EventDelivery
 from .....order import OrderStatus
-from .....order.actions import call_order_event
 from .....payment.models import TransactionItem
 from .....webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
+from .....webhook.models import WebhookPayloadGeneration
 from . import PRIVATE_KEY, PRIVATE_VALUE, PUBLIC_KEY, PUBLIC_VALUE
 from .test_delete_metadata import (
     execute_clear_public_metadata_for_item,
@@ -34,6 +36,7 @@ def test_delete_public_metadata_for_order_by_id(
     order.store_value_in_metadata({PUBLIC_KEY: PUBLIC_VALUE})
     order.save(update_fields=["metadata"])
     order_id = graphene.Node.to_global_id("Order", order.pk)
+    old_updated_at = order.updated_at
 
     # when
     response = execute_clear_public_metadata_for_item(
@@ -44,6 +47,8 @@ def test_delete_public_metadata_for_order_by_id(
     assert item_without_public_metadata(
         response["data"]["deleteMetadata"]["item"], order, order_id
     )
+    order.refresh_from_db()
+    assert order.updated_at > old_updated_at
 
 
 def test_delete_public_metadata_for_order_by_token(
@@ -53,6 +58,7 @@ def test_delete_public_metadata_for_order_by_token(
     order.store_value_in_metadata({PUBLIC_KEY: PUBLIC_VALUE})
     order.save(update_fields=["metadata"])
     order_id = graphene.Node.to_global_id("Order", order.pk)
+    old_updated_at = order.updated_at
 
     # when
     response = execute_clear_public_metadata_for_item(
@@ -63,6 +69,8 @@ def test_delete_public_metadata_for_order_by_token(
     assert item_without_public_metadata(
         response["data"]["deleteMetadata"]["item"], order, order_id
     )
+    order.refresh_from_db()
+    assert order.updated_at > old_updated_at
 
 
 def test_delete_public_metadata_for_draft_order_by_id(
@@ -72,6 +80,7 @@ def test_delete_public_metadata_for_draft_order_by_id(
     draft_order.store_value_in_metadata({PUBLIC_KEY: PUBLIC_VALUE})
     draft_order.save(update_fields=["metadata"])
     draft_order_id = graphene.Node.to_global_id("Order", draft_order.pk)
+    old_updated_at = draft_order.updated_at
 
     # when
     response = execute_clear_public_metadata_for_item(
@@ -82,6 +91,8 @@ def test_delete_public_metadata_for_draft_order_by_id(
     assert item_without_public_metadata(
         response["data"]["deleteMetadata"]["item"], draft_order, draft_order_id
     )
+    draft_order.refresh_from_db()
+    assert draft_order.updated_at > old_updated_at
 
 
 def test_delete_public_metadata_for_draft_order_by_token(
@@ -91,6 +102,7 @@ def test_delete_public_metadata_for_draft_order_by_token(
     draft_order.store_value_in_metadata({PUBLIC_KEY: PUBLIC_VALUE})
     draft_order.save(update_fields=["metadata"])
     draft_order_id = graphene.Node.to_global_id("Order", draft_order.pk)
+    old_updated_at = draft_order.updated_at
 
     # when
     response = execute_clear_public_metadata_for_item(
@@ -101,6 +113,8 @@ def test_delete_public_metadata_for_draft_order_by_token(
     assert item_without_public_metadata(
         response["data"]["deleteMetadata"]["item"], draft_order, draft_order_id
     )
+    draft_order.refresh_from_db()
+    assert draft_order.updated_at > old_updated_at
 
 
 def test_delete_public_metadata_for_order_line(
@@ -129,6 +143,7 @@ def test_delete_private_metadata_for_order_by_id(
     order.store_value_in_private_metadata({PRIVATE_KEY: PRIVATE_VALUE})
     order.save(update_fields=["private_metadata"])
     order_id = graphene.Node.to_global_id("Order", order.pk)
+    old_updated_at = order.updated_at
 
     # when
     response = execute_clear_private_metadata_for_item(
@@ -139,6 +154,8 @@ def test_delete_private_metadata_for_order_by_id(
     assert item_without_private_metadata(
         response["data"]["deletePrivateMetadata"]["item"], order, order_id
     )
+    order.refresh_from_db()
+    assert order.updated_at > old_updated_at
 
 
 def test_delete_private_metadata_for_order_by_token(
@@ -148,6 +165,7 @@ def test_delete_private_metadata_for_order_by_token(
     order.store_value_in_private_metadata({PRIVATE_KEY: PRIVATE_VALUE})
     order.save(update_fields=["private_metadata"])
     order_id = graphene.Node.to_global_id("Order", order.pk)
+    old_updated_at = order.updated_at
 
     # when
     response = execute_clear_private_metadata_for_item(
@@ -158,6 +176,8 @@ def test_delete_private_metadata_for_order_by_token(
     assert item_without_private_metadata(
         response["data"]["deletePrivateMetadata"]["item"], order, order_id
     )
+    order.refresh_from_db()
+    assert order.updated_at > old_updated_at
 
 
 def test_delete_private_metadata_for_draft_order_by_id(
@@ -167,6 +187,7 @@ def test_delete_private_metadata_for_draft_order_by_id(
     draft_order.store_value_in_private_metadata({PRIVATE_KEY: PRIVATE_VALUE})
     draft_order.save(update_fields=["private_metadata"])
     draft_order_id = graphene.Node.to_global_id("Order", draft_order.pk)
+    old_updated_at = draft_order.updated_at
 
     # when
     response = execute_clear_private_metadata_for_item(
@@ -177,6 +198,8 @@ def test_delete_private_metadata_for_draft_order_by_id(
     assert item_without_private_metadata(
         response["data"]["deletePrivateMetadata"]["item"], draft_order, draft_order_id
     )
+    draft_order.refresh_from_db()
+    assert draft_order.updated_at > old_updated_at
 
 
 def test_delete_private_metadata_for_draft_order_by_token(
@@ -186,6 +209,7 @@ def test_delete_private_metadata_for_draft_order_by_token(
     draft_order.store_value_in_private_metadata({PRIVATE_KEY: PRIVATE_VALUE})
     draft_order.save(update_fields=["private_metadata"])
     draft_order_id = graphene.Node.to_global_id("Order", draft_order.pk)
+    old_updated_at = draft_order.updated_at
 
     # when
     response = execute_clear_private_metadata_for_item(
@@ -196,6 +220,8 @@ def test_delete_private_metadata_for_draft_order_by_token(
     assert item_without_private_metadata(
         response["data"]["deletePrivateMetadata"]["item"], draft_order, draft_order_id
     )
+    draft_order.refresh_from_db()
+    assert draft_order.updated_at > old_updated_at
 
 
 def test_delete_private_metadata_for_order_line(
@@ -222,6 +248,7 @@ def test_add_public_metadata_for_order_by_id(
 ):
     # given
     order_id = graphene.Node.to_global_id("Order", order.pk)
+    old_updated_at = order.updated_at
 
     # when
     response = execute_update_public_metadata_for_item(
@@ -232,6 +259,8 @@ def test_add_public_metadata_for_order_by_id(
     assert item_contains_proper_public_metadata(
         response["data"]["updateMetadata"]["item"], order, order_id
     )
+    order.refresh_from_db()
+    assert order.updated_at > old_updated_at
 
 
 def test_add_public_metadata_for_order_by_token(
@@ -239,6 +268,7 @@ def test_add_public_metadata_for_order_by_token(
 ):
     # given
     order_id = graphene.Node.to_global_id("Order", order.pk)
+    old_updated_at = order.updated_at
 
     # when
     response = execute_update_public_metadata_for_item(
@@ -249,6 +279,8 @@ def test_add_public_metadata_for_order_by_token(
     assert item_contains_proper_public_metadata(
         response["data"]["updateMetadata"]["item"], order, order_id
     )
+    order.refresh_from_db()
+    assert order.updated_at > old_updated_at
 
 
 def test_add_public_metadata_for_draft_order_by_id(
@@ -256,6 +288,7 @@ def test_add_public_metadata_for_draft_order_by_id(
 ):
     # given
     draft_order_id = graphene.Node.to_global_id("Order", draft_order.pk)
+    old_updated_at = draft_order.updated_at
 
     # when
     response = execute_update_public_metadata_for_item(
@@ -266,6 +299,8 @@ def test_add_public_metadata_for_draft_order_by_id(
     assert item_contains_proper_public_metadata(
         response["data"]["updateMetadata"]["item"], draft_order, draft_order_id
     )
+    draft_order.refresh_from_db()
+    assert draft_order.updated_at > old_updated_at
 
 
 def test_add_public_metadata_for_draft_order_by_token(
@@ -273,6 +308,7 @@ def test_add_public_metadata_for_draft_order_by_token(
 ):
     # given
     draft_order_id = graphene.Node.to_global_id("Order", draft_order.pk)
+    old_updated_at = draft_order.updated_at
 
     # when
     response = execute_update_public_metadata_for_item(
@@ -283,6 +319,8 @@ def test_add_public_metadata_for_draft_order_by_token(
     assert item_contains_proper_public_metadata(
         response["data"]["updateMetadata"]["item"], draft_order, draft_order_id
     )
+    draft_order.refresh_from_db()
+    assert draft_order.updated_at > old_updated_at
 
 
 def test_add_public_metadata_for_order_line(
@@ -333,6 +371,7 @@ def test_add_private_metadata_for_order_by_id(
 ):
     # given
     order_id = graphene.Node.to_global_id("Order", order.pk)
+    old_updated_at = order.updated_at
 
     # when
     response = execute_update_private_metadata_for_item(
@@ -343,6 +382,8 @@ def test_add_private_metadata_for_order_by_id(
     assert item_contains_proper_private_metadata(
         response["data"]["updatePrivateMetadata"]["item"], order, order_id
     )
+    order.refresh_from_db()
+    assert order.updated_at > old_updated_at
 
 
 def test_add_private_metadata_for_order_by_token(
@@ -350,6 +391,7 @@ def test_add_private_metadata_for_order_by_token(
 ):
     # given
     order_id = graphene.Node.to_global_id("Order", order.pk)
+    old_updated_at = order.updated_at
 
     # when
     response = execute_update_private_metadata_for_item(
@@ -360,6 +402,8 @@ def test_add_private_metadata_for_order_by_token(
     assert item_contains_proper_private_metadata(
         response["data"]["updatePrivateMetadata"]["item"], order, order_id
     )
+    order.refresh_from_db()
+    assert order.updated_at > old_updated_at
 
 
 def test_update_private_metadata_for_order_line(
@@ -393,6 +437,7 @@ def test_add_private_metadata_for_draft_order_by_id(
 ):
     # given
     draft_order_id = graphene.Node.to_global_id("Order", draft_order.pk)
+    old_updated_at = draft_order.updated_at
 
     # when
     response = execute_update_private_metadata_for_item(
@@ -403,6 +448,8 @@ def test_add_private_metadata_for_draft_order_by_id(
     assert item_contains_proper_private_metadata(
         response["data"]["updatePrivateMetadata"]["item"], draft_order, draft_order_id
     )
+    draft_order.refresh_from_db()
+    assert draft_order.updated_at > old_updated_at
 
 
 def test_add_private_metadata_for_draft_order_by_token(
@@ -410,6 +457,7 @@ def test_add_private_metadata_for_draft_order_by_token(
 ):
     # given
     draft_order_id = graphene.Node.to_global_id("Order", draft_order.pk)
+    old_updated_at = draft_order.updated_at
 
     # when
     response = execute_update_private_metadata_for_item(
@@ -420,6 +468,8 @@ def test_add_private_metadata_for_draft_order_by_token(
     assert item_contains_proper_private_metadata(
         response["data"]["updatePrivateMetadata"]["item"], draft_order, draft_order_id
     )
+    draft_order.refresh_from_db()
+    assert draft_order.updated_at > old_updated_at
 
 
 def test_add_private_metadata_for_order_line(
@@ -572,30 +622,6 @@ def test_add_private_metadata_for_collection(
     )
 
 
-def test_add_private_metadata_for_digital_content(
-    staff_api_client, permission_manage_products, digital_content
-):
-    # given
-    digital_content_id = graphene.Node.to_global_id(
-        "DigitalContent", digital_content.pk
-    )
-
-    # when
-    response = execute_update_private_metadata_for_item(
-        staff_api_client,
-        permission_manage_products,
-        digital_content_id,
-        "DigitalContent",
-    )
-
-    # then
-    assert item_contains_proper_private_metadata(
-        response["data"]["updatePrivateMetadata"]["item"],
-        digital_content,
-        digital_content_id,
-    )
-
-
 def test_add_private_metadata_for_fulfillment(
     staff_api_client, permission_manage_orders, fulfillment
 ):
@@ -613,10 +639,6 @@ def test_add_private_metadata_for_fulfillment(
     )
 
 
-@patch(
-    "saleor.graphql.meta.extra_methods.call_order_event",
-    wraps=call_order_event,
-)
 @patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
 @patch(
     "saleor.webhook.transport.asynchronous.transport.send_webhook_request_async.apply_async"
@@ -625,7 +647,6 @@ def test_add_private_metadata_for_fulfillment(
 def test_change_in_public_metadata_triggers_webhooks(
     mocked_send_webhook_request_async,
     mocked_send_webhook_request_sync,
-    wrapped_call_order_event,
     setup_order_webhooks,
     staff_api_client,
     order_with_lines,
@@ -664,9 +685,7 @@ def test_change_in_public_metadata_triggers_webhooks(
             "telemetry_context": ANY,
         },
         queue=settings.ORDER_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
-        bind=True,
-        retry_backoff=10,
-        retry_kwargs={"max_retries": 5},
+        MessageGroupId="example.com:saleorappadditional",
     )
 
     # confirm each sync webhook was called without saving event delivery
@@ -675,8 +694,15 @@ def test_change_in_public_metadata_triggers_webhooks(
         webhook_id=additional_order_webhook.id
     ).exists()
 
-    tax_delivery_call, filter_shipping_call = (
-        mocked_send_webhook_request_sync.mock_calls
+    filter_shipping_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == shipping_filter_webhook.id
+    )
+    tax_delivery_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == tax_webhook.id
     )
 
     tax_delivery = tax_delivery_call.args[0]
@@ -689,13 +715,7 @@ def test_change_in_public_metadata_triggers_webhooks(
         == WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS
     )
 
-    assert wrapped_call_order_event.called
 
-
-@patch(
-    "saleor.graphql.meta.extra_methods.call_order_event",
-    wraps=call_order_event,
-)
 @patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
 @patch(
     "saleor.webhook.transport.asynchronous.transport.send_webhook_request_async.apply_async"
@@ -704,7 +724,6 @@ def test_change_in_public_metadata_triggers_webhooks(
 def test_change_in_private_metadata_triggers_webhooks(
     mocked_send_webhook_request_async,
     mocked_send_webhook_request_sync,
-    wrapped_call_order_event,
     setup_order_webhooks,
     staff_api_client,
     permission_manage_orders,
@@ -742,9 +761,7 @@ def test_change_in_private_metadata_triggers_webhooks(
             "telemetry_context": ANY,
         },
         queue=settings.ORDER_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
-        bind=True,
-        retry_backoff=10,
-        retry_kwargs={"max_retries": 5},
+        MessageGroupId="example.com:saleorappadditional",
     )
 
     # confirm each sync webhook was called without saving event delivery
@@ -753,8 +770,15 @@ def test_change_in_private_metadata_triggers_webhooks(
         webhook_id=additional_order_webhook.id
     ).exists()
 
-    tax_delivery_call, filter_shipping_call = (
-        mocked_send_webhook_request_sync.mock_calls
+    filter_shipping_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == shipping_filter_webhook.id
+    )
+    tax_delivery_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == tax_webhook.id
     )
 
     tax_delivery = tax_delivery_call.args[0]
@@ -767,4 +791,114 @@ def test_change_in_private_metadata_triggers_webhooks(
         == WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS
     )
 
-    assert wrapped_call_order_event.called
+
+ORDER_METADATA_UPDATED_METADATA_SUBSCRIPTION = """
+    subscription {
+      event {
+        ... on OrderMetadataUpdated {
+          order {
+            id
+            metadata {
+              key
+              value
+            }
+          }
+        }
+      }
+    }
+"""
+
+
+@pytest.fixture
+def order_metadata_subscription_webhook(subscription_webhook):
+    return subscription_webhook(
+        ORDER_METADATA_UPDATED_METADATA_SUBSCRIPTION,
+        WebhookEventAsyncType.ORDER_METADATA_UPDATED,
+    )
+
+
+@patch(
+    "saleor.webhook.transport.asynchronous.transport.generate_deferred_payloads.apply_async"
+)
+@patch(
+    "saleor.webhook.transport.asynchronous.transport.send_webhook_request_async.apply_async"
+)
+@override_settings(PLUGINS=["saleor.plugins.webhook.plugin.WebhookPlugin"])
+def test_consecutive_metadata_updates_immediate_webhook_carries_each_value(
+    mocked_send_webhook_request_async,
+    mocked_generate_deferred_payloads,
+    order_metadata_subscription_webhook,
+    staff_api_client,
+    order,
+    permission_manage_orders,
+):
+    # given
+    webhook = order_metadata_subscription_webhook
+    webhook.payload_generation = WebhookPayloadGeneration.IMMEDIATE
+    webhook.save(update_fields=["payload_generation"])
+    staff_api_client.user.user_permissions.add(permission_manage_orders)
+    order_id = graphene.Node.to_global_id("Order", order.pk)
+    existing_metadata = dict(order.metadata)
+    key = "status"
+    first_value = "picking"
+    second_value = "packed"
+
+    # when
+    execute_update_public_metadata_for_item(
+        staff_api_client, None, order_id, "Order", key, first_value
+    )
+    execute_update_public_metadata_for_item(
+        staff_api_client, None, order_id, "Order", key, second_value
+    )
+
+    # then - each delivery carries the metadata written by its own request
+    mocked_generate_deferred_payloads.assert_not_called()
+    deliveries = list(EventDelivery.objects.filter(webhook=webhook).order_by("pk"))
+    assert len(deliveries) == 2
+    first_payload = json.loads(deliveries[0].payload.get_payload())
+    second_payload = json.loads(deliveries[1].payload.get_payload())
+    assert {
+        item["key"]: item["value"] for item in first_payload["order"]["metadata"]
+    } == {**existing_metadata, key: first_value}
+    assert {
+        item["key"]: item["value"] for item in second_payload["order"]["metadata"]
+    } == {**existing_metadata, key: second_value}
+    assert mocked_send_webhook_request_async.call_count == 2
+
+
+@patch(
+    "saleor.webhook.transport.asynchronous.transport.generate_deferred_payloads.apply_async"
+)
+@patch(
+    "saleor.webhook.transport.asynchronous.transport.send_webhook_request_async.apply_async"
+)
+@override_settings(PLUGINS=["saleor.plugins.webhook.plugin.WebhookPlugin"])
+def test_consecutive_metadata_updates_deferred_webhook_defers_both_payloads(
+    mocked_send_webhook_request_async,
+    mocked_generate_deferred_payloads,
+    order_metadata_subscription_webhook,
+    staff_api_client,
+    order,
+    permission_manage_orders,
+):
+    # given
+    webhook = order_metadata_subscription_webhook
+    assert webhook.payload_generation == WebhookPayloadGeneration.DEFERRED
+    staff_api_client.user.user_permissions.add(permission_manage_orders)
+    order_id = graphene.Node.to_global_id("Order", order.pk)
+    key = "status"
+
+    # when
+    execute_update_public_metadata_for_item(
+        staff_api_client, None, order_id, "Order", key, "picking"
+    )
+    execute_update_public_metadata_for_item(
+        staff_api_client, None, order_id, "Order", key, "packed"
+    )
+
+    # then - no payload exists yet; both will be built from the final state
+    deliveries = list(EventDelivery.objects.filter(webhook=webhook).order_by("pk"))
+    assert len(deliveries) == 2
+    assert [delivery.payload for delivery in deliveries] == [None, None]
+    assert mocked_generate_deferred_payloads.call_count == 2
+    mocked_send_webhook_request_async.assert_not_called()

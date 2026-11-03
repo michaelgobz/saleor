@@ -1,13 +1,12 @@
 from io import StringIO
 
 from django.apps import apps
-from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
 from django.db import connection
 
-from ....account.utils import create_superuser
-from ...utils.random_data import (
+from ....account.tests.fixtures.user import dangerously_get_or_create_superuser
+from ...development.random_data import (
     add_address_to_admin,
     create_catalogue_promotions,
     create_channels,
@@ -23,6 +22,7 @@ from ...utils.random_data import (
     create_permission_groups,
     create_products_by_schema,
     create_shipping_zones,
+    create_site_settings,
     create_staffs,
     create_tax_classes,
     create_users,
@@ -83,11 +83,8 @@ class Command(BaseCommand):
         user_password = options["user_password"]
         staff_password = options["staff_password"]
         superuser_password = options["superuser_password"]
-        settings.PLUGINS = [
-            "saleor.payment.gateways.dummy.plugin.DummyGatewayPlugin",
-            "saleor.payment.gateways.dummy_credit_card.plugin."
-            "DummyCreditCardGatewayPlugin",
-        ]
+        superuser_email = "admin@example.com"
+
         create_images = not options["withoutimages"]
         for msg in create_channels():
             self.stdout.write(msg)
@@ -101,6 +98,8 @@ class Command(BaseCommand):
             self.stdout.write(msg)
         create_products_by_schema(self.placeholders_dir, create_images)
         self.stdout.write("Created products")
+        for msg in create_tax_classes():
+            self.stdout.write(msg)
         for msg in create_catalogue_promotions(2):
             self.stdout.write(msg)
         for msg in create_order_promotions(2):
@@ -119,19 +118,26 @@ class Command(BaseCommand):
             self.stdout.write(msg)
         for msg in create_checkout_with_custom_prices():
             self.stdout.write(msg)
-        for msg in create_tax_classes():
-            self.stdout.write(msg)
         for msg in create_checkout_with_same_variant_in_multiple_lines():
+            self.stdout.write(msg)
+        for msg in create_site_settings():
             self.stdout.write(msg)
 
         if options["createsuperuser"]:
-            credentials = {
-                "email": "admin@example.com",
-                "password": superuser_password,
-            }
-            msg = create_superuser(credentials)
-            self.stdout.write(msg)
-            add_address_to_admin(credentials["email"])
+            superuser, created = dangerously_get_or_create_superuser(
+                email=superuser_email,
+                password=superuser_password,
+            )
+            if created:
+                self.stdout.write(
+                    f"Superuser created successfully: "
+                    f"{superuser.email}, password: {superuser_password}"
+                )
+            else:
+                self.stderr.write(
+                    f"Superuser already exists in database ({superuser.email})"
+                )
+            add_address_to_admin(superuser.email)
         if not options["skipsequencereset"]:
             self.sequence_reset()
 

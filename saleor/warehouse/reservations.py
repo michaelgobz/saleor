@@ -11,7 +11,8 @@ from django.utils import timezone
 from ..core.exceptions import InsufficientStock, InsufficientStockData
 from ..core.tracing import traced_atomic_transaction
 from ..product.models import ProductVariant, ProductVariantChannelListing
-from .management import sort_stocks, stock_qs_select_for_update
+from .lock_objects import stock_qs_select_for_update
+from .management import sort_stocks
 from .models import Allocation, PreorderReservation, Reservation
 
 if TYPE_CHECKING:
@@ -33,6 +34,7 @@ def reserve_stocks_and_preorders(
     channel: "Channel",
     length_in_minutes: int,
     *,
+    calculate_stocks_with_shipping_zones: bool,
     replace: bool = True,
 ):
     stock_variants, stock_lines = [], []
@@ -60,6 +62,7 @@ def reserve_stocks_and_preorders(
             channel,
             reserved_until,
             replace=replace,
+            calculate_stocks_with_shipping_zones=calculate_stocks_with_shipping_zones,
         )
 
         # Refresh reserved_until for already existing lines
@@ -93,6 +96,7 @@ def reserve_stocks(
     reserved_until: datetime.datetime,
     *,
     replace: bool = True,
+    calculate_stocks_with_shipping_zones: bool,
 ):
     """Reserve stocks for given `checkout_lines` in given country."""
     variants_ids = [line.variant_id for line in checkout_lines]
@@ -107,7 +111,12 @@ def reserve_stocks(
 
     stocks = list(
         stock_qs_select_for_update()
-        .get_variants_stocks_for_country(country_code, channel.slug, variants)
+        .get_variants_stocks(
+            channel.slug,
+            variants,
+            country_code=country_code,
+            include_shipping_zones=calculate_stocks_with_shipping_zones,
+        )
         .order_by("pk")
         .values("id", "product_variant", "pk", "quantity", "warehouse_id")
     )

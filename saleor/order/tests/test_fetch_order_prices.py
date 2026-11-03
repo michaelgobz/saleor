@@ -35,8 +35,8 @@ def test_fetch_order_prices_catalogue_discount_flat_rates(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert OrderLineDiscount.objects.count() == 1
@@ -153,8 +153,8 @@ def test_fetch_order_prices_order_discount_flat_rates(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert not OrderLineDiscount.objects.exists()
@@ -285,8 +285,8 @@ def test_fetch_order_prices_gift_discount_flat_rates(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert len(lines) == 3
@@ -416,8 +416,8 @@ def test_fetch_order_prices_catalogue_and_order_discounts_flat_rates(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     line_1 = [line for line in lines if line.quantity == 3][0]
@@ -569,8 +569,8 @@ def test_fetch_order_prices_catalogue_and_gift_discounts_flat_rates(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert len(lines) == 3
@@ -729,8 +729,8 @@ def test_fetch_order_prices_catalogue_and_order_discounts_exceed_total_flat_rate
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     line_1 = [line for line in lines if line.quantity == 3][0]
@@ -841,7 +841,7 @@ def test_fetch_order_prices_manual_discount_and_order_discount_flat_rates(
 
     tax_rate = Decimal("1.23")
 
-    discount_value = Decimal("50")
+    discount_value = Decimal(50)
     manual_discount = order.discounts.create(
         value_type=DiscountValueType.PERCENTAGE,
         value=discount_value,
@@ -851,8 +851,8 @@ def test_fetch_order_prices_manual_discount_and_order_discount_flat_rates(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert not OrderLineDiscount.objects.exists()
@@ -978,7 +978,7 @@ def test_fetch_order_prices_manual_discount_and_gift_discount_flat_rates(
 
     tax_rate = Decimal("1.23")
 
-    discount_value = Decimal("50")
+    discount_value = Decimal(50)
     manual_discount = order.discounts.create(
         value_type=DiscountValueType.PERCENTAGE,
         value=discount_value,
@@ -988,8 +988,8 @@ def test_fetch_order_prices_manual_discount_and_gift_discount_flat_rates(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert not OrderLineDiscount.objects.exists()
@@ -1125,7 +1125,7 @@ def test_fetch_order_prices_manual_discount_and_catalogue_discount_flat_rates(
 
     tax_rate = Decimal("1.23")
 
-    manual_discount_value = Decimal("50")
+    manual_discount_value = Decimal(50)
     manual_discount = order.discounts.create(
         value_type=DiscountValueType.PERCENTAGE,
         value=manual_discount_value,
@@ -1135,8 +1135,8 @@ def test_fetch_order_prices_manual_discount_and_catalogue_discount_flat_rates(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     catalogue_discount = OrderLineDiscount.objects.get()
@@ -1286,7 +1286,7 @@ def test_fetch_order_prices_manual_order_discount_voucher_specific_product(
     tax_rate = Decimal("1.23")
 
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    unit_discount_amount = Decimal("2")
+    unit_discount_amount = Decimal(2)
     voucher_listing.discount_value = unit_discount_amount
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1301,7 +1301,7 @@ def test_fetch_order_prices_manual_order_discount_voucher_specific_product(
     create_or_update_voucher_discount_objects_for_order(order)
 
     # create manual order discount
-    order_discount_amount = Decimal("10")
+    order_discount_amount = Decimal(10)
     order_discount = order.discounts.create(
         value_type=DiscountValueType.FIXED,
         value=order_discount_amount,
@@ -1317,8 +1317,8 @@ def test_fetch_order_prices_manual_order_discount_voucher_specific_product(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     discounted_line, line_1 = lines
@@ -1404,7 +1404,7 @@ def test_fetch_order_prices_manual_order_discount_and_voucher_apply_once_per_ord
     tax_rate = Decimal("1.23")
 
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    discount_amount = Decimal("3")
+    discount_amount = Decimal(3)
     voucher_listing.discount_value = discount_amount
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1419,7 +1419,7 @@ def test_fetch_order_prices_manual_order_discount_and_voucher_apply_once_per_ord
     create_or_update_voucher_discount_objects_for_order(order)
 
     # create manual order discount
-    order_discount_amount = Decimal("8")
+    order_discount_amount = Decimal(8)
     order_discount = order.discounts.create(
         value_type=DiscountValueType.FIXED,
         value=order_discount_amount,
@@ -1435,8 +1435,8 @@ def test_fetch_order_prices_manual_order_discount_and_voucher_apply_once_per_ord
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     discounted_line, line_1 = lines
@@ -1525,13 +1525,17 @@ def test_fetch_order_prices_order_promotion_discount_race_condition(
 
     # when
     def call_before_creating_order_promotion_line_discount(*args, **kwargs):
-        calculations.fetch_order_prices_if_expired(order, plugins_manager, None, True)
+        calculations.fetch_order_prices_if_expired(
+            order, plugins_manager, None, None, True
+        ).get()
 
     with race_condition.RunBefore(
         "saleor.discount.utils.promotion._handle_order_promotion",
         call_before_creating_order_promotion_line_discount,
     ):
-        calculations.fetch_order_prices_if_expired(order, plugins_manager, None, True)
+        calculations.fetch_order_prices_if_expired(
+            order, plugins_manager, None, None, True
+        ).get()
 
     # then
     assert OrderDiscount.objects.count() == 1
@@ -1553,7 +1557,7 @@ def test_fetch_order_prices_voucher_shipping_and_manual_discount_fixed(
     tax_rate = Decimal("1.23")
 
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    voucher_discount_amount = Decimal("4")
+    voucher_discount_amount = Decimal(4)
     voucher_listing.discount_value = voucher_discount_amount
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1571,7 +1575,7 @@ def test_fetch_order_prices_voucher_shipping_and_manual_discount_fixed(
         undiscounted_subtotal += line.base_unit_price_amount * line.quantity
 
     # create manual order discount
-    manual_discount_amount = Decimal("10")
+    manual_discount_amount = Decimal(10)
     manual_discount = order.discounts.create(
         value_type=DiscountValueType.FIXED,
         value=manual_discount_amount,
@@ -1596,8 +1600,8 @@ def test_fetch_order_prices_voucher_shipping_and_manual_discount_fixed(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert OrderDiscount.objects.count() == 2
@@ -1645,7 +1649,7 @@ def test_fetch_order_prices_voucher_shipping_and_manual_discount_percentage(
     tax_rate = Decimal("1.23")
 
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    voucher_discount_amount = Decimal("4")
+    voucher_discount_amount = Decimal(4)
     voucher_listing.discount_value = voucher_discount_amount
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1663,7 +1667,7 @@ def test_fetch_order_prices_voucher_shipping_and_manual_discount_percentage(
         undiscounted_subtotal += line.base_unit_price_amount * line.quantity
 
     # create manual order discount
-    manual_discount_value = Decimal("10")
+    manual_discount_value = Decimal(10)
     manual_discount = order.discounts.create(
         value_type=DiscountValueType.PERCENTAGE,
         value=manual_discount_value,
@@ -1691,8 +1695,8 @@ def test_fetch_order_prices_voucher_shipping_and_manual_discount_percentage(
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert OrderDiscount.objects.count() == 2
@@ -1740,7 +1744,7 @@ def test_fetch_order_prices_voucher_shipping_and_manual_discount_fixed_exceed_to
     tax_rate = Decimal("1.23")
 
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    voucher_discount_amount = Decimal("4")
+    voucher_discount_amount = Decimal(4)
     voucher_listing.discount_value = voucher_discount_amount
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1758,7 +1762,7 @@ def test_fetch_order_prices_voucher_shipping_and_manual_discount_fixed_exceed_to
         undiscounted_subtotal += line.base_unit_price_amount * line.quantity
 
     # create manual order discount
-    manual_discount_value = Decimal("1000")
+    manual_discount_value = Decimal(1000)
     manual_discount = order.discounts.create(
         value_type=DiscountValueType.FIXED,
         value=manual_discount_value,
@@ -1785,8 +1789,8 @@ def test_fetch_order_prices_voucher_shipping_and_manual_discount_fixed_exceed_to
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert OrderDiscount.objects.count() == 2
@@ -1840,8 +1844,8 @@ def test_fetch_order_prices_catalogue_discount_prices_entered_with_tax_tax_exemp
 
     # when
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert OrderLineDiscount.objects.count() == 1
@@ -1961,8 +1965,8 @@ def test_fetch_order_prices_removing_catalogue_promotion_doesnt_remove_discount(
 
     tax_rate = Decimal("1.23")
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
     variant_1 = line_1.variant
     variant_1_listing = variant_1.channel_listings.get(channel=channel)
     variant_1_undiscounted_unit_price = variant_1_listing.price_amount
@@ -1977,8 +1981,8 @@ def test_fetch_order_prices_removing_catalogue_promotion_doesnt_remove_discount(
     fetch_variants_for_promotion_rules(PromotionRule.objects.all())
     update_discounted_prices_for_promotion(Product.objects.all())
     order, lines = calculations.fetch_order_prices_if_expired(
-        order, plugins_manager, None, True
-    )
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     variant_1_listing.refresh_from_db()

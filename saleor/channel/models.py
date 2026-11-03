@@ -49,6 +49,14 @@ class Channel(ModelWithMetadata):
     use_legacy_error_flow_for_checkout = models.BooleanField(default=True)
     automatically_complete_fully_paid_checkouts = models.BooleanField(default=False)
 
+    # automatic_completion_delay applies only when
+    # automatically_complete_fully_paid_checkouts is set to True
+    automatic_completion_delay = models.IntegerField(
+        null=True, blank=True, default=None
+    )
+    # define the cut-off date for automatic completion of fully paid checkouts
+    automatic_completion_cut_off_date = models.DateTimeField(null=True, blank=True)
+
     # time in hours after which the draft order line price will be refreshed
     draft_order_line_price_freeze_period = models.PositiveIntegerField(
         default=24, null=True, blank=True
@@ -56,7 +64,15 @@ class Channel(ModelWithMetadata):
 
     # line lvl discounts for orders created from checkout are stored as
     # OrderLineDiscount. This flag controls how we should return it via API.
+
     use_legacy_line_discount_propagation_for_order = models.BooleanField(default=True)
+    release_funds_for_expired_checkouts = models.BooleanField(default=False)
+    checkout_ttl_before_releasing_funds = models.DurationField(
+        default=datetime.timedelta(hours=6)
+    )
+    checkout_release_funds_cut_off_date = models.DateTimeField(null=True, blank=True)
+
+    allow_legacy_gift_card_use = models.BooleanField(default=True, db_default=True)
 
     class Meta(ModelWithMetadata.Meta):
         ordering = ("slug",)

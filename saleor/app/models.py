@@ -11,7 +11,17 @@ from ..core.models import Job, ModelWithMetadata
 from ..permission.enums import AppPermission, BasePermissionEnum
 from ..permission.models import Permission
 from ..webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
-from .types import AppExtensionMount, AppExtensionTarget, AppType
+from .types import (
+    DEFAULT_APP_TARGET,
+    AppType,
+    DeprecatedAppExtensionHttpMethod,
+)
+
+URL_MAX_LENGTH = 2048
+"""Matches Django's ``URLValidator.max_length`` and the de facto browser cap."""
+
+DEPRECATION_REASON_MAX_LENGTH = 2048
+"""Matches ``AppProblem.message``, since the Dashboard renders both in the same UI."""
 
 
 class AppQueryset(models.QuerySet["App"]):
@@ -65,11 +75,14 @@ class App(ModelWithMetadata):
     support_url = models.URLField(blank=True, null=True)
     configuration_url = models.URLField(blank=True, null=True)
     app_url = models.URLField(blank=True, null=True)
-    manifest_url = models.URLField(blank=True, null=True)
+    manifest_url = models.URLField(max_length=URL_MAX_LENGTH, blank=True, null=True)
     version = models.CharField(max_length=60, blank=True, null=True)
     audience = models.CharField(blank=True, null=True, max_length=256)
     is_installed = models.BooleanField(default=True)
     author = models.CharField(blank=True, null=True, max_length=60)
+    deprecation_reason = models.CharField(
+        max_length=DEPRECATION_REASON_MAX_LENGTH, blank=True, null=True
+    )
     brand_logo_default = models.ImageField(
         upload_to="app-brand-data", blank=True, null=True
     )
@@ -152,23 +165,80 @@ class AppExtension(models.Model):
     app = models.ForeignKey(App, on_delete=models.CASCADE, related_name="extensions")
     label = models.CharField(max_length=256)
     url = models.URLField()
-    mount = models.CharField(choices=AppExtensionMount.CHOICES, max_length=256)
+    mount = models.CharField(max_length=256)
     target = models.CharField(
-        choices=AppExtensionTarget.CHOICES,
         max_length=128,
-        default=AppExtensionTarget.POPUP,
+        default=DEFAULT_APP_TARGET,
     )
     permissions = models.ManyToManyField(
         Permission,
         blank=True,
         help_text="Specific permissions for this app extension.",
     )
+    http_target_method = models.CharField(
+        blank=False,
+        null=True,
+        choices=DeprecatedAppExtensionHttpMethod.CHOICES,
+    )
+    settings = models.JSONField(blank=True, default=dict, db_default={})
+    identifier = models.CharField(max_length=256, null=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["app", "identifier"],
+                name="unique_app_extension_identifier",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(identifier=""),
+                name="app_extension_identifier_not_blank",
+            ),
+        ]
+
+
+class AppProblem(models.Model):
+    # Note: When increasing this value, please revise performance. Now dismissing 100 rows is cheap,
+    # but if we increase this number, it can be too heavy and we may need to find more performant way,
+    # e.g. delegate to Celery
+    MAX_PROBLEMS_PER_APP = 100
+
+    app = models.ForeignKey(App, on_delete=models.CASCADE, related_name="problems")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    message = models.CharField(max_length=2048)
+    key = models.CharField(max_length=128)
+    count = models.PositiveIntegerField(default=1)
+    is_critical = models.BooleanField(default=False)
+    dismissed = models.BooleanField(default=False)
+    dismissed_by_user_email = models.EmailField(max_length=256, blank=True, null=True)
+    dismissed_by_user = models.ForeignKey(
+        "account.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def is_dismissed_by_user(self) -> bool:
+        """Check if the problem was dismissed by a user (staff).
+
+        Uses the denormalized ``dismissed_by_user_email`` field instead of the
+        ``dismissed_by_user`` FK because the FK is set to NULL when the user is
+        deleted, whereas the email field is preserved indefinitely.
+
+        Method abstracts the fact that we don't store dedicated "by app" or "by user" field,
+        We have only one needed (email) that is enough to deduct this.
+        """
+        return self.dismissed_by_user_email is not None
 
 
 class AppInstallation(Job):
     uuid = models.UUIDField(unique=True, default=uuid4)
     app_name = models.CharField(max_length=60)
-    manifest_url = models.URLField()
+    manifest_url = models.URLField(max_length=URL_MAX_LENGTH)
     permissions = models.ManyToManyField(
         Permission,
         blank=True,

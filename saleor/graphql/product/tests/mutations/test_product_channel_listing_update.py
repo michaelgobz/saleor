@@ -6,7 +6,7 @@ from django.utils import timezone
 from freezegun import freeze_time
 
 from .....checkout.fetch import fetch_checkout_info
-from .....checkout.utils import add_variant_to_checkout
+from .....checkout.tests.utils import add_variant_to_checkout
 from .....plugins.manager import get_plugins_manager
 from .....product.error_codes import ProductErrorCode
 from .....product.models import ProductVariant, ProductVariantChannelListing
@@ -237,7 +237,7 @@ def test_product_channel_listing_update_as_staff_user(
     variant = product.variants.first()
     variant_channel_listing = variant.channel_listings.filter(channel_id=channel_USD.id)
     purchase_cost, margin = get_product_costs_data(
-        variant_channel_listing, True, channel_USD.currency_code
+        variant_channel_listing, channel_USD.currency_code
     )
     assert not data["errors"]
     assert product_data["slug"] == product.slug
@@ -1115,10 +1115,18 @@ def test_product_channel_listing_add_variant_as_staff_user(
     # then
     data = content["data"]["productChannelListingUpdate"]
     variant_data = data["product"]["variants"]
-
     assert not data["errors"]
     assert variant_data[0]["channelListings"][0]["channel"]["slug"] == channel_USD.slug
     assert variant_data[1]["channelListings"][0]["channel"]["slug"] == channel_USD.slug
+
+    variant_channel_listing1 = ProductVariantChannelListing.objects.get(
+        channel=channel_USD, variant=variant_1
+    )
+    variant_channel_listing2 = ProductVariantChannelListing.objects.get(
+        channel=channel_USD, variant=variant_2
+    )
+    assert variant_channel_listing1.currency == channel_USD.currency_code
+    assert variant_channel_listing2.currency == channel_USD.currency_code
 
 
 def test_product_channel_listing_add_variant_as_app(
@@ -1156,6 +1164,15 @@ def test_product_channel_listing_add_variant_as_app(
     assert not data["errors"]
     assert variant_data[0]["channelListings"][0]["channel"]["slug"] == channel_USD.slug
     assert variant_data[1]["channelListings"][0]["channel"]["slug"] == channel_USD.slug
+
+    variant_channel_listing1 = ProductVariantChannelListing.objects.get(
+        channel=channel_USD, variant=variant_1
+    )
+    variant_channel_listing2 = ProductVariantChannelListing.objects.get(
+        channel=channel_USD, variant=variant_2
+    )
+    assert variant_channel_listing1.currency == channel_USD.currency_code
+    assert variant_channel_listing2.currency == channel_USD.currency_code
 
 
 def test_product_channel_listing_remove_variant_as_staff_user(

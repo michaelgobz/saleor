@@ -27,8 +27,9 @@ from ..thumbnail.validators import validate_icon_image
 from ..webhook.models import Webhook, WebhookEvent
 from .error_codes import AppErrorCode
 from .manifest_validations import clean_manifest_data
-from .models import App, AppExtension, AppInstallation
-from .types import AppExtensionTarget, AppType
+from .models import App, AppExtension, AppInstallation, AppToken
+from .types import DEFAULT_APP_TARGET, AppType
+from .utils import normalize_deprecation_reason
 
 MAX_ICON_FILE_SIZE = 1024 * 1024 * 10  # 10MB
 
@@ -84,35 +85,31 @@ def fetch_icon_image(
     size_error_msg = f"File too big. Maximal icon image file size is {max_file_size}."
     code = AppErrorCode.INVALID.value
     fetch_start = time.monotonic()
-    try:
-        with HTTPClient.send_request(
-            "GET", url, stream=True, timeout=timeout, allow_redirects=False
-        ) as res:
-            res.raise_for_status()
-            content_type = res.headers.get("content-type")
-            if content_type not in ICON_MIME_TYPES:
-                raise ValidationError("Invalid file type.", code=code)
-            try:
-                if int(res.headers.get("content-length", 0)) > max_file_size:
-                    raise ValidationError(size_error_msg, code=code)
-            except (ValueError, TypeError):
-                pass
-            content = BytesIO()
-            for chunk in res.iter_content(chunk_size=File.DEFAULT_CHUNK_SIZE):
-                content.write(chunk)
-                if content.tell() > max_file_size:
-                    raise ValidationError(size_error_msg, code=code)
-                timeout_in_secs = sum(timeout)
-                if (time.monotonic() - fetch_start) > timeout_in_secs:
-                    raise ValidationError(
-                        "Timeout occurred while reading image file.",
-                        code=AppErrorCode.MANIFEST_URL_CANT_CONNECT.value,
-                    )
-            content.seek(0)
-            image_file = File(content, filename)
-    except requests.RequestException as e:
-        code = AppErrorCode.MANIFEST_URL_CANT_CONNECT.value
-        raise ValidationError("Unable to fetch image.", code=code) from e
+    with HTTPClient.send_request(
+        "GET", url, stream=True, timeout=timeout, allow_redirects=False
+    ) as res:
+        res.raise_for_status()
+        content_type = res.headers.get("content-type")
+        if content_type not in ICON_MIME_TYPES:
+            raise ValidationError("Invalid file type.", code=code)
+        try:
+            if int(res.headers.get("content-length", 0)) > max_file_size:
+                raise ValidationError(size_error_msg, code=code)
+        except (ValueError, TypeError):
+            pass
+        content = BytesIO()
+        for chunk in res.iter_content(chunk_size=File.DEFAULT_CHUNK_SIZE):
+            content.write(chunk)
+            if content.tell() > max_file_size:
+                raise ValidationError(size_error_msg, code=code)
+            timeout_in_secs = sum(timeout)
+            if (time.monotonic() - fetch_start) > timeout_in_secs:
+                raise ValidationError(
+                    "Timeout occurred while reading image file.",
+                    code=AppErrorCode.MANIFEST_URL_CANT_CONNECT.value,
+                )
+        content.seek(0)
+        image_file = File(content, filename)
 
     validate_icon_image(image_file, code)
     return image_file
@@ -126,9 +123,11 @@ def fetch_brand_data(manifest_data, timeout=settings.COMMON_REQUESTS_TIMEOUT):
         logo_url = brand_data["logo"]["default"]
         logo_file = fetch_icon_image(logo_url, timeout=timeout)
         brand_data["logo"]["default"] = logo_file
-    except ValidationError as error:
+    except (ValidationError, OSError) as error:
         msg = "Fetching brand data failed for app:%r error:%r"
-        logger.info(msg, manifest_data["id"], error, extra={"brand_data": brand_data})
+        logger.info(
+            msg, manifest_data["id"], str(error), extra={"brand_data": brand_data}
+        )
         brand_data = None
     return brand_data
 
@@ -149,7 +148,7 @@ def _set_brand_data(brand_obj: App | AppInstallation | None, logo: File):
         default_storage.delete(brand_obj.brand_logo_default.name)
 
 
-@app.task(bind=True, retry_backoff=2700, retry_kwargs={"max_retries": 5})
+@app.task(bind=True, retry_backoff=30, retry_kwargs={"max_retries": 5})
 @allow_writer()
 def fetch_brand_data_task(
     self, brand_data: dict, *, app_installation_id=None, app_id=None
@@ -171,7 +170,19 @@ def fetch_brand_data_task(
             "app_installation_id": app_installation_id,
             "brand_data": brand_data,
         }
-        task_logger.info("Fetching brand data failed. Error: %r", error, extra=extra)
+        task_logger.warning(
+            "Fetching brand data failed. Error: %r", str(error), extra=extra
+        )
+        # Don't retry on validation errors image didn't pass validation when we tries again.
+    except OSError as error:
+        extra = {
+            "app_id": app_id,
+            "app_installation_id": app_installation_id,
+            "brand_data": brand_data,
+        }
+        task_logger.info(
+            "Fetching brand data failed. Error: %r", str(error), extra=extra
+        )
         try:
             countdown = self.retry_backoff * (2**self.request.retries)
             raise self.retry(countdown=countdown, **self.retry_kwargs)
@@ -193,17 +204,43 @@ def fetch_brand_data_async(
         )
 
 
-def fetch_manifest(manifest_url: str, timeout=settings.COMMON_REQUESTS_TIMEOUT):
+def fetch_manifest(
+    manifest_url: str,
+    timeout=settings.COMMON_REQUESTS_TIMEOUT,
+    max_retries: int = 0,
+):
     headers = {AppHeaders.SCHEMA_VERSION: schema_version}
-    response = HTTPClient.send_request(
-        "GET", manifest_url, headers=headers, timeout=timeout, allow_redirects=False
-    )
-    response.raise_for_status()
-    return response.json()
+    connect_timeout, read_timeout = timeout
+
+    def _get(attempt: int):
+        response = HTTPClient.send_request(
+            "GET",
+            manifest_url,
+            headers=headers,
+            # Give subsequent retries an incremented connect timeout.
+            timeout=(connect_timeout + attempt, read_timeout),
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    for attempt in range(max_retries):
+        try:
+            return _get(attempt)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            logger.info(
+                "Failed to fetch manifest (%s), retrying (attempt %d out of %d)...",
+                exc,
+                attempt + 1,
+                max_retries + 1,
+            )
+    return _get(max_retries)  # final attempt, explicit return to satisfy ruff RET503
 
 
-def install_app(app_installation: AppInstallation, activate: bool = False):
-    manifest_data = fetch_manifest(app_installation.manifest_url)
+def install_app(
+    app_installation: AppInstallation, activate: bool = False
+) -> tuple[App, AppToken | None]:
+    manifest_data = fetch_manifest(app_installation.manifest_url, max_retries=2)
     assigned_permissions = app_installation.permissions.all()
 
     manifest_data["permissions"] = get_permission_names(assigned_permissions)
@@ -227,16 +264,46 @@ def install_app(app_installation: AppInstallation, activate: bool = False):
         audience=manifest_data.get("audience"),
         is_installed=False,
         author=manifest_data.get("author"),
+        # `clean_manifest_data` validates against `ManifestSchema` but discards
+        # the result, so the schema's normalization never reaches this dict.
+        deprecation_reason=normalize_deprecation_reason(
+            manifest_data.get("deprecationReason")
+        ),
     )
 
     app.permissions.set(app_installation.permissions.all())
     for extension_data in manifest_data.get("extensions", []):
+        # Manifest is already "clean" so values use serialization aliases (camelCase)
+        options = extension_data.get("options", {})
+        new_tab_target = options.get("newTabTarget")
+        widget_target = options.get("widgetTarget")
+
+        # Ensure proper extraction of the method values from the options
+        http_target_method = None
+
+        if (
+            new_tab_target
+            and isinstance(new_tab_target, dict)
+            and "method" in new_tab_target
+        ):
+            http_target_method = new_tab_target["method"]
+
+        if (
+            widget_target
+            and isinstance(widget_target, dict)
+            and "method" in widget_target
+        ):
+            http_target_method = widget_target["method"]
+
         extension = AppExtension.objects.create(
             app=app,
             label=extension_data.get("label"),
             url=extension_data.get("url"),
             mount=extension_data.get("mount"),
-            target=extension_data.get("target", AppExtensionTarget.POPUP),
+            target=extension_data.get("target", DEFAULT_APP_TARGET),
+            http_target_method=http_target_method,
+            settings=extension_data.get("options", {}),
+            identifier=extension_data.get("identifier"),
         )
         extension.permissions.set(extension_data.get("permissions", []))
 
@@ -248,6 +315,8 @@ def install_app(app_installation: AppInstallation, activate: bool = False):
             target_url=webhook["targetUrl"],
             subscription_query=webhook["query"],
             custom_headers=webhook.get("customHeaders", None),
+            identifier=webhook.get("identifier"),
+            payload_generation=webhook["payloadGeneration"],
         )
         for webhook in manifest_data.get("webhooks", [])
     )
@@ -262,14 +331,16 @@ def install_app(app_installation: AppInstallation, activate: bool = False):
             )
     WebhookEvent.objects.bulk_create(webhook_events)
 
-    _, token = app.tokens.create(name="Default token")  # type: ignore[call-arg] # calling create on a related manager # noqa: E501
+    token = None
+    if tokent_target_url := manifest_data.get("tokenTargetUrl"):
+        _, token = app.tokens.create(name="Default token")  # type: ignore[call-arg] # calling create on a related manager # noqa: E501
 
-    try:
-        send_app_token(target_url=manifest_data.get("tokenTargetUrl"), token=token)
-    except requests.RequestException as e:
-        fetch_brand_data_async(manifest_data, app_installation=app_installation)
-        app.delete()
-        raise e
+        try:
+            send_app_token(target_url=tokent_target_url, token=token)
+        except requests.RequestException as e:
+            fetch_brand_data_async(manifest_data, app_installation=app_installation)
+            app.delete()
+            raise e
     PluginsManager(plugins=settings.PLUGINS).app_installed(app)
     fetch_brand_data_async(manifest_data, app=app)
     return app, token

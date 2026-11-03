@@ -5,7 +5,15 @@ from typing import TYPE_CHECKING
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.module_loading import import_string
+from promise import Promise
 
+from ...core.telemetry import (
+    MetricType,
+    Scope,
+    Unit,
+    meter,
+    saleor_attributes,
+)
 from ...graphql.app.enums import CircuitBreakerState
 from ...webhook.event_types import WebhookEventSyncType
 
@@ -37,6 +45,24 @@ BREAKER_BOARD_SUCCESS_COUNT_RECOVERY: int = 50
 
 # Time to keep circuit breaker in opened state before starting recovery (half-open state).
 BREAKER_BOARD_COOLDOWN_SECONDS: int = 2 * 60
+
+METRIC_CIRCUIT_BREAKER_EVENT_COUNT = meter.create_metric(
+    "saleor.external_request.sync.circuit_breaker.event_count",
+    scope=Scope.SERVICE,
+    type=MetricType.COUNTER,
+    unit=Unit.EVENT,
+    description="Number of circuit breaker state changes.",
+)
+
+
+def record_circuit_breaker_state_change(app: "App", state: str) -> None:
+    attributes = {
+        saleor_attributes.SALEOR_APP_IDENTIFIER: app.identifier,
+        saleor_attributes.SALEOR_CIRCUIT_BREAKER_STATE: state,
+    }
+    meter.record(
+        METRIC_CIRCUIT_BREAKER_EVENT_COUNT, 1, Unit.EVENT, attributes=attributes
+    )
 
 
 class BreakerBoard:
@@ -112,12 +138,14 @@ class BreakerBoard:
         changed_at = int(time.time())
         self.storage.set_app_state(app.id, state, changed_at)
 
+        record_circuit_breaker_state_change(app, state)
         logger.info(
             "[App ID: %r] Circuit breaker changed state to %s.",
             app.id,
             state,
             extra={
                 "app_name": app.name,
+                "app_identifier": app.identifier,
                 "webhooks_total_count": total,
                 "webhooks_errors_count": errors,
                 "webhooks_cooldown_seconds": self.cooldown_seconds,
@@ -161,35 +189,43 @@ class BreakerBoard:
     def register_success(self, app_id: int):
         self.storage.register_event(app_id, "total", self.ttl_seconds)
 
-    def __call__(self, func):
+    def wrap_promise_func(self, promise_func):
+        """Wrap a Promise-returning webhook function with circuit breaker logic.
+
+        For monitored event types, evaluates current breaker state before calling the function.
+        When OPEN, resolves immediately with None — or executes without tracking for dry-run events.
+        On execution, chains .then() to inspect the resolved value and register success or error with the breaker.
+        """
+
         def inner(*args, **kwargs):
             event_type: str = kwargs.get("event_type") or args[0]
             webhook: Webhook = kwargs.get("webhook") or args[2]
 
             if event_type not in settings.BREAKER_BOARD_SYNC_EVENTS:
                 # Execute webhook without affecting breaker state
-                return func(*args, **kwargs)
+                return promise_func(*args, **kwargs)
 
             app = webhook.app
             state = self.update_breaker_state(app)
             if state == CircuitBreakerState.OPEN:
                 if event_type not in settings.BREAKER_BOARD_DRY_RUN_SYNC_EVENTS:
                     # Skip func execution to prevent sending webhooks
-                    return None
-                else:  # noqa: RET505
-                    # Dry-run: execute webhook, but ignore result (pretend it's skipped)
-                    return func(*args, **kwargs)
+                    return Promise.resolve(None)
+                # Dry-run: execute webhook, but ignore result (pretend it's skipped)
+                return promise_func(*args, **kwargs)
 
-            response = func(*args, **kwargs)
-            if response is None:
-                self.register_error(app.id)
-            else:
-                self.register_success(app.id)
+            response = promise_func(*args, **kwargs)
 
-            return response
+            def process_response(data_response):
+                if data_response is None:
+                    self.register_error(app.id)
+                else:
+                    self.register_success(app.id)
+                return data_response
 
-        inner.__wrapped__ = func  # type: ignore[attr-defined]
+            return response.then(process_response)
 
+        inner.__wrapped__ = promise_func  # type: ignore[attr-defined]
         return inner
 
 

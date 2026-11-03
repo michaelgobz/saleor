@@ -1,7 +1,10 @@
+from typing import Final
+
 import graphene
 
 from ...payment import (
     ChargeStatus,
+    PaymentMethodType,
     StorePaymentMethod,
     TokenizedPaymentFlow,
     TransactionAction,
@@ -13,27 +16,41 @@ from ...payment.interface import (
     PaymentMethodTokenizationResult,
     StoredPaymentMethodRequestDeleteResult,
 )
+from ..core.descriptions import DEPRECATED_LEGACY_PAYMENTS
 from ..core.doc_category import DOC_CATEGORY_PAYMENTS
 from ..core.enums import to_enum
 from ..core.types import BaseEnum
 
-TransactionKindEnum = to_enum(TransactionKind, type_name="TransactionKind")
+TransactionKindEnum: Final[graphene.Enum] = to_enum(
+    TransactionKind,
+    type_name="TransactionKind",
+    deprecation_reason=lambda _enum: DEPRECATED_LEGACY_PAYMENTS,
+)
 TransactionKindEnum.doc_category = DOC_CATEGORY_PAYMENTS
 
-PaymentChargeStatusEnum = to_enum(ChargeStatus, type_name="PaymentChargeStatusEnum")
+PaymentChargeStatusEnum: Final[graphene.Enum] = to_enum(
+    ChargeStatus, type_name="PaymentChargeStatusEnum"
+)
 PaymentChargeStatusEnum.doc_category = DOC_CATEGORY_PAYMENTS
 
-TransactionActionEnum = to_enum(
+TransactionActionEnum: Final[graphene.Enum] = to_enum(
     TransactionAction,
     type_name="TransactionActionEnum",
     description=TransactionAction.__doc__,
 )
 TransactionActionEnum.doc_category = DOC_CATEGORY_PAYMENTS
 
-TransactionEventTypeEnum = to_enum(
+TransactionEventTypeEnum: Final[graphene.Enum] = to_enum(
     TransactionEventType, description=TransactionEventType.__doc__
 )
 TransactionEventTypeEnum.doc_category = DOC_CATEGORY_PAYMENTS
+
+PaymentMethodTypeEnum: Final[graphene.Enum] = to_enum(
+    PaymentMethodType,
+    type_name="PaymentMethodTypeEnum",
+    description=PaymentMethodType.__doc__,
+)
+PaymentMethodTypeEnum.doc_category = DOC_CATEGORY_PAYMENTS
 
 
 class OrderAction(BaseEnum):
@@ -57,6 +74,12 @@ class OrderAction(BaseEnum):
             return "Represents a void action."
         raise ValueError(f"Unsupported enum value: {self.value}")
 
+    @property
+    def deprecation_reason(self):
+        if self in [OrderAction.CAPTURE, OrderAction.REFUND, OrderAction.VOID]:
+            return DEPRECATED_LEGACY_PAYMENTS
+        return None
+
 
 def description(enum):
     if enum is None:
@@ -77,29 +100,36 @@ def description(enum):
     return None
 
 
-StorePaymentMethodEnum = to_enum(
-    StorePaymentMethod, type_name="StorePaymentMethodEnum", description=description
+StorePaymentMethodEnum: Final[graphene.Enum] = to_enum(
+    StorePaymentMethod,
+    type_name="StorePaymentMethodEnum",
+    description=description,
+    deprecation_reason=lambda _enum: DEPRECATED_LEGACY_PAYMENTS,
 )
 StorePaymentMethodEnum.doc_category = DOC_CATEGORY_PAYMENTS
 
-TokenizedPaymentFlowEnum = to_enum(
+TokenizedPaymentFlowEnum: Final[graphene.Enum] = to_enum(
     TokenizedPaymentFlow,
     type_name="TokenizedPaymentFlowEnum",
     description=TokenizedPaymentFlow.__doc__,
 )
 TokenizedPaymentFlowEnum.doc_category = DOC_CATEGORY_PAYMENTS
 
-PaymentGatewayInitializeTokenizationResultEnum = graphene.Enum.from_enum(
-    PaymentGatewayInitializeTokenizationResult,
+PaymentGatewayInitializeTokenizationResultEnum: Final[graphene.Enum] = (
+    graphene.Enum.from_enum(
+        PaymentGatewayInitializeTokenizationResult,
+    )
 )
 PaymentGatewayInitializeTokenizationResultEnum.doc_category = DOC_CATEGORY_PAYMENTS
 
-PaymentMethodTokenizationResultEnum = graphene.Enum.from_enum(
+PaymentMethodTokenizationResultEnum: Final[graphene.Enum] = graphene.Enum.from_enum(
     PaymentMethodTokenizationResult
 )
 PaymentMethodTokenizationResultEnum.doc_category = DOC_CATEGORY_PAYMENTS
 
-StoredPaymentMethodRequestDeleteResultEnum = graphene.Enum.from_enum(
-    StoredPaymentMethodRequestDeleteResult,
+StoredPaymentMethodRequestDeleteResultEnum: Final[graphene.Enum] = (
+    graphene.Enum.from_enum(
+        StoredPaymentMethodRequestDeleteResult,
+    )
 )
 StoredPaymentMethodRequestDeleteResultEnum.doc_category = DOC_CATEGORY_PAYMENTS

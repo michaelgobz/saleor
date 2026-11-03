@@ -20,7 +20,6 @@ from .....discount.utils.voucher import (
 )
 from .....order import OrderStatus
 from .....order import events as order_events
-from .....order.actions import call_order_event
 from .....order.calculations import fetch_order_prices_if_expired
 from .....order.error_codes import OrderErrorCode
 from .....order.models import OrderEvent, OrderLine
@@ -29,6 +28,7 @@ from .....product.utils.variant_prices import update_discounted_prices_for_promo
 from .....product.utils.variants import fetch_variants_for_promotion_rules
 from .....warehouse.models import Allocation, Stock
 from .....webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
+from .....webhook.transport.asynchronous.transport import generate_deferred_payloads
 from ....tests.utils import assert_no_permission, get_graphql_content
 from ..utils import assert_proper_webhook_called_once
 
@@ -118,7 +118,7 @@ ORDER_LINES_CREATE_MUTATION = """
 """
 
 
-@patch("saleor.plugins.manager.PluginsManager.product_variant_out_of_stock")
+@patch("saleor.warehouse.management.trigger_product_variant_out_of_stock")
 def test_order_lines_create_with_out_of_stock_webhook(
     product_variant_out_of_stock_webhook_mock,
     order_with_lines,
@@ -147,11 +147,11 @@ def test_order_lines_create_with_out_of_stock_webhook(
     ]
     assert quantity_allocated == stock_quantity
     product_variant_out_of_stock_webhook_mock.assert_called_once_with(
-        Stock.objects.first()
+        Stock.objects.first(), requestor=staff_api_client.user
     )
 
 
-@patch("saleor.plugins.manager.PluginsManager.product_variant_out_of_stock")
+@patch("saleor.warehouse.management.trigger_product_variant_out_of_stock")
 def test_order_lines_create_for_variant_with_many_stocks_with_out_of_stock_webhook(
     product_variant_out_of_stock_webhook_mock,
     order_with_lines,
@@ -172,14 +172,14 @@ def test_order_lines_create_for_variant_with_many_stocks_with_out_of_stock_webho
     permission_group_manage_orders.user_set.add(staff_api_client.user)
     staff_api_client.post_graphql(query, variables)
     product_variant_out_of_stock_webhook_mock.assert_called_once_with(
-        Stock.objects.all()[3]
+        Stock.objects.all()[3], requestor=staff_api_client.user
     )
 
 
 @pytest.mark.parametrize("status", [OrderStatus.DRAFT, OrderStatus.UNCONFIRMED])
 @patch("saleor.plugins.manager.PluginsManager.draft_order_updated")
 @patch("saleor.plugins.manager.PluginsManager.order_updated")
-@patch("saleor.plugins.manager.PluginsManager.product_variant_out_of_stock")
+@patch("saleor.warehouse.management.trigger_product_variant_out_of_stock")
 def test_order_lines_create(
     product_variant_out_of_stock_webhook_mock,
     order_updated_webhook_mock,
@@ -327,7 +327,7 @@ def test_order_lines_create_by_app(
 @pytest.mark.parametrize("status", [OrderStatus.DRAFT, OrderStatus.UNCONFIRMED])
 @patch("saleor.plugins.manager.PluginsManager.draft_order_updated")
 @patch("saleor.plugins.manager.PluginsManager.order_updated")
-@patch("saleor.plugins.manager.PluginsManager.product_variant_out_of_stock")
+@patch("saleor.warehouse.management.trigger_product_variant_out_of_stock")
 def test_order_lines_create_for_just_published_product(
     product_variant_out_of_stock_webhook_mock,
     order_updated_webhook_mock,
@@ -613,7 +613,7 @@ def test_order_lines_create_variant_on_promotion(
 
     variant = variant_with_many_stocks
 
-    reward_value = Decimal("5")
+    reward_value = Decimal(5)
     rule = catalogue_promotion_without_rules.rules.create(
         name="Promotion rule",
         catalogue_predicate={
@@ -725,7 +725,7 @@ def test_order_lines_create_order_promotion(
     rule = order_promotion_rule
     promotion_id = graphene.Node.to_global_id("Promotion", rule.promotion_id)
     assert rule.reward_value_type == RewardValueType.PERCENTAGE
-    assert rule.reward_value == Decimal("25")
+    assert rule.reward_value == Decimal(25)
 
     variant = variant_with_many_stocks
     quantity = 5
@@ -920,7 +920,7 @@ def test_order_lines_create_with_variant_not_assigned_to_channel(
     draft_order_update_webhook_mock.assert_not_called()
 
 
-@patch("saleor.plugins.manager.PluginsManager.product_variant_out_of_stock")
+@patch("saleor.warehouse.management.trigger_product_variant_out_of_stock")
 @pytest.mark.parametrize("status", [OrderStatus.DRAFT, OrderStatus.UNCONFIRMED])
 def test_order_lines_create_without_sku(
     product_variant_out_of_stock_webhook_mock,
@@ -1294,18 +1294,19 @@ def test_order_lines_create_no_shipping_address(
     ],
 )
 @patch(
-    "saleor.graphql.order.mutations.utils.call_order_event",
-    wraps=call_order_event,
+    "saleor.webhook.transport.asynchronous.transport.generate_deferred_payloads.apply_async",
+    wraps=generate_deferred_payloads.apply_async,
 )
 @patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
 @patch(
     "saleor.webhook.transport.asynchronous.transport.send_webhook_request_async.apply_async"
 )
 @override_settings(PLUGINS=["saleor.plugins.webhook.plugin.WebhookPlugin"])
+@override_settings(WEBHOOK_DEFERRED_PAYLOAD_QUEUE_NAME="deferred_queue")
 def test_order_lines_create_triggers_webhooks(
     mocked_send_webhook_request_async,
     mocked_send_webhook_request_sync,
-    wrapped_call_order_event,
+    wrapped_generate_deferred_payloads,
     setup_order_webhooks,
     order_with_lines,
     permission_group_manage_orders,
@@ -1344,20 +1345,42 @@ def test_order_lines_create_triggers_webhooks(
 
     # confirm that event delivery was generated for each async webhook.
     order_delivery = EventDelivery.objects.get(webhook_id=order_webhook.id)
+    wrapped_generate_deferred_payloads.assert_called_once_with(
+        kwargs={
+            "event_delivery_ids": [order_delivery.id],
+            "deferred_payload_data": {
+                "model_name": "order.order",
+                "object_id": order.pk,
+                "requestor_model_name": "account.user",
+                "requestor_object_id": staff_api_client.user.pk,
+                "request_time": None,
+                "subscribable_object_data": None,
+            },
+            "send_webhook_queue": settings.ORDER_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
+            "telemetry_context": ANY,
+        },
+        queue=settings.WEBHOOK_DEFERRED_PAYLOAD_QUEUE_NAME,
+        MessageGroupId="example.com",
+    )
     mocked_send_webhook_request_async.assert_called_once_with(
         kwargs={"event_delivery_id": order_delivery.id, "telemetry_context": ANY},
         queue=settings.ORDER_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
-        bind=True,
-        retry_backoff=10,
-        retry_kwargs={"max_retries": 5},
+        MessageGroupId="example.com:saleorappadditional",
     )
 
     # confirm each sync webhook was called without saving event delivery
     assert mocked_send_webhook_request_sync.call_count == 2
     assert not EventDelivery.objects.exclude(webhook_id=order_webhook.id).exists()
 
-    tax_delivery_call, filter_shipping_call = (
-        mocked_send_webhook_request_sync.mock_calls
+    filter_shipping_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == shipping_filter_webhook.id
+    )
+    tax_delivery_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == tax_webhook.id
     )
 
     tax_delivery = tax_delivery_call.args[0]
@@ -1369,8 +1392,6 @@ def test_order_lines_create_triggers_webhooks(
         filter_shipping_delivery.event_type
         == WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS
     )
-
-    assert wrapped_call_order_event.called
 
 
 def test_order_lines_create_with_catalogue_discount_existing_variant(
@@ -1507,7 +1528,9 @@ def test_order_lines_create_apply_once_per_order_voucher_new_cheapest_line(
     order.voucher_code = voucher.codes.first().code
     order.save(update_fields=["voucher_code", "voucher_id", "status"])
     create_or_update_voucher_discount_objects_for_order(order)
-    order, lines = fetch_order_prices_if_expired(order, plugins_manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     line_1, line_2 = lines
     assert line_1.undiscounted_base_unit_price < line_2.undiscounted_base_unit_price
@@ -1706,7 +1729,9 @@ def test_order_lines_create_apply_once_per_order_voucher_existing_variant(
     order.voucher_code = voucher.codes.first().code
     order.save(update_fields=["voucher_code", "voucher_id", "status"])
     create_or_update_voucher_discount_objects_for_order(order)
-    order, lines = fetch_order_prices_if_expired(order, plugins_manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     line_1, line_2 = lines
     assert line_1.undiscounted_base_unit_price < line_2.undiscounted_base_unit_price
@@ -1871,7 +1896,9 @@ def test_order_lines_create_specific_product_voucher_existing_variant(
     order.voucher_code = voucher.codes.first().code
     order.save(update_fields=["voucher_code", "voucher_id", "status"])
     create_or_update_voucher_discount_objects_for_order(order)
-    order, lines = fetch_order_prices_if_expired(order, plugins_manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     line_1, line_2 = lines
     initial_unit_discount = (
@@ -2077,7 +2104,7 @@ def test_order_lines_create_dont_set_price_expiration_time_when_price_overridden
 
     variant = variant_with_many_stocks
     quantity = 1
-    custom_price = Decimal("5")
+    custom_price = Decimal(5)
     order_id = graphene.Node.to_global_id("Order", order.id)
     variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
     variables = {
@@ -2161,7 +2188,7 @@ def test_order_lines_create_existing_variant_and_custom_price_unset_expiration_d
     extra_quantity = 1
     order_id = graphene.Node.to_global_id("Order", order.id)
     variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
-    custom_price = Decimal("5")
+    custom_price = Decimal(5)
     variables = {
         "orderId": order_id,
         "variantId": variant_id,
@@ -2185,3 +2212,37 @@ def test_order_lines_create_existing_variant_and_custom_price_unset_expiration_d
     line.refresh_from_db()
     assert line.quantity == old_quantity + extra_quantity
     assert line.draft_base_price_expire_at is None
+
+
+@pytest.mark.parametrize("status", [OrderStatus.DRAFT, OrderStatus.UNCONFIRMED])
+def test_order_lines_create_sets_product_type_id_for_order_line(
+    status,
+    order,
+    permission_group_manage_orders,
+    staff_api_client,
+    variant_with_many_stocks,
+):
+    # given
+    query = ORDER_LINES_CREATE_MUTATION
+    order.status = status
+    order.save(update_fields=["status"])
+    variant = variant_with_many_stocks
+
+    quantity = 1
+    order_id = graphene.Node.to_global_id("Order", order.id)
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
+    variables = {"orderId": order_id, "variantId": variant_id, "quantity": quantity}
+
+    expected_product_type_id = variant.product.product_type_id
+
+    # when
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+    response = staff_api_client.post_graphql(query, variables)
+
+    # then
+    content = get_graphql_content(response)
+    assert not content["data"]["orderLinesCreate"]["errors"]
+
+    order.refresh_from_db()
+    assert len(order.lines.all()) == 1
+    assert order.lines.first().product_type_id == expected_product_type_id

@@ -28,6 +28,28 @@ query variant(
         id
         sku
         externalReference
+        assignedAttributes {
+            attribute {
+                slug
+            }
+            ... on AssignedFileAttribute {
+                file: value {
+                    contentType
+                    url
+                }
+            }
+            ... on AssignedSingleChoiceAttribute {
+                choice: value {
+                    name
+                    slug
+                }
+            }
+            ... on AssignedMultiProductReferenceAttribute {
+                products: value {
+                    slug
+                }
+            }
+        }
         attributes(variantSelection: $variantSelection) {
             attribute {
                 slug
@@ -562,6 +584,7 @@ def test_get_variant_by_id_with_variant_selection_filter(
     elif variant_selection == VariantAttributeScope.VARIANT_SELECTION.name:
         assert len(data["attributes"]) == 1
         assert data["attributes"][0]["attribute"]["slug"] == size_attribute.slug
+
     else:
         assert len(data["attributes"]) == 2
 
@@ -581,17 +604,24 @@ def test_get_variant_with_sorted_attribute_values(
         attribute=product_type_product_reference_attribute,
         name=product_list[0].name,
         slug=f"{variant.pk}_{product_list[0].pk}",
+        reference_product=product_list[0],
     )
     attr_value_2 = AttributeValue.objects.create(
         attribute=product_type_product_reference_attribute,
         name=product_list[1].name,
         slug=f"{variant.pk}_{product_list[1].pk}",
+        reference_product=product_list[1],
     )
     attr_value_3 = AttributeValue.objects.create(
         attribute=product_type_product_reference_attribute,
         name=product_list[2].name,
         slug=f"{variant.pk}_{product_list[2].pk}",
+        reference_product=product_list[2],
     )
+
+    expected_first_product = product_list[1]
+    expected_second_product = product_list[0]
+    expected_third_product = product_list[2]
 
     attr_values = [attr_value_2, attr_value_1, attr_value_3]
     associate_attribute_values_to_instance(
@@ -615,26 +645,28 @@ def test_get_variant_with_sorted_attribute_values(
         graphene.Node.to_global_id("AttributeValue", val.pk) for val in attr_values
     ]
 
+    assigned_attributes = data["assignedAttributes"]
+    assert len(assigned_attributes) == 1
+    assigned_values = assigned_attributes[0]["products"]
+    assert len(assigned_values) == 3
+    assert assigned_values[0]["slug"] == expected_first_product.slug
+    assert assigned_values[1]["slug"] == expected_second_product.slug
+    assert assigned_values[2]["slug"] == expected_third_product.slug
 
-@pytest.mark.parametrize(
-    ("field", "is_nested"),
-    [("digitalContent", True), ("quantityOrdered", False)],
-)
-def test_variant_restricted_fields_permissions(
+
+def test_variant_quantity_ordered_field_is_restricted_with_permissions(
     staff_api_client,
     permission_manage_products,
     permission_manage_orders,
     product,
-    field,
-    is_nested,
     channel_USD,
 ):
-    query = f"""
-    query ProductVariant($id: ID!, $channel: String) {{
-        productVariant(id: $id, channel: $channel) {{
-            {field if not is_nested else f"{field} {{ __typename }}"}
-        }}
-    }}
+    query = """
+    query ProductVariant($id: ID!, $channel: String) {
+        productVariant(id: $id, channel: $channel) {
+            quantityOrdered
+        }
+    }
     """
     variant = product.variants.first()
     variables = {
@@ -644,31 +676,7 @@ def test_variant_restricted_fields_permissions(
     permissions = [permission_manage_orders, permission_manage_products]
     response = staff_api_client.post_graphql(query, variables, permissions)
     content = get_graphql_content(response)
-    assert field in content["data"]["productVariant"]
-
-
-def test_variant_digital_content(
-    staff_api_client, permission_manage_products, digital_content, channel_USD
-):
-    query = """
-    query Margin($id: ID!, $channel: String) {
-        productVariant(id: $id, channel: $channel) {
-            digitalContent{
-                id
-            }
-        }
-    }
-    """
-    variant = digital_content.product_variant
-    variables = {
-        "id": graphene.Node.to_global_id("ProductVariant", variant.pk),
-        "channel": channel_USD.slug,
-    }
-    permissions = [permission_manage_products]
-    response = staff_api_client.post_graphql(query, variables, permissions)
-    content = get_graphql_content(response)
-    assert "digitalContent" in content["data"]["productVariant"]
-    assert "id" in content["data"]["productVariant"]["digitalContent"]
+    assert "quantityOrdered" in content["data"]["productVariant"]
 
 
 def test_product_variant_without_price_by_sku_as_user(
@@ -1038,3 +1046,127 @@ def test_stock_quantity_is_sum_of_quantities_from_warehouses_that_support_countr
     content = get_graphql_content(response)
 
     assert content["data"]["productVariant"]["quantityAvailable"] == sum_quantities
+
+
+def test_quantity_available_ignores_shipping_zones_excluded_from_stock_calculations(
+    api_client,
+    channel_USD,
+    variant_with_many_stocks_different_shipping_zones,
+    site_settings,
+):
+    # When use_legacy_shipping_zone_stock_availability is False, quantityAvailable
+    # returns the sum of all stocks from channel warehouses, ignoring shipping zones
+    # and country code.
+
+    # given
+    site_settings.use_legacy_shipping_zone_stock_availability = False
+    site_settings.save(update_fields=["use_legacy_shipping_zone_stock_availability"])
+
+    query = """
+        query ProductVariant($id: ID!, $channel: String!, $country: CountryCode) {
+            productVariant(id: $id, channel: $channel) {
+                quantityWithCountry: quantityAvailable(address: { country: $country })
+                quantityWithoutCountry: quantityAvailable
+            }
+        }
+    """
+
+    variant = variant_with_many_stocks_different_shipping_zones
+    total_quantity = sum(stock.quantity for stock in variant.stocks.all())
+
+    variables = {
+        "id": graphene.Node.to_global_id("ProductVariant", variant.pk),
+        "channel": channel_USD.slug,
+        "country": "PL",
+    }
+
+    # when
+    response = api_client.post_graphql(query, variables)
+    content = get_graphql_content(response)
+
+    # then - both return the same total, country is ignored
+    assert content["data"]["productVariant"]["quantityWithCountry"] == total_quantity
+    assert content["data"]["productVariant"]["quantityWithoutCountry"] == total_quantity
+
+
+def test_stocks_resolver_ignores_shipping_zones_excluded_from_stock_calculations(
+    staff_api_client,
+    channel_USD,
+    variant_with_many_stocks_different_shipping_zones,
+    site_settings,
+    permission_manage_products,
+):
+    # When use_legacy_shipping_zone_stock_availability is False, stocks resolver
+    # returns stocks from all channel warehouses regardless of shipping zones or address.
+    # given
+    site_settings.use_legacy_shipping_zone_stock_availability = False
+    site_settings.save(update_fields=["use_legacy_shipping_zone_stock_availability"])
+
+    query = """
+    query ProductVariant($id: ID!, $channel: String!, $country: CountryCode) {
+        productVariant(id: $id, channel: $channel) {
+            stocksWithCountry: stocks(address: { country: $country }) {
+                quantity
+                warehouse {
+                    slug
+                }
+            }
+            stocksWithoutCountry: stocks {
+                quantity
+                warehouse {
+                    slug
+                }
+            }
+        }
+    }
+    """
+
+    variant = variant_with_many_stocks_different_shipping_zones
+    expected_stock_count = variant.stocks.filter(
+        warehouse__channels=channel_USD
+    ).count()
+
+    variables = {
+        "id": graphene.Node.to_global_id("ProductVariant", variant.pk),
+        "channel": channel_USD.slug,
+        "country": "PL",
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+    content = get_graphql_content(response)
+
+    # then - both return the same stocks, address is ignored
+    stocks_with_country = content["data"]["productVariant"]["stocksWithCountry"]
+    stocks_without_country = content["data"]["productVariant"]["stocksWithoutCountry"]
+    assert len(stocks_with_country) == expected_stock_count
+    assert len(stocks_without_country) == expected_stock_count
+
+
+CHANNEL_FIELD_QUERY = """
+query getProductVariant($id: ID!) {
+    productVariant(id: $id) {
+        id
+        channel
+    }
+}
+"""
+
+
+def test_channel_field_with_default_channel_anonymous(api_client, variant, channel_USD):
+    """No `channel` argument is passed and the anonymous requestor has no product permissions, so the resolver falls back to the lazy default channel slug."""
+
+    # given
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+    variables = {"id": variant_id}
+
+    # when
+    response = api_client.post_graphql(CHANNEL_FIELD_QUERY, variables)
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productVariant"]
+    assert data["id"] == variant_id
+    assert data["channel"] == channel_USD.slug

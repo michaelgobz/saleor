@@ -25,34 +25,282 @@ from ...tests.utils import get_graphql_content
 from ..enums import ProductAttributeType
 
 QUERY_PRODUCT_AND_VARIANTS_ATTRIBUTES = """
-    query ($channel: String){
-      products(first: 1, channel: $channel) {
-        edges {
-          node {
-            attributes {
-              attribute {
-                slug
-                type
+query ($channel: String) {
+  products(first: 1, channel: $channel) {
+    edges {
+      node {
+        attributes {
+          attribute {
+            slug
+            type
+          }
+          values {
+            slug
+          }
+        }
+        assignedAttributes(limit:10) {
+          attr: attribute {
+              slug
+              type
+          }
+          ... on AssignedNumericAttribute {
+            attribute {
+              id
+            }
+            value
+          }
+          ... on AssignedTextAttribute {
+            text: value
+            text_translation: translation(languageCode: FR)
+          }
+          ... on AssignedPlainTextAttribute {
+            plain_text: value
+            plain_translation: translation(languageCode: FR)
+          }
+          ... on AssignedFileAttribute {
+            file: value {
+              contentType
+            }
+          }
+          ... on AssignedSinglePageReferenceAttribute {
+            page_ref: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedSingleProductReferenceAttribute {
+            product_ref: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedSingleProductVariantReferenceAttribute {
+            variant_ref: value {
+              __typename
+              sku
+            }
+          }
+          ... on AssignedSingleCategoryReferenceAttribute {
+            category_ref: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedSingleCollectionReferenceAttribute {
+            collection_ref: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedMultiPageReferenceAttribute {
+            __typename
+            pages: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedMultiProductReferenceAttribute {
+            __typename
+            producs: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedMultiProductVariantReferenceAttribute {
+            __typename
+            variants: value {
+              __typename
+              sku
+            }
+          }
+          ... on AssignedMultiCategoryReferenceAttribute {
+            __typename
+            categories: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedMultiCollectionReferenceAttribute {
+            __typename
+            collections: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedSingleChoiceAttribute {
+            __typename
+            choice: value {
+              name
+              slug
+              translation(languageCode: FR)
+            }
+          }
+          ... on AssignedMultiChoiceAttribute {
+            __typename
+            multi: value {
+              name
+              slug
+              translation(languageCode: FR)
+            }
+          }
+          ... on AssignedSwatchAttribute {
+            swatch: value {
+              name
+              slug
+              hexColor
+              file {
+                url
+                contentType
               }
-              values {
+            }
+          }
+          ... on AssignedBooleanAttribute {
+            bool: value
+          }
+          ... on AssignedDateAttribute {
+            date: value
+          }
+          ... on AssignedDateTimeAttribute {
+            datetime: value
+          }
+        }
+        variants {
+          attributes {
+            attribute {
+              slug
+              type
+            }
+            values {
+              slug
+            }
+          }
+          assignedAttributes(limit:10) {
+            ... on AssignedNumericAttribute {
+              attribute {
+                id
+              }
+              value
+            }
+            ... on AssignedTextAttribute {
+              text: value
+              text_translation: translation(languageCode: FR)
+            }
+            ... on AssignedPlainTextAttribute {
+              plain_text: value
+              plain_translation: translation(languageCode: FR)
+            }
+            ... on AssignedFileAttribute {
+              file: value {
+                contentType
+              }
+            }
+            ... on AssignedSinglePageReferenceAttribute {
+              page_ref: value {
+                __typename
                 slug
               }
             }
-            variants {
-              attributes {
-                attribute {
-                  slug
-                  type
-                }
-                values {
-                  slug
+            ... on AssignedSingleProductReferenceAttribute {
+              product_ref: value {
+                __typename
+                slug
+              }
+            }
+            ... on AssignedSingleProductVariantReferenceAttribute {
+              variant_ref: value {
+                __typename
+                sku
+              }
+            }
+            ... on AssignedSingleCategoryReferenceAttribute {
+              category_ref: value {
+                __typename
+                slug
+              }
+            }
+            ... on AssignedSingleCollectionReferenceAttribute {
+              collection_ref: value {
+                __typename
+                slug
+              }
+            }
+            ... on AssignedMultiPageReferenceAttribute {
+              __typename
+              pages: value {
+                __typename
+                slug
+              }
+            }
+            ... on AssignedMultiProductReferenceAttribute {
+              __typename
+              producs: value {
+                __typename
+                slug
+              }
+            }
+            ... on AssignedMultiProductVariantReferenceAttribute {
+              __typename
+              variants: value {
+                __typename
+                sku
+              }
+            }
+            ... on AssignedMultiCategoryReferenceAttribute {
+              __typename
+              categories: value {
+                __typename
+                slug
+              }
+            }
+            ... on AssignedMultiCollectionReferenceAttribute {
+              __typename
+              collections: value {
+                __typename
+                slug
+              }
+            }
+            ... on AssignedSingleChoiceAttribute {
+              __typename
+              choice: value {
+                name
+                slug
+                translation(languageCode: FR)
+              }
+            }
+            ... on AssignedMultiChoiceAttribute {
+              __typename
+              multi: value {
+                name
+                slug
+                translation(languageCode: FR)
+              }
+            }
+            ... on AssignedSwatchAttribute {
+              swatch: value {
+                name
+                slug
+                hexColor
+                file {
+                  url
+                  contentType
                 }
               }
+            }
+            ... on AssignedBooleanAttribute {
+              bool: value
+            }
+            ... on AssignedDateAttribute {
+              date: value
+            }
+            ... on AssignedDateTimeAttribute {
+              datetime: value
             }
           }
         }
       }
     }
+  }
+}
 """
 
 
@@ -286,17 +534,11 @@ PRODUCT_ASSIGN_ATTR_QUERY = """
           productAttributes {
             id
             visibleInStorefront
-            filterableInDashboard
-            filterableInStorefront
           }
           variantAttributes {
             id
             visibleInStorefront
-            filterableInDashboard
-            filterableInStorefront
-            availableInGrid
             valueRequired
-            storefrontSearchPosition
           }
         }
       }
@@ -383,9 +625,50 @@ def test_assign_non_existing_attributes_to_product_type(
     )
     content = get_graphql_content(response)
     content = content["data"]["productAttributeAssign"]
+    assert len(content["errors"]) == 1
     assert content["errors"][0]["code"] == ProductErrorCode.NOT_FOUND.name
     assert content["errors"][0]["field"] == "operations"
     assert content["errors"][0]["attributes"] == [attribute_id]
+
+
+def test_assign_non_existing_and_existing_attributes_to_product_type(
+    staff_api_client,
+    permission_manage_product_types_and_attributes,
+    product_type_attribute_list,
+):
+    # given
+    product_type = ProductType.objects.create(
+        name="Default Type", has_variants=True, kind=ProductTypeKind.NORMAL
+    )
+    product_type_global_id = graphene.Node.to_global_id("ProductType", product_type.pk)
+
+    existing_attribute = product_type_attribute_list[0]
+    existing_attribute_id = graphene.Node.to_global_id(
+        "Attribute", existing_attribute.pk
+    )
+    nonexistent_attribute_id = graphene.Node.to_global_id("Attribute", -1)
+
+    operations = [
+        {"type": "PRODUCT", "id": existing_attribute_id},
+        {"type": "PRODUCT", "id": nonexistent_attribute_id},
+    ]
+    variables = {"productTypeId": product_type_global_id, "operations": operations}
+
+    # when
+    response = staff_api_client.post_graphql(
+        PRODUCT_ASSIGN_ATTR_QUERY,
+        variables,
+        permissions=[permission_manage_product_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)["data"]["productAttributeAssign"]
+    errors = content["errors"]
+    assert len(errors) == 1
+    assert errors[0]["code"] == ProductErrorCode.NOT_FOUND.name
+    assert errors[0]["field"] == "operations"
+    assert errors[0]["attributes"] == [nonexistent_attribute_id]
+    assert product_type.product_attributes.exists() is False
 
 
 def test_assign_variant_attribute_to_product_type_with_disabled_variants(
@@ -411,14 +694,8 @@ def test_assign_variant_attribute_to_product_type_with_disabled_variants(
     content = get_graphql_content(staff_api_client.post_graphql(query, variables))[
         "data"
     ]["productAttributeAssign"]
-    assert content["errors"][0]["field"] == "operations"
-    assert (
-        content["errors"][0]["message"] == "Variants are disabled in this product type."
-    )
-    assert (
-        content["errors"][0]["code"]
-        == ProductErrorCode.ATTRIBUTE_VARIANTS_DISABLED.name
-    )
+    # hasVariants has no more effects on variant attributes
+    assert not content["errors"]
 
 
 def test_assign_variant_attribute_having_multiselect_input_type(

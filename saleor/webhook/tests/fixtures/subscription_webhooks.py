@@ -262,14 +262,6 @@ def subscription_gift_card_metadata_updated_webhook(subscription_webhook):
 
 
 @pytest.fixture
-def subscription_gift_card_export_completed_webhook(subscription_webhook):
-    return subscription_webhook(
-        queries.GIFT_CARD_EXPORT_COMPLETED,
-        WebhookEventAsyncType.GIFT_CARD_EXPORT_COMPLETED,
-    )
-
-
-@pytest.fixture
 def subscription_menu_created_webhook(subscription_webhook):
     return subscription_webhook(
         queries.MENU_CREATED, WebhookEventAsyncType.MENU_CREATED
@@ -477,6 +469,14 @@ def subscription_product_variant_stock_updated_webhook(subscription_webhook):
     return subscription_webhook(
         queries.PRODUCT_VARIANT_STOCK_UPDATED,
         WebhookEventAsyncType.PRODUCT_VARIANT_STOCK_UPDATED,
+    )
+
+
+@pytest.fixture
+def subscription_product_variant_discounted_price_updated_webhook(subscription_webhook):
+    return subscription_webhook(
+        queries.PRODUCT_VARIANT_DISCOUNTED_PRICE_UPDATED,
+        WebhookEventAsyncType.PRODUCT_VARIANT_DISCOUNTED_PRICE_UPDATED,
     )
 
 
@@ -812,6 +812,14 @@ def subscription_checkout_fully_paid_webhook(subscription_webhook):
 
 
 @pytest.fixture
+def subscription_checkout_fully_authorized_webhook(subscription_webhook):
+    return subscription_webhook(
+        queries.CHECKOUT_FULLY_AUTHORIZED,
+        WebhookEventAsyncType.CHECKOUT_FULLY_AUTHORIZED,
+    )
+
+
+@pytest.fixture
 def subscription_checkout_metadata_updated_webhook(subscription_webhook):
     return subscription_webhook(
         queries.CHECKOUT_METADATA_UPDATED,
@@ -860,6 +868,48 @@ def subscription_page_type_updated_webhook(subscription_webhook):
 def subscription_page_type_deleted_webhook(subscription_webhook):
     return subscription_webhook(
         queries.PAGE_TYPE_DELETED, WebhookEventAsyncType.PAGE_TYPE_DELETED
+    )
+
+
+@pytest.fixture
+def subscription_customer_type_created_webhook(subscription_webhook):
+    return subscription_webhook(
+        queries.CUSTOMER_TYPE_CREATED, WebhookEventAsyncType.CUSTOMER_TYPE_CREATED
+    )
+
+
+@pytest.fixture
+def subscription_customer_type_updated_webhook(subscription_webhook):
+    return subscription_webhook(
+        queries.CUSTOMER_TYPE_UPDATED, WebhookEventAsyncType.CUSTOMER_TYPE_UPDATED
+    )
+
+
+@pytest.fixture
+def subscription_customer_type_deleted_webhook(subscription_webhook):
+    return subscription_webhook(
+        queries.CUSTOMER_TYPE_DELETED, WebhookEventAsyncType.CUSTOMER_TYPE_DELETED
+    )
+
+
+@pytest.fixture
+def subscription_product_type_created_webhook(subscription_webhook):
+    return subscription_webhook(
+        queries.PRODUCT_TYPE_CREATED, WebhookEventAsyncType.PRODUCT_TYPE_CREATED
+    )
+
+
+@pytest.fixture
+def subscription_product_type_updated_webhook(subscription_webhook):
+    return subscription_webhook(
+        queries.PRODUCT_TYPE_UPDATED, WebhookEventAsyncType.PRODUCT_TYPE_UPDATED
+    )
+
+
+@pytest.fixture
+def subscription_product_type_deleted_webhook(subscription_webhook):
+    return subscription_webhook(
+        queries.PRODUCT_TYPE_DELETED, WebhookEventAsyncType.PRODUCT_TYPE_DELETED
     )
 
 
@@ -1230,14 +1280,6 @@ def subscription_voucher_metadata_updated_webhook(subscription_webhook):
 
 
 @pytest.fixture
-def subscription_voucher_code_export_completed_webhook(subscription_webhook):
-    return subscription_webhook(
-        queries.VOUCHER_CODE_EXPORT_COMPLETED,
-        WebhookEventAsyncType.VOUCHER_CODE_EXPORT_COMPLETED,
-    )
-
-
-@pytest.fixture
 def subscription_shop_metadata_updated_webhook(subscription_webhook):
     return subscription_webhook(
         queries.SHOP_METADATA_UPDATED,
@@ -1294,94 +1336,10 @@ def subscription_payment_list_gateways_webhook(subscription_webhook):
 
 
 @pytest.fixture
-def subscription_checkout_filter_shipping_methods_webhook(subscription_webhook):
-    return subscription_webhook(
-        queries.CHECKOUT_FILTER_SHIPPING_METHODS,
-        WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS,
-    )
-
-
-@pytest.fixture
-def subscription_shipping_list_methods_for_checkout_webhook(subscription_webhook):
-    return subscription_webhook(
-        queries.SHIPPING_LIST_METHODS_FOR_CHECKOUT,
-        WebhookEventSyncType.SHIPPING_LIST_METHODS_FOR_CHECKOUT,
-    )
-
-
-@pytest.fixture
-def subscription_order_filter_shipping_methods_webhook(subscription_webhook):
-    return subscription_webhook(
-        queries.ORDER_FILTER_SHIPPING_METHODS,
-        WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS,
-    )
-
-
-@pytest.fixture
-def subscription_checkout_filter_shipping_method_webhook_with_shipping_methods(
-    subscription_webhook,
-):
-    return subscription_webhook(
-        queries.CHECKOUT_FILTER_SHIPPING_METHODS_CIRCULAR_SHIPPING_METHODS,
-        WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS,
-    )
-
-
-@pytest.fixture
-def subscription_checkout_filter_shipping_method_webhook_with_available_ship_methods(
-    subscription_webhook,
-):
-    return subscription_webhook(
-        queries.CHECKOUT_FILTER_SHIPPING_METHODS_AVAILABLE_SHIPPING_METHODS,
-        WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS,
-    )
-
-
-@pytest.fixture
-def subscription_checkout_filter_shipping_method_webhook_with_payment_gateways(
-    subscription_webhook,
-):
-    return subscription_webhook(
-        queries.CHECKOUT_FILTER_SHIPPING_METHODS_AVAILABLE_PAYMENT_GATEWAYS,
-        WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS,
-    )
-
-
-@pytest.fixture
-def subscription_order_filter_shipping_methods_webhook_with_shipping_methods(
-    subscription_webhook,
-):
-    return subscription_webhook(
-        queries.ORDER_FILTER_SHIPPING_METHODS_CIRCULAR_SHIPPING_METHODS,
-        WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS,
-    )
-
-
-@pytest.fixture
-def subscription_order_filter_shipping_methods_webhook_with_available_ship_methods(
-    subscription_webhook,
-):
-    return subscription_webhook(
-        queries.ORDER_FILTER_SHIPPING_METHODS_AVAILABLE_SHIPPING_METHODS,
-        WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS,
-    )
-
-
-@pytest.fixture
 def subscription_thumbnail_created_webhook(subscription_webhook):
     return subscription_webhook(
         queries.THUMBNAIL_CREATED,
         WebhookEventAsyncType.THUMBNAIL_CREATED,
-    )
-
-
-@pytest.fixture
-def subscription_calculate_taxes_for_order(
-    subscription_webhook,
-):
-    return subscription_webhook(
-        queries.ORDER_CALCULATE_TAXES,
-        WebhookEventSyncType.ORDER_CALCULATE_TAXES,
     )
 
 
@@ -1414,14 +1372,4 @@ def subscription_app_status_changed_webhook_removed_app(
         queries.APP_STATUS_CHANGED,
         WebhookEventAsyncType.APP_STATUS_CHANGED,
         app=removed_app,
-    )
-
-
-@pytest.fixture
-def subscription_checkout_shipping_filter_and_list_missing_one_in_definition(
-    subscription_webhook,
-):
-    return subscription_webhook(
-        queries.THUMBNAIL_CREATED,
-        WebhookEventSyncType.SHIPPING_LIST_METHODS_FOR_CHECKOUT,
     )

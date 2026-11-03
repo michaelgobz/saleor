@@ -1,5 +1,3 @@
-from typing import cast
-
 import graphene
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -20,6 +18,7 @@ from ....order.calculations import fetch_order_prices_if_expired
 from ....order.error_codes import OrderErrorCode
 from ....order.fetch import OrderInfo, OrderLineInfo
 from ....order.models import OrderLine
+from ....order.notifications import send_order_confirmation
 from ....order.search import prepare_order_search_vector_value
 from ....order.utils import (
     get_order_country,
@@ -29,12 +28,14 @@ from ....order.utils import (
 from ....permission.enums import OrderPermissions
 from ....warehouse.management import allocate_preorders, allocate_stocks
 from ....warehouse.reservations import is_reservation_enabled
+from ....webhook.event_types import WebhookEventAsyncType
 from ...app.dataloaders import get_app_promise
 from ...core import ResolveInfo
 from ...core.context import SyncWebhookControlContext
 from ...core.doc_category import DOC_CATEGORY_ORDERS
 from ...core.mutations import BaseMutation
 from ...core.types import OrderError
+from ...core.utils import WebhookEventInfo
 from ...plugins.dataloaders import get_plugin_manager_promise
 from ...site.dataloaders import get_site_promise
 from ..types import Order
@@ -58,6 +59,15 @@ class DraftOrderComplete(BaseMutation):
         permissions = (OrderPermissions.MANAGE_ORDERS,)
         error_type_class = OrderError
         error_type_field = "order_errors"
+        webhook_events_info = [
+            WebhookEventInfo(
+                type=WebhookEventAsyncType.NOTIFY_USER,
+                description=(
+                    "Optionally triggered when staff notification recipients are "
+                    "configured."
+                ),
+            )
+        ]
 
     @classmethod
     def update_user_fields(cls, order: models.Order):
@@ -86,6 +96,12 @@ class DraftOrderComplete(BaseMutation):
         return order
 
     @classmethod
+    def handle_order_voucher(cls, order, channel):
+        if order.voucher:
+            cls.setup_voucher_customer(order, channel)
+            cls.deactivate_single_use_voucher_codes(order)
+
+    @classmethod
     def setup_voucher_customer(cls, order, channel):
         if (
             order.voucher
@@ -100,13 +116,26 @@ class DraftOrderComplete(BaseMutation):
                 )
 
     @classmethod
+    def deactivate_single_use_voucher_codes(cls, order):
+        # In case the `include_draft_order_in_voucher_usage` flag is set to True,
+        # the voucher is not deactivated during assigning it to the draft order.
+        # So we need to deactivate it when the draft order is completed.
+        if order.voucher.single_use and order.voucher_code:
+            code = VoucherCode.objects.filter(code=order.voucher_code).first()
+            if code and code.is_active:
+                code.is_active = False
+                code.save(update_fields=["is_active"])
+
+    @classmethod
     def perform_mutation(  # type: ignore[override]
         cls, _root, info: ResolveInfo, /, *, id: str
     ):
         user = info.context.user
-        user = cast(User, user)
+        app = get_app_promise(info.context).get()
+        requestor = app or user
 
         manager = get_plugin_manager_promise(info.context).get()
+        site_settings = get_site_promise(info.context).get().settings
         order = cls.get_node_or_error(
             info,
             id,
@@ -116,17 +145,33 @@ class DraftOrderComplete(BaseMutation):
         cls.check_channel_permissions(info, [order.channel_id])
         force_update = order.tax_error is not None
         order, _ = fetch_order_prices_if_expired(
-            order, manager, force_update=force_update
-        )
+            order, manager, requestor=requestor, force_update=force_update
+        ).get()
         if order.tax_error is not None:
             raise ValidationError(
                 "Configured Tax App returned invalid response.",
                 code=OrderErrorCode.TAX_ERROR.value,
             )
+        if order.should_refresh_prices:
+            # The recalculation above did not store its result - the order was modified
+            # by another process while the taxes were being calculated. Completing now
+            # would finalize an order with the prices from before that modification,
+            # and a completed order is no longer recalculated, so it could not be
+            # corrected afterwards. Leaving it as a draft keeps it recalculable.
+            raise ValidationError(
+                "Order prices could not be recalculated. Please try again.",
+                code=OrderErrorCode.TAX_ERROR.value,
+            )
         cls.validate_order(order)
 
         country = get_order_country(order)
-        validate_draft_order(order, order.lines.all(), country, manager)
+        validate_draft_order(
+            order,
+            order.lines.all(),
+            country,
+            requestor=requestor,
+            calculate_stocks_with_shipping_zones=site_settings.use_legacy_shipping_zone_stock_availability,
+        ).get()
         with traced_atomic_transaction():
             update_fields = [
                 "status",
@@ -158,13 +203,23 @@ class DraftOrderComplete(BaseMutation):
                     ]
                 )
 
+            if shipping_method := order.shipping_method:
+                # Denormalize shipping method metadata into order
+                order.shipping_method_metadata = shipping_method.metadata
+                order.shipping_method_private_metadata = (
+                    shipping_method.private_metadata
+                )
+                update_fields.extend(
+                    ["shipping_method_metadata", "shipping_method_private_metadata"]
+                )
+
             order.search_vector = FlatConcatSearchVector(
                 *prepare_order_search_vector_value(order)
             )
             update_order_display_gross_prices(order)
             order.save(update_fields=update_fields)
 
-            cls.setup_voucher_customer(order, channel)
+            cls.handle_order_voucher(order, channel)
             order_lines_info = []
             lines = order.lines.all()
             for line in lines:
@@ -176,23 +231,24 @@ class DraftOrderComplete(BaseMutation):
                         line=line, quantity=line.quantity, variant=line.variant
                     )
                     order_lines_info.append(line_data)
-                    site = get_site_promise(info.context).get()
                     try:
                         with traced_atomic_transaction():
                             allocate_stocks(
                                 [line_data],
                                 country,
                                 channel,
-                                manager,
+                                site_settings,
+                                requestor,
                                 check_reservations=is_reservation_enabled(
-                                    site.settings
+                                    site_settings
                                 ),
+                                calculate_stocks_with_shipping_zones=site_settings.use_legacy_shipping_zone_stock_availability,
                             )
                             allocate_preorders(
                                 [line_data],
                                 channel.slug,
                                 check_reservations=is_reservation_enabled(
-                                    site.settings
+                                    site_settings
                                 ),
                             )
                     except InsufficientStock as e:
@@ -210,7 +266,7 @@ class DraftOrderComplete(BaseMutation):
                 payment=order.get_last_payment(),
                 lines_data=order_lines_info,
             )
-            app = get_app_promise(info.context).get()
+
             transaction.on_commit(
                 lambda: store_user_addresses_from_draft_order(
                     order=order,
@@ -224,6 +280,15 @@ class DraftOrderComplete(BaseMutation):
                     app=app,
                     manager=manager,
                     from_draft=True,
+                )
+            )
+            transaction.on_commit(
+                # Notify staff about order creation
+                lambda: send_order_confirmation(
+                    order_info=order_info,
+                    redirect_url=order.redirect_url,
+                    manager=manager,
+                    notify_customer=False,
                 )
             )
         return DraftOrderComplete(order=SyncWebhookControlContext(node=order))

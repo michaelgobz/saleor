@@ -2,6 +2,7 @@ import graphene
 from django.contrib.sites.models import Site
 from measurement.measures import Weight
 
+from .....attribute.utils import associate_attribute_values_to_instance
 from .....core.units import WeightUnits
 from .....warehouse import WarehouseClickAndCollectOption
 from ....core.enums import WeightUnitsEnum
@@ -219,10 +220,6 @@ QUERY_PRODUCT_VARIANT_CHANNEL_LISTING = """
                     currency
                     amount
                 }
-                preorderThreshold {
-                    quantity
-                    soldUnits
-                }
             }
         }
     }
@@ -260,10 +257,6 @@ def test_get_product_variant_channel_listing_as_staff_user(
                 "currency": channel_listing.currency,
                 "amount": channel_listing.cost_price_amount,
             },
-            "preorderThreshold": {
-                "quantity": channel_listing.preorder_quantity_threshold,
-                "soldUnits": 0,
-            },
         } in data["channelListings"]
     assert len(data["channelListings"]) == variant.channel_listings.count()
 
@@ -298,10 +291,6 @@ def test_get_product_variant_channel_listing_as_app(
             "costPrice": {
                 "currency": channel_listing.currency,
                 "amount": channel_listing.cost_price_amount,
-            },
-            "preorderThreshold": {
-                "quantity": channel_listing.preorder_quantity_threshold,
-                "soldUnits": 0,
             },
         } in data["channelListings"]
     assert len(data["channelListings"]) == variant.channel_listings.count()
@@ -454,98 +443,6 @@ def test_get_product_variant_stocks_no_channel_shipping_zones(
     assert stocks_count > 0
 
 
-QUERY_PRODUCT_VARIANT_PREORDER = """
-    query ProductVariantDetails($id: ID!, $channel: String) {
-        productVariant(id: $id, channel: $channel) {
-            preorder {
-                globalThreshold
-                globalSoldUnits
-                endDate
-            }
-        }
-    }
-"""
-
-
-def test_get_product_variant_preorder_as_staff(
-    staff_api_client,
-    preorder_variant_global_and_channel_threshold,
-    preorder_allocation,
-    channel_USD,
-    permission_manage_products,
-):
-    # given
-    variant = preorder_variant_global_and_channel_threshold
-    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
-    variables = {"id": variant_id, "channel": channel_USD.slug}
-
-    # when
-    response = staff_api_client.post_graphql(
-        QUERY_PRODUCT_VARIANT_PREORDER,
-        variables,
-        permissions=[permission_manage_products],
-        check_no_permissions=False,
-    )
-    content = get_graphql_content(response)
-
-    # then
-    data = content["data"]["productVariant"]["preorder"]
-    assert data["globalThreshold"] == variant.preorder_global_threshold
-    assert data["globalSoldUnits"] == preorder_allocation.quantity
-    assert data["endDate"] == variant.preorder_end_date
-
-
-def test_get_product_variant_preorder_as_customer_not_allowed_fields(
-    user_api_client,
-    preorder_variant_global_threshold,
-    channel_USD,
-):
-    # given
-    variant = preorder_variant_global_threshold
-    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
-    variables = {"id": variant_id, "channel": channel_USD.slug}
-
-    # when
-    response = user_api_client.post_graphql(
-        QUERY_PRODUCT_VARIANT_PREORDER,
-        variables,
-    )
-
-    # then
-    assert_no_permission(response)
-
-
-def test_get_product_variant_preorder_as_customer_allowed_fields(
-    user_api_client,
-    preorder_variant_global_threshold,
-    channel_USD,
-):
-    # given
-    variant = preorder_variant_global_threshold
-    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
-    query = """
-        query ProductVariantDetails($id: ID!, $channel: String) {
-            productVariant(id: $id, channel: $channel) {
-                preorder {
-                    endDate
-                }
-            }
-        }
-    """
-    variables = {"id": variant_id, "channel": channel_USD.slug}
-
-    # when
-    response = user_api_client.post_graphql(
-        query,
-        variables,
-    )
-    content = get_graphql_content(response)
-
-    # then
-    data = content["data"]["productVariant"]["preorder"]
-    assert data["endDate"] == variant.preorder_end_date
-
-
 def _fetch_variant(client, variant, channel_slug=None, permissions=None):
     query = """
     query ProductVariantDetails($variantId: ID!, $channel: String) {
@@ -658,7 +555,7 @@ def test_fetch_variant_without_sku_anonymous(api_client, product, variant, chann
 
 
 QUERY_PRODUCT_VARIANT_IN_FEDERATION = """
-query GetProductVariantInFederation($representations: [_Any]) {
+query GetProductVariantInFederation($representations: [_Any!]!) {
   _entities(representations: $representations) {
     __typename
     ... on ProductVariant {
@@ -858,3 +755,114 @@ def test_query_product_variant_for_federation_as_staff_user_without_chanel(
             "name": variant.name,
         }
     ]
+
+
+QUERY_PRODUCT_VARIANT_WITH_ASSIGNED_ATTRIBUTE = """
+query productVariant($id: ID!, $channel: String, $attrSlug: String!) {
+  productVariant(id: $id, channel: $channel) {
+    assignedAttribute(slug:$attrSlug){
+      attribute{
+        slug
+      }
+      ...on AssignedSingleChoiceAttribute{
+        value{
+          slug
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def test_product_variant_with_assigned_attribute(
+    variant, channel_USD, user_api_client, size_attribute, weight_attribute
+):
+    # given
+    product_type = variant.product.product_type
+    product_type.variant_attributes.set([size_attribute, weight_attribute])
+
+    expected_attribute_value = size_attribute.values.first()
+    associate_attribute_values_to_instance(
+        variant,
+        {
+            size_attribute.pk: [expected_attribute_value],
+            weight_attribute.pk: [weight_attribute.values.first()],
+        },
+    )
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
+    variables = {
+        "id": variant_id,
+        "channel": channel_USD.slug,
+        "attrSlug": size_attribute.slug,
+    }
+
+    # when
+    response = user_api_client.post_graphql(
+        QUERY_PRODUCT_VARIANT_WITH_ASSIGNED_ATTRIBUTE, variables
+    )
+
+    # then
+    content = get_graphql_content(response)
+    assigned_attribute_data = content["data"]["productVariant"]["assignedAttribute"]
+    assert assigned_attribute_data["attribute"]["slug"] == size_attribute.slug
+    assert assigned_attribute_data["value"]["slug"] == expected_attribute_value.slug
+
+
+def test_product_variant_with_assigned_attribute_without_value(
+    variant, channel_USD, user_api_client, size_attribute, weight_attribute
+):
+    # given
+    product_type = variant.product.product_type
+    product_type.variant_attributes.set([size_attribute, weight_attribute])
+
+    associate_attribute_values_to_instance(
+        variant,
+        {
+            size_attribute.pk: [],
+            weight_attribute.pk: [weight_attribute.values.first()],
+        },
+    )
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
+    variables = {
+        "id": variant_id,
+        "channel": channel_USD.slug,
+        "attrSlug": size_attribute.slug,
+    }
+
+    # when
+    response = user_api_client.post_graphql(
+        QUERY_PRODUCT_VARIANT_WITH_ASSIGNED_ATTRIBUTE, variables
+    )
+
+    # then
+    content = get_graphql_content(response)
+    assigned_attribute_data = content["data"]["productVariant"]["assignedAttribute"]
+    assert assigned_attribute_data["attribute"]["slug"] == size_attribute.slug
+    assert assigned_attribute_data["value"] is None
+
+
+def test_product_variant_when_assigned_attribute_is_none(
+    variant, channel_USD, user_api_client, size_attribute, weight_attribute
+):
+    # given
+    product_type = variant.product.product_type
+    product_type.variant_attributes.set([size_attribute, weight_attribute])
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
+    variables = {
+        "id": variant_id,
+        "channel": channel_USD.slug,
+        "attrSlug": "non-existing-slug",
+    }
+
+    # when
+    response = user_api_client.post_graphql(
+        QUERY_PRODUCT_VARIANT_WITH_ASSIGNED_ATTRIBUTE, variables
+    )
+
+    # then
+    content = get_graphql_content(response)
+    assert content["data"]["productVariant"]["assignedAttribute"] is None

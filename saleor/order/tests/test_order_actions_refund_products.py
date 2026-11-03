@@ -12,13 +12,14 @@ from ..models import FulfillmentLine
 
 
 @patch("saleor.plugins.manager.PluginsManager.order_updated")
-@patch("saleor.order.actions.gateway.refund")
+@patch("saleor.payment.gateway.refund")
 def test_create_refund_fulfillment_only_order_lines(
     mocked_refund,
     mocked_order_updated,
     order_with_lines,
     payment_dummy,
     django_capture_on_commit_callbacks,
+    site_settings,
 ):
     payment_dummy.captured_amount = payment_dummy.total
     payment_dummy.charge_status = ChargeStatus.FULLY_CHARGED
@@ -48,6 +49,7 @@ def test_create_refund_fulfillment_only_order_lines(
             order_lines_to_refund=order_refund_lines,
             fulfillment_lines_to_refund=[],
             manager=get_plugins_manager(allow_replica=False),
+            site_settings=site_settings,
         )
 
     returned_fulfillment_lines = returned_fulfillemnt.lines.all()
@@ -86,13 +88,14 @@ def test_create_refund_fulfillment_only_order_lines(
 
 
 @patch("saleor.plugins.manager.PluginsManager.order_updated")
-@patch("saleor.order.actions.gateway.refund")
+@patch("saleor.payment.gateway.refund")
 def test_create_refund_fulfillment_included_shipping_costs(
     mocked_refund,
     mocked_order_updated,
     order_with_lines,
     payment_dummy,
     django_capture_on_commit_callbacks,
+    site_settings,
 ):
     payment_dummy.captured_amount = payment_dummy.total
     payment_dummy.charge_status = ChargeStatus.FULLY_CHARGED
@@ -118,6 +121,7 @@ def test_create_refund_fulfillment_included_shipping_costs(
             order_lines_to_refund=order_refund_lines,
             fulfillment_lines_to_refund=[],
             manager=get_plugins_manager(allow_replica=False),
+            site_settings=site_settings,
             refund_shipping_costs=True,
         )
 
@@ -152,13 +156,14 @@ def test_create_refund_fulfillment_included_shipping_costs(
 
 
 @patch("saleor.plugins.manager.PluginsManager.order_updated")
-@patch("saleor.order.actions.gateway.refund")
+@patch("saleor.payment.gateway.refund")
 def test_create_refund_fulfillment_only_fulfillment_lines(
     mocked_refund,
     mocked_order_updated,
     fulfilled_order,
     payment_dummy,
     django_capture_on_commit_callbacks,
+    site_settings,
 ):
     payment_dummy.captured_amount = payment_dummy.total
     payment_dummy.charge_status = ChargeStatus.FULLY_CHARGED
@@ -183,6 +188,7 @@ def test_create_refund_fulfillment_only_fulfillment_lines(
             order_lines_to_refund=[],
             fulfillment_lines_to_refund=fulfillment_refund_lines,
             manager=get_plugins_manager(allow_replica=False),
+            site_settings=site_settings,
         )
 
     returned_fulfillment_lines = returned_fulfillemnt.lines.all()
@@ -213,13 +219,14 @@ def test_create_refund_fulfillment_only_fulfillment_lines(
 
 
 @patch("saleor.plugins.manager.PluginsManager.order_updated")
-@patch("saleor.order.actions.gateway.refund")
+@patch("saleor.payment.gateway.refund")
 def test_create_refund_fulfillment_custom_amount(
     mocked_refund,
     mocked_order_updated,
     fulfilled_order,
     payment_dummy,
     django_capture_on_commit_callbacks,
+    site_settings,
 ):
     payment_dummy.captured_amount = payment_dummy.total
     payment_dummy.charge_status = ChargeStatus.FULLY_CHARGED
@@ -245,6 +252,7 @@ def test_create_refund_fulfillment_custom_amount(
             order_lines_to_refund=[],
             fulfillment_lines_to_refund=fulfillment_refund_lines,
             manager=get_plugins_manager(allow_replica=False),
+            site_settings=site_settings,
             amount=amount,
         )
 

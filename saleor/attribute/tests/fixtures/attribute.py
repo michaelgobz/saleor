@@ -1,10 +1,10 @@
 import datetime
 
 import pytest
-from django.template.defaultfilters import truncatechars
 
+from ....core.editorjs import editorjs_to_text
 from ....core.units import MeasurementUnits
-from ....core.utils.editorjs import clean_editor_js
+from ....core.utils.text import safe_truncate
 from ....tests.utils import dummy_editorjs
 from ... import AttributeEntityType, AttributeInputType, AttributeType
 from ...models import Attribute, AttributeValue
@@ -18,9 +18,6 @@ def attribute_generator():
         name="Attr",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.DROPDOWN,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     ):
         attribute, _ = Attribute.objects.get_or_create(
             external_reference=external_reference,
@@ -28,9 +25,6 @@ def attribute_generator():
             name=name,
             type=type,
             input_type=input_type,
-            filterable_in_storefront=filterable_in_storefront,
-            filterable_in_dashboard=filterable_in_dashboard,
-            available_in_grid=available_in_grid,
         )
 
         return attribute
@@ -114,9 +108,6 @@ def color_attribute(db, attribute_generator, attribute_values_generator):
         slug="color",
         name="Color",
         type=AttributeType.PRODUCT_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     external_references = [
         "colorAttributeValue1ExternalReference",
@@ -140,9 +131,6 @@ def color_attribute_with_translations(db):
         slug="color",
         name="Color",
         type=AttributeType.PRODUCT_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     value1 = AttributeValue.objects.create(attribute=attribute, name="Red", slug="red")
     AttributeValue.objects.create(attribute=attribute, name="Blue", slug="blue")
@@ -160,9 +148,6 @@ def second_color_attribute_with_translations(db):
         slug="second-color",
         name="Second color",
         type=AttributeType.PRODUCT_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     value1 = AttributeValue.objects.create(attribute=attribute, name="Red", slug="red")
     AttributeValue.objects.create(attribute=attribute, name="Blue", slug="blue")
@@ -180,9 +165,6 @@ def attribute_without_values():
         slug="dropdown",
         name="Dropdown",
         type=AttributeType.PRODUCT_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
         visible_in_storefront=True,
         entity_type=None,
     )
@@ -195,11 +177,8 @@ def multiselect_attribute(db, attribute_generator, attribute_values_generator):
         name="Multi",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.MULTISELECT,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
-    slugs = ["choice-1", "choice-1"]
+    slugs = ["choice-1", "choice-2"]
     names = ["Choice 1", "Choice 2"]
     attribute_values_generator(
         attribute=attribute,
@@ -217,9 +196,6 @@ def date_attribute(db):
         name="Release date",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.DATE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     AttributeValue.objects.bulk_create(
         [
@@ -246,9 +222,6 @@ def date_time_attribute(db):
         name="Release date time",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.DATE_TIME,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
 
     AttributeValue.objects.bulk_create(
@@ -275,9 +248,6 @@ def attribute_choices_for_sorting(db):
         slug="sorting",
         name="Sorting",
         type=AttributeType.PRODUCT_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     AttributeValue.objects.create(attribute=attribute, name="Global", slug="summer")
     AttributeValue.objects.create(attribute=attribute, name="Apex", slug="zet")
@@ -292,9 +262,6 @@ def boolean_attribute(db):
         name="Boolean",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.BOOLEAN,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     AttributeValue.objects.create(
         attribute=attribute,
@@ -318,14 +285,11 @@ def rich_text_attribute(db):
         name="Text",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.RICH_TEXT,
-        filterable_in_storefront=False,
-        filterable_in_dashboard=False,
-        available_in_grid=False,
     )
     text = "Rich text attribute content."
     AttributeValue.objects.create(
         attribute=attribute,
-        name=truncatechars(clean_editor_js(dummy_editorjs(text), to_string=True), 50),
+        name=safe_truncate(editorjs_to_text(dummy_editorjs(text)), 50),
         slug=f"instance_{attribute.id}",
         rich_text=dummy_editorjs(text),
     )
@@ -339,14 +303,11 @@ def rich_text_attribute_page_type(db):
         name="Text",
         type=AttributeType.PAGE_TYPE,
         input_type=AttributeInputType.RICH_TEXT,
-        filterable_in_storefront=False,
-        filterable_in_dashboard=False,
-        available_in_grid=False,
     )
     text = "Rich text attribute content."
     AttributeValue.objects.create(
         attribute=attribute,
-        name=truncatechars(clean_editor_js(dummy_editorjs(text), to_string=True), 50),
+        name=safe_truncate(editorjs_to_text(dummy_editorjs(text)), 50),
         slug=f"instance_{attribute.id}",
         rich_text=dummy_editorjs(text),
     )
@@ -362,9 +323,7 @@ def rich_text_attribute_with_many_values(rich_text_attribute):
         values.append(
             AttributeValue(
                 attribute=attribute,
-                name=truncatechars(
-                    clean_editor_js(dummy_editorjs(text), to_string=True), 50
-                ),
+                name=safe_truncate(editorjs_to_text(dummy_editorjs(text)), 50),
                 slug=f"instance_{attribute.id}_{i}",
                 rich_text=dummy_editorjs(text),
             )
@@ -380,14 +339,11 @@ def plain_text_attribute(db):
         name="Plain text",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.PLAIN_TEXT,
-        filterable_in_storefront=False,
-        filterable_in_dashboard=False,
-        available_in_grid=False,
     )
     text = "Plain text attribute content."
     AttributeValue.objects.create(
         attribute=attribute,
-        name=truncatechars(text, 50),
+        name=safe_truncate(text, 50),
         slug=f"instance_{attribute.id}",
         plain_text=text,
     )
@@ -401,14 +357,11 @@ def plain_text_attribute_page_type(db):
         name="Plain text",
         type=AttributeType.PAGE_TYPE,
         input_type=AttributeInputType.PLAIN_TEXT,
-        filterable_in_storefront=False,
-        filterable_in_dashboard=False,
-        available_in_grid=False,
     )
     text = "Plain text attribute content."
     AttributeValue.objects.create(
         attribute=attribute,
-        name=truncatechars(text, 50),
+        name=safe_truncate(text, 50),
         slug=f"instance_{attribute.id}",
         plain_text=text,
     )
@@ -421,9 +374,6 @@ def color_attribute_without_values(db):  # pylint: disable=W0613
         slug="color",
         name="Color",
         type=AttributeType.PRODUCT_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
 
 
@@ -442,9 +392,6 @@ def size_attribute(db, attribute_generator, attribute_values_generator):  # pyli
         slug="size",
         name="Size",
         type=AttributeType.PRODUCT_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
 
     slugs = ["small", "big"]
@@ -464,9 +411,6 @@ def weight_attribute(db):
         slug="material",
         name="Material",
         type=AttributeType.PRODUCT_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     AttributeValue.objects.create(attribute=attribute, name="Cotton", slug="cotton")
     AttributeValue.objects.create(
@@ -483,12 +427,13 @@ def numeric_attribute(db):
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.NUMERIC,
         unit=MeasurementUnits.CM,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
-    AttributeValue.objects.create(attribute=attribute, name="9.5", slug="10_5")
-    AttributeValue.objects.create(attribute=attribute, name="15.2", slug="15_2")
+    AttributeValue.objects.create(
+        attribute=attribute, name="9.5", slug="10_5", numeric=9.5
+    )
+    AttributeValue.objects.create(
+        attribute=attribute, name="15.2", slug="15_2", numeric=15.2
+    )
     return attribute
 
 
@@ -499,12 +444,9 @@ def numeric_attribute_without_unit(db):
         name="Count",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.NUMERIC,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
-    AttributeValue.objects.create(attribute=attribute, name="9", slug="9")
-    AttributeValue.objects.create(attribute=attribute, name="15", slug="15")
+    AttributeValue.objects.create(attribute=attribute, name="9", slug="9", numeric=9)
+    AttributeValue.objects.create(attribute=attribute, name="15", slug="15", numeric=15)
     return attribute
 
 
@@ -550,9 +492,6 @@ def swatch_attribute(db):
         name="t-shirt-color",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.SWATCH,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     AttributeValue.objects.create(
         attribute=attribute, name="Red", slug="red", value="#ff0000"
@@ -564,7 +503,7 @@ def swatch_attribute(db):
         attribute=attribute,
         name="Logo",
         slug="logo",
-        file_url="http://mirumee.com/test_media/test_file.jpeg",
+        file_url="http://example.com/test_media/test_file.jpeg",
         content_type="image/jpeg",
     )
     return attribute
@@ -573,8 +512,8 @@ def swatch_attribute(db):
 @pytest.fixture
 def product_type_page_reference_attribute(db):
     return Attribute.objects.create(
-        slug="page-reference",
-        name="Page reference",
+        slug="product-page-reference",
+        name="Product page reference",
         type=AttributeType.PRODUCT_TYPE,
         input_type=AttributeInputType.REFERENCE,
         entity_type=AttributeEntityType.PAGE,
@@ -637,14 +576,165 @@ def page_type_variant_reference_attribute(db):
 
 
 @pytest.fixture
+def product_type_category_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="category-reference",
+        name="Category reference",
+        type=AttributeType.PRODUCT_TYPE,
+        input_type=AttributeInputType.REFERENCE,
+        entity_type=AttributeEntityType.CATEGORY,
+    )
+
+
+@pytest.fixture
+def page_type_category_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="category-reference",
+        name="Category reference",
+        type=AttributeType.PAGE_TYPE,
+        input_type=AttributeInputType.REFERENCE,
+        entity_type=AttributeEntityType.CATEGORY,
+    )
+
+
+@pytest.fixture
+def product_type_collection_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="collection-reference",
+        name="Collection reference",
+        type=AttributeType.PRODUCT_TYPE,
+        input_type=AttributeInputType.REFERENCE,
+        entity_type=AttributeEntityType.COLLECTION,
+    )
+
+
+@pytest.fixture
+def page_type_collection_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="collection-reference",
+        name="Collection reference",
+        type=AttributeType.PAGE_TYPE,
+        input_type=AttributeInputType.REFERENCE,
+        entity_type=AttributeEntityType.COLLECTION,
+    )
+
+
+@pytest.fixture
+def product_type_page_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-page-reference",
+        name="Single page reference",
+        type=AttributeType.PRODUCT_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.PAGE,
+    )
+
+
+@pytest.fixture
+def page_type_page_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-page-reference",
+        name="Single page reference",
+        type=AttributeType.PAGE_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.PAGE,
+    )
+
+
+@pytest.fixture
+def product_type_product_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-product-reference",
+        name="Single product reference",
+        type=AttributeType.PRODUCT_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.PRODUCT,
+    )
+
+
+@pytest.fixture
+def page_type_product_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-product-reference",
+        name="Single product reference",
+        type=AttributeType.PAGE_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.PRODUCT,
+    )
+
+
+@pytest.fixture
+def product_type_variant_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-variant-reference",
+        name="Single variant reference",
+        type=AttributeType.PRODUCT_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.PRODUCT_VARIANT,
+    )
+
+
+@pytest.fixture
+def page_type_variant_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-variant-reference",
+        name="Single variant reference",
+        type=AttributeType.PAGE_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.PRODUCT_VARIANT,
+    )
+
+
+@pytest.fixture
+def product_type_category_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-category-reference",
+        name="Single category reference",
+        type=AttributeType.PRODUCT_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.CATEGORY,
+    )
+
+
+@pytest.fixture
+def page_type_category_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-category-reference",
+        name="Single category reference",
+        type=AttributeType.PAGE_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.CATEGORY,
+    )
+
+
+@pytest.fixture
+def product_type_collection_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-collection-reference",
+        name="Single collection reference",
+        type=AttributeType.PRODUCT_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.COLLECTION,
+    )
+
+
+@pytest.fixture
+def page_type_collection_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="single-collection-reference",
+        name="Single collection reference",
+        type=AttributeType.PAGE_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.COLLECTION,
+    )
+
+
+@pytest.fixture
 def size_page_attribute(db):
     attribute = Attribute.objects.create(
         slug="page-size",
         name="Page size",
         type=AttributeType.PAGE_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     AttributeValue.objects.create(attribute=attribute, name="10", slug="10")
     AttributeValue.objects.create(attribute=attribute, name="15", slug="15")
@@ -657,9 +747,6 @@ def tag_page_attribute(db):
         slug="tag",
         name="tag",
         type=AttributeType.PAGE_TYPE,
-        filterable_in_storefront=True,
-        filterable_in_dashboard=True,
-        available_in_grid=True,
     )
     AttributeValue.objects.create(attribute=attribute, name="About", slug="about")
     AttributeValue.objects.create(attribute=attribute, name="Help", slug="help")
@@ -737,3 +824,88 @@ def page_type_attribute_list() -> list[Attribute]:
             ]
         )
     )
+
+
+@pytest.fixture
+def customer_type_attribute_list() -> list[Attribute]:
+    return list(
+        Attribute.objects.bulk_create(
+            [
+                Attribute(slug="tier", name="Tier", type=AttributeType.CUSTOMER_TYPE),
+                Attribute(
+                    slug="customer-segment",
+                    name="Segment",
+                    type=AttributeType.CUSTOMER_TYPE,
+                ),
+                Attribute(
+                    slug="region", name="Region", type=AttributeType.CUSTOMER_TYPE
+                ),
+            ]
+        )
+    )
+
+
+@pytest.fixture
+def loyalty_customer_attribute(db):
+    attribute = Attribute.objects.create(
+        slug="loyalty-level",
+        name="Loyalty level",
+        type=AttributeType.CUSTOMER_TYPE,
+    )
+    AttributeValue.objects.create(attribute=attribute, name="Gold", slug="gold")
+    AttributeValue.objects.create(attribute=attribute, name="Silver", slug="silver")
+    return attribute
+
+
+@pytest.fixture
+def segment_customer_attribute(db):
+    attribute = Attribute.objects.create(
+        slug="segment", name="Segment", type=AttributeType.CUSTOMER_TYPE
+    )
+    AttributeValue.objects.create(attribute=attribute, name="Retail", slug="retail")
+    return attribute
+
+
+@pytest.fixture
+def description_customer_attribute(db):
+    return Attribute.objects.create(
+        slug="description",
+        name="Description",
+        type=AttributeType.CUSTOMER_TYPE,
+        input_type=AttributeInputType.PLAIN_TEXT,
+    )
+
+
+@pytest.fixture
+def hidden_customer_attribute(db):
+    return Attribute.objects.create(
+        slug="internal-score",
+        name="Internal score",
+        type=AttributeType.CUSTOMER_TYPE,
+        visible_in_storefront=False,
+    )
+
+
+@pytest.fixture
+def customer_type_page_single_reference_attribute(db):
+    return Attribute.objects.create(
+        slug="customer-single-page-reference",
+        name="Single page reference",
+        type=AttributeType.CUSTOMER_TYPE,
+        input_type=AttributeInputType.SINGLE_REFERENCE,
+        entity_type=AttributeEntityType.PAGE,
+    )
+
+
+@pytest.fixture
+def interests_customer_attribute(db):
+    attribute = Attribute.objects.create(
+        slug="interests",
+        name="Interests",
+        type=AttributeType.CUSTOMER_TYPE,
+        input_type=AttributeInputType.MULTISELECT,
+    )
+    AttributeValue.objects.create(attribute=attribute, name="Sports", slug="sports")
+    AttributeValue.objects.create(attribute=attribute, name="Music", slug="music")
+    AttributeValue.objects.create(attribute=attribute, name="Travel", slug="travel")
+    return attribute

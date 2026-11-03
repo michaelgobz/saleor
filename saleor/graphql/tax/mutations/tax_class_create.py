@@ -1,3 +1,5 @@
+from typing import Final
+
 import graphene
 
 from ....permission.enums import CheckoutPermissions
@@ -8,7 +10,9 @@ from ...core.mutations import DeprecatedModelMutation
 from ...core.types import BaseInputObjectType, Error, NonNullList
 from ..types import TaxClass
 
-TaxClassCreateErrorCode = graphene.Enum.from_enum(error_codes.TaxClassCreateErrorCode)
+TaxClassCreateErrorCode: Final[graphene.Enum] = graphene.Enum.from_enum(
+    error_codes.TaxClassCreateErrorCode
+)
 TaxClassCreateErrorCode.doc_category = DOC_CATEGORY_TAXES
 
 
@@ -58,7 +62,7 @@ class TaxClassCreate(DeprecatedModelMutation):
         )
 
     class Meta:
-        description = "Create a tax class."
+        description = "Creates a tax class."
         error_type_class = TaxClassCreateError
         model = models.TaxClass
         object_type = TaxClass
@@ -75,7 +79,7 @@ class TaxClassCreate(DeprecatedModelMutation):
         models.TaxClassCountryRate.objects.bulk_create(to_create)
 
     @classmethod
-    def save(cls, _info, instance, cleaned_input):
+    def save(cls, _info, instance, cleaned_input, instance_tracker=None):
         instance.save()
         create_country_rates = cleaned_input.get("create_country_rates", [])
         cls.create_country_rates(instance, create_country_rates)

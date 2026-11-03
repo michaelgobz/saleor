@@ -39,12 +39,13 @@ def test_checkout_complete_price_override(
     user_api_client,
     checkout_with_item,
     address,
+    checkout_delivery,
     shipping_method,
 ):
     # given
     checkout = checkout_with_item
     checkout.shipping_address = address
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout, shipping_method)
     checkout.billing_address = address
     checkout.tax_exemption = True
     checkout.save()
@@ -98,11 +99,12 @@ def test_checkout_complete_with_price_override_and_catalogue_promotion_fixed(
     checkout_with_item_on_promotion,
     address,
     shipping_method,
+    checkout_delivery,
 ):
     # given
     checkout = checkout_with_item_on_promotion
     checkout.shipping_address = address
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout, shipping_method)
     checkout.billing_address = address
     checkout.tax_exemption = True
     checkout.save()
@@ -125,7 +127,7 @@ def test_checkout_complete_with_price_override_and_catalogue_promotion_fixed(
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     _ = calculations.calculate_checkout_total_with_gift_cards(
-        manager, checkout_info, lines, address
+        manager, checkout_info, lines
     )
 
     shipping_price = shipping_method.channel_listings.get().price_amount
@@ -177,11 +179,12 @@ def test_checkout_complete_with_price_override_and_catalogue_promotion_percentag
     checkout_with_item_on_promotion,
     address,
     shipping_method,
+    checkout_delivery,
 ):
     # given
     checkout = checkout_with_item_on_promotion
     checkout.shipping_address = address
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout, shipping_method)
     checkout.billing_address = address
     checkout.tax_exemption = True
     checkout.save()
@@ -204,7 +207,7 @@ def test_checkout_complete_with_price_override_and_catalogue_promotion_percentag
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     _ = calculations.calculate_checkout_total_with_gift_cards(
-        manager, checkout_info, lines, address
+        manager, checkout_info, lines
     )
 
     shipping_price = shipping_method.channel_listings.get().price_amount
@@ -257,6 +260,7 @@ def test_checkout_complete_with_price_override_and_voucher_entire_order(
     checkout_with_item,
     address,
     shipping_method,
+    checkout_delivery,
     voucher,
 ):
     # given
@@ -267,7 +271,7 @@ def test_checkout_complete_with_price_override_and_voucher_entire_order(
 
     checkout = checkout_with_item
     checkout.shipping_address = address
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout, shipping_method)
     checkout.billing_address = address
     checkout.tax_exemption = True
     checkout.voucher_code = voucher_code
@@ -333,6 +337,7 @@ def test_checkout_complete_with_price_override_and_voucher_free_shipping(
     checkout_with_item,
     address,
     shipping_method,
+    checkout_delivery,
     voucher_free_shipping,
 ):
     # given
@@ -340,7 +345,7 @@ def test_checkout_complete_with_price_override_and_voucher_free_shipping(
 
     checkout = checkout_with_item
     checkout.shipping_address = address
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout, shipping_method)
     checkout.billing_address = address
     checkout.tax_exemption = True
     checkout.voucher_code = voucher_code
@@ -410,6 +415,7 @@ def test_checkout_complete_with_price_override_and_voucher_specific_product(
     checkout_with_item,
     address,
     shipping_method,
+    checkout_delivery,
     voucher_specific_product_type,
 ):
     # given
@@ -421,7 +427,7 @@ def test_checkout_complete_with_price_override_and_voucher_specific_product(
 
     checkout = checkout_with_item
     checkout.shipping_address = address
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout, shipping_method)
     checkout.billing_address = address
     checkout.tax_exemption = True
     checkout.voucher_code = voucher_code
@@ -495,6 +501,7 @@ def test_checkout_complete_with_price_override_and_order_promotion(
     order_promotion_with_rule,
     address,
     shipping_method,
+    checkout_delivery,
 ):
     # given
     promotion = order_promotion_with_rule
@@ -509,7 +516,7 @@ def test_checkout_complete_with_price_override_and_order_promotion(
 
     checkout = checkout_with_item
     checkout.shipping_address = address
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout, shipping_method)
     checkout.billing_address = address
     checkout.tax_exemption = True
     checkout.save()
@@ -566,7 +573,7 @@ def test_checkout_complete_with_price_override_and_order_promotion(
         assert order_discount.amount_value == discount_amount
 
 
-@pytest.mark.parametrize(("price_override"), [30, 5])
+@pytest.mark.parametrize("price_override", [30, 5])
 def test_checkout_complete_with_price_override_and_gift_promotion(
     price_override,
     user_api_client,
@@ -574,11 +581,12 @@ def test_checkout_complete_with_price_override_and_gift_promotion(
     gift_promotion_rule,
     address,
     shipping_method,
-    digital_content,
+    checkout_delivery,
+    product_without_shipping,
 ):
     # given
     rule = gift_promotion_rule
-    gift = digital_content.product_variant
+    gift = product_without_shipping.variants.get()
     rule.gifts.set([gift])
     gift_price = Decimal(10)
     assert gift.channel_listings.get().price_amount == gift_price
@@ -589,7 +597,7 @@ def test_checkout_complete_with_price_override_and_gift_promotion(
 
     checkout = checkout_with_item
     checkout.shipping_address = address
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout, shipping_method)
     checkout.billing_address = address
     checkout.tax_exemption = True
     checkout.save()
@@ -655,6 +663,7 @@ def test_checkout_complete_with_price_override_and_catalogue_promotion_and_entir
     checkout_with_item_on_promotion,
     address,
     shipping_method,
+    checkout_delivery,
     voucher,
 ):
     # given
@@ -669,7 +678,7 @@ def test_checkout_complete_with_price_override_and_catalogue_promotion_and_entir
 
     checkout = checkout_with_item_on_promotion
     checkout.shipping_address = address
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout, shipping_method)
     checkout.billing_address = address
     checkout.tax_exemption = True
     checkout.save()
@@ -693,7 +702,7 @@ def test_checkout_complete_with_price_override_and_catalogue_promotion_and_entir
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     add_voucher_code_to_checkout(manager, checkout_info, lines, voucher_code)
     _ = calculations.calculate_checkout_total_with_gift_cards(
-        manager, checkout_info, lines, address
+        manager, checkout_info, lines
     )
 
     shipping_price = shipping_method.channel_listings.get().price_amount

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from unittest import mock
 from unittest.mock import patch
 
@@ -26,63 +27,169 @@ PRODUCT_VARIANT_BULK_UPDATE_MUTATION = """
         $errorPolicy: ErrorPolicyEnum
     ) {
         productVariantBulkUpdate(
-            variants: $variants, product: $productId, errorPolicy: $errorPolicy
-            ) {
-                results{
-                    errors {
-                        field
-                        path
-                        message
-                        code
-                        warehouses
-                        channels
-                    }
-                    productVariant{
-                        metadata {
-                            key
-                            value
-                        }
-                        id
-                        name
-                        sku
-                        stocks {
-                            warehouse {
-                                slug
-                            }
-                            quantity
-                        }
-                        channelListings {
-                            channel {
-                                slug
-                            }
-                            price {
-                                currency
-                                amount
-                            }
-                            costPrice {
-                                currency
-                                amount
-                            }
-                            priorPrice {
-                                currency
-                                amount
-                            }
-                            preorderThreshold {
-                                quantity
-                            }
-                        }
-                        preorder {
-                            globalThreshold
-                            endDate
-                        }
-                    }
-                }
-                count
-                errors{
+            variants: $variants,
+            product: $productId,
+            errorPolicy: $errorPolicy
+        ) {
+            results {
+                errors {
                     field
+                    path
                     message
                     code
+                    warehouses
+                    channels
                 }
+                productVariant {
+                    metadata {
+                        key
+                        value
+                    }
+                    id
+                    name
+                    sku
+                    stocks {
+                        warehouse {
+                            slug
+                        }
+                        quantity
+                    }
+                    channelListings {
+                        channel {
+                            slug
+                        }
+                        price {
+                            currency
+                            amount
+                        }
+                        costPrice {
+                            currency
+                            amount
+                        }
+                        priorPrice {
+                            currency
+                            amount
+                        }
+                    }
+                    attributes {
+                        attribute {
+                            slug
+                        }
+                        values {
+                            value
+                            reference
+                        }
+                    }
+                    assignedAttributes(limit: 10) {
+                        attribute {
+                            slug
+                        }
+                        ... on AssignedNumericAttribute {
+                            value
+                        }
+                        ... on AssignedTextAttribute {
+                            text: value
+                        }
+                        ... on AssignedPlainTextAttribute {
+                            plain_text: value
+                        }
+                        ... on AssignedFileAttribute {
+                            file: value {
+                                contentType
+                                url
+                            }
+                        }
+                        ... on AssignedMultiPageReferenceAttribute {
+                            pages: value {
+                                slug
+                            }
+                        }
+                        ... on AssignedMultiProductReferenceAttribute {
+                            products: value {
+                                slug
+                            }
+                        }
+                        ... on AssignedMultiCategoryReferenceAttribute {
+                            categories: value {
+                                slug
+                            }
+                        }
+                        ... on AssignedMultiCollectionReferenceAttribute {
+                            collections: value {
+                                slug
+                            }
+                        }
+                        ... on AssignedSinglePageReferenceAttribute {
+                            page: value {
+                                slug
+                            }
+                        }
+                        ... on AssignedSingleProductReferenceAttribute {
+                            product: value {
+                                slug
+                            }
+                        }
+                        ... on AssignedSingleProductVariantReferenceAttribute {
+                            variant: value {
+                                sku
+                            }
+                        }
+                        ... on AssignedSingleCategoryReferenceAttribute {
+                            category: value {
+                                slug
+                            }
+                        }
+                        ... on AssignedSingleCollectionReferenceAttribute {
+                            collection: value {
+                                slug
+                            }
+                        }
+                        ... on AssignedMultiProductVariantReferenceAttribute {
+                            variants: value {
+                                sku
+                            }
+                        }
+                        ... on AssignedSingleChoiceAttribute {
+                            choice: value {
+                                name
+                                slug
+                            }
+                        }
+                        ... on AssignedMultiChoiceAttribute {
+                            multi: value {
+                                name
+                                slug
+                            }
+                        }
+                        ... on AssignedSwatchAttribute {
+                            swatch: value {
+                                name
+                                slug
+                                hexColor
+                                file {
+                                    url
+                                    contentType
+                                }
+                            }
+                        }
+                        ... on AssignedBooleanAttribute {
+                            bool: value
+                        }
+                        ... on AssignedDateAttribute {
+                            date: value
+                        }
+                        ... on AssignedDateTimeAttribute {
+                            datetime: value
+                        }
+                    }
+                }
+            }
+            count
+            errors {
+                field
+                message
+                code
+            }
         }
     }
 """
@@ -119,10 +226,6 @@ def test_product_variant_bulk_update(
         {
             "id": variant_id,
             "name": new_name,
-            "preorder": {
-                "endDate": "2022-12-12T12:12:12Z",
-                "globalThreshold": 10,
-            },
             "metadata": [{"key": metadata_key, "value": metadata_value}],
         }
     ]
@@ -151,12 +254,6 @@ def test_product_variant_bulk_update(
     assert product_variant_created_webhook_mock.call_count == data["count"]
     for rule in get_active_catalogue_promotion_rules():
         assert rule.variants_dirty
-
-    variant.refresh_from_db()
-
-    assert variant.preorder_end_date
-    assert variant.preorder_global_threshold
-    assert variant.is_preorder
 
 
 @pytest.mark.parametrize(
@@ -359,6 +456,215 @@ def test_product_variant_bulk_update_create_already_existing_stock(
     assert errors[0]["path"] == "stocks.create.0.warehouse"
     assert errors[0]["code"] == ProductVariantBulkErrorCode.STOCK_ALREADY_EXISTS.name
     assert errors[0]["warehouses"] == [warehouse_global_id]
+
+
+def test_product_variant_bulk_update_create_already_existing_channel_listing(
+    staff_api_client,
+    variant,
+    permission_manage_products,
+    channel_USD,
+):
+    # given
+    product = variant.product
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    existing_listing = variant.channel_listings.get(channel=channel_USD)
+    existing_price = existing_listing.price_amount
+    assert variant.channel_listings.count() == 1
+    channel_global_id = graphene.Node.to_global_id("Channel", channel_USD.pk)
+
+    new_price = 50.0
+    variants = [
+        {
+            "id": variant_id,
+            "channelListings": {
+                "create": [
+                    {
+                        "price": new_price,
+                        "channelId": channel_global_id,
+                    }
+                ]
+            },
+        }
+    ]
+
+    variables = {"productId": product_id, "variants": variants}
+
+    # when
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_UPDATE_MUTATION, variables
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantBulkUpdate"]
+
+    # then
+    errors = data["results"][0]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["field"] == "channelId"
+    assert errors[0]["path"] == "channelListings.create.0.channelId"
+    assert errors[0]["code"] == ProductVariantBulkErrorCode.DUPLICATED_INPUT_ITEM.name
+    assert errors[0]["message"] == (
+        "Channel listing already exists for this variant. "
+        "Use the `update` field to modify an existing channel listing."
+    )
+    assert errors[0]["channels"] == [channel_global_id]
+    assert data["count"] == 0
+    assert variant.channel_listings.count() == 1
+    existing_listing.refresh_from_db()
+    assert existing_listing.price_amount == existing_price
+
+
+@pytest.mark.parametrize(
+    "error_policy",
+    [
+        ErrorPolicyEnum.REJECT_EVERYTHING.name,
+        ErrorPolicyEnum.REJECT_FAILED_ROWS.name,
+        ErrorPolicyEnum.IGNORE_FAILED.name,
+    ],
+)
+def test_product_variant_bulk_update_create_already_existing_channel_listing_error_policy(
+    error_policy,
+    staff_api_client,
+    variant,
+    permission_manage_products,
+    channel_USD,
+):
+    # given
+    product = variant.product
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    existing_listing = variant.channel_listings.get(channel=channel_USD)
+    existing_price = existing_listing.price_amount
+    assert variant.channel_listings.count() == 1
+    channel_global_id = graphene.Node.to_global_id("Channel", channel_USD.pk)
+
+    new_name = "Updated variant name"
+    new_price = 50.0
+    variants = [
+        {
+            "id": variant_id,
+            "name": new_name,
+            "channelListings": {
+                "create": [
+                    {
+                        "price": new_price,
+                        "channelId": channel_global_id,
+                    }
+                ]
+            },
+        }
+    ]
+
+    variables = {
+        "productId": product_id,
+        "variants": variants,
+        "errorPolicy": error_policy,
+    }
+
+    # when
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_UPDATE_MUTATION, variables
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantBulkUpdate"]
+
+    # then
+    errors = data["results"][0]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["code"] == ProductVariantBulkErrorCode.DUPLICATED_INPUT_ITEM.name
+
+    variant.refresh_from_db()
+    existing_listing.refresh_from_db()
+
+    # no duplicate channel listing is ever created
+    assert variant.channel_listings.count() == 1
+    assert existing_listing.price_amount == existing_price
+
+    if error_policy == ErrorPolicyEnum.IGNORE_FAILED.name:
+        # the variant is updated, only the offending listing entry is dropped
+        assert data["count"] == 1
+        assert data["results"][0]["productVariant"]["name"] == new_name
+        assert variant.name == new_name
+    else:
+        # REJECT_EVERYTHING / REJECT_FAILED_ROWS save nothing for the row
+        assert data["count"] == 0
+        assert not data["results"][0]["productVariant"]
+        assert variant.name != new_name
+
+
+def test_product_variant_bulk_update_create_duplicate_and_invalid_channel_listing_error_paths(
+    staff_api_client,
+    variant,
+    permission_manage_products,
+    channel_USD,
+    channel_PLN,
+):
+    # given
+    # The variant is already listed on channel_USD, and its product is NOT
+    # assigned to channel_PLN. The `create` list mixes:
+    #   index 0 -> duplicate listing for channel_USD (caught by the new check)
+    #   index 1 -> a listing for channel_PLN (product not assigned to that channel)
+    # so two different input entries each produce an error, and their reported
+    # `path` indices must stay aligned with the input positions.
+    product = variant.product
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    assert variant.channel_listings.count() == 1
+    usd_global_id = graphene.Node.to_global_id("Channel", channel_USD.pk)
+    pln_global_id = graphene.Node.to_global_id("Channel", channel_PLN.pk)
+
+    variants = [
+        {
+            "id": variant_id,
+            "channelListings": {
+                "create": [
+                    {"price": 50.0, "channelId": usd_global_id},  # index 0: duplicate
+                    {
+                        "price": 20.0,
+                        "channelId": pln_global_id,
+                    },  # index 1: not assigned
+                ]
+            },
+        }
+    ]
+
+    variables = {"productId": product_id, "variants": variants}
+
+    # when
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_UPDATE_MUTATION, variables
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantBulkUpdate"]
+
+    # then
+    errors = data["results"][0]["errors"]
+    assert len(errors) == 2
+
+    errors_by_code = {error["code"]: error for error in errors}
+
+    duplicate_error = errors_by_code[
+        ProductVariantBulkErrorCode.DUPLICATED_INPUT_ITEM.name
+    ]
+    assert duplicate_error["path"] == "channelListings.create.0.channelId"
+    assert duplicate_error["channels"] == [usd_global_id]
+
+    not_assigned_error = errors_by_code[
+        ProductVariantBulkErrorCode.PRODUCT_NOT_ASSIGNED_TO_CHANNEL.name
+    ]
+    # The entry was at input index 1; the reported path must keep that index even
+    # though the duplicate at index 0 was dropped before creation.
+    assert not_assigned_error["path"] == "channelListings.create.1.channelId"
+    assert not_assigned_error["channels"] == [pln_global_id]
+
+    assert data["count"] == 0
+    assert variant.channel_listings.count() == 1
 
 
 def test_product_variant_bulk_update_and_remove_stock(
@@ -804,6 +1110,264 @@ def test_product_variant_bulk_update_attributes(
         assert rule.variants_dirty
 
 
+def test_product_variant_bulk_update_with_ref_attributes_and_reference_types_defined(
+    staff_api_client,
+    product,
+    product_type,
+    product_type_page_single_reference_attribute,
+    product_type_product_reference_attribute,
+    product_type_variant_reference_attribute,
+    page,
+    variant,
+    permission_manage_products,
+):
+    # given
+    product_type.variant_attributes.clear()
+    product_type.variant_attributes.add(
+        product_type_page_single_reference_attribute,
+        product_type_product_reference_attribute,
+        product_type_variant_reference_attribute,
+    )
+
+    product_type_page_single_reference_attribute.reference_page_types.add(
+        page.page_type
+    )
+    product_type_product_reference_attribute.reference_product_types.add(
+        product.product_type
+    )
+    product_type_variant_reference_attribute.reference_product_types.add(
+        variant.product.product_type
+    )
+
+    page_ref_attr_id = graphene.Node.to_global_id(
+        "Attribute", product_type_page_single_reference_attribute.id
+    )
+    product_ref_attr_id = graphene.Node.to_global_id(
+        "Attribute", product_type_product_reference_attribute.id
+    )
+    variant_ref_attr_id = graphene.Node.to_global_id(
+        "Attribute", product_type_variant_reference_attribute.id
+    )
+    page_ref = graphene.Node.to_global_id("Page", page.pk)
+    product_ref = graphene.Node.to_global_id("Product", product.pk)
+    variant_ref = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    variants = [
+        {
+            "id": variant_id,
+            "attributes": [{"id": page_ref_attr_id, "reference": page_ref}],
+        },
+        {
+            "id": variant_id,
+            "attributes": [{"id": product_ref_attr_id, "references": [product_ref]}],
+        },
+        {
+            "id": variant_id,
+            "attributes": [{"id": variant_ref_attr_id, "references": [variant_ref]}],
+        },
+    ]
+
+    # when
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_UPDATE_MUTATION,
+        {"productId": product_id, "variants": variants},
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantBulkUpdate"]
+
+    # then
+    assert not data["results"][0]["errors"]
+    assert not data["results"][1]["errors"]
+    assert not data["results"][2]["errors"]
+    assert data["count"] == 3
+
+    expected_attributes = [
+        {
+            "attribute": {"slug": product_type_page_single_reference_attribute.slug},
+            "values": [{"reference": page_ref, "value": ""}],
+        },
+        {
+            "attribute": {"slug": product_type_product_reference_attribute.slug},
+            "values": [{"reference": product_ref, "value": ""}],
+        },
+        {
+            "attribute": {"slug": product_type_variant_reference_attribute.slug},
+            "values": [{"reference": variant_ref, "value": ""}],
+        },
+    ]
+    expected_assigned_attributes = [
+        {
+            "attribute": {"slug": product_type_page_single_reference_attribute.slug},
+            "page": {"slug": page.slug},
+        },
+        {
+            "attribute": {"slug": product_type_product_reference_attribute.slug},
+            "products": [{"slug": product.slug}],
+        },
+        {
+            "attribute": {"slug": product_type_variant_reference_attribute.slug},
+            "variants": [{"sku": variant.sku}],
+        },
+    ]
+
+    for i, result in enumerate(data["results"]):
+        assert expected_attributes[i] in result["productVariant"]["attributes"]
+        assert (
+            expected_assigned_attributes[i]
+            in result["productVariant"]["assignedAttributes"]
+        )
+
+
+def test_product_variant_bulk_update_with_ref_attributes_refs_not_in_available_choices(
+    staff_api_client,
+    product,
+    product_type,
+    product_type_page_single_reference_attribute,
+    product_type_product_reference_attribute,
+    product_type_variant_reference_attribute,
+    page,
+    variant,
+    permission_manage_products,
+    product_type_with_variant_attributes,
+    page_type_list,
+):
+    # given
+    product_type.variant_attributes.clear()
+    product_type.variant_attributes.add(
+        product_type_page_single_reference_attribute,
+        product_type_product_reference_attribute,
+        product_type_variant_reference_attribute,
+    )
+
+    product_type_page_single_reference_attribute.reference_page_types.add(
+        page_type_list[1]
+    )
+    product_type_product_reference_attribute.reference_product_types.add(
+        product_type_with_variant_attributes
+    )
+    product_type_variant_reference_attribute.reference_product_types.add(
+        product_type_with_variant_attributes
+    )
+
+    page_ref_attr_id = graphene.Node.to_global_id(
+        "Attribute", product_type_page_single_reference_attribute.id
+    )
+    product_ref_attr_id = graphene.Node.to_global_id(
+        "Attribute", product_type_product_reference_attribute.id
+    )
+    variant_ref_attr_id = graphene.Node.to_global_id(
+        "Attribute", product_type_variant_reference_attribute.id
+    )
+    page_ref = graphene.Node.to_global_id("Page", page.pk)
+    product_ref = graphene.Node.to_global_id("Product", product.pk)
+    variant_ref = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    variants = [
+        {
+            "id": variant_id,
+            "attributes": [{"id": page_ref_attr_id, "reference": page_ref}],
+        },
+        {
+            "id": variant_id,
+            "attributes": [{"id": product_ref_attr_id, "references": [product_ref]}],
+        },
+        {
+            "id": variant_id,
+            "attributes": [{"id": variant_ref_attr_id, "references": [variant_ref]}],
+        },
+    ]
+
+    # when
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_UPDATE_MUTATION,
+        {"productId": product_id, "variants": variants},
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantBulkUpdate"]
+
+    # then
+    assert len(data["results"][0]["errors"]) == 1
+    assert len(data["results"][1]["errors"]) == 1
+    assert len(data["results"][2]["errors"]) == 1
+    assert data["count"] == 0
+
+    for result in data["results"]:
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["code"] == ProductVariantBulkErrorCode.INVALID.name
+        assert result["errors"][0]["path"] == "attributes"
+
+
+@patch(
+    "saleor.graphql.product.bulk_mutations."
+    "product_variant_bulk_update.get_webhooks_for_event"
+)
+def test_product_variant_bulk_update_attributes_by_external_reference(
+    mocked_get_webhooks_for_event,
+    staff_api_client,
+    variant_with_many_stocks,
+    permission_manage_products,
+    any_webhook,
+    settings,
+    multiselect_attribute,
+    color_attribute,
+):
+    # given
+    mocked_get_webhooks_for_event.return_value = [any_webhook]
+    settings.PLUGINS = ["saleor.plugins.webhook.plugin.WebhookPlugin"]
+
+    variant = variant_with_many_stocks
+    product_id = graphene.Node.to_global_id("Product", variant.product_id)
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    product = variant.product
+    product.product_type.variant_attributes.add(color_attribute)
+    attribute_external_ref = color_attribute.external_reference
+
+    value_external_ref = "value-external-ref"
+    attribute_value = color_attribute.values.last()
+    attribute_value.external_reference = value_external_ref
+    attribute_value.save(update_fields=["external_reference"])
+
+    variants = [
+        {
+            "id": variant_id,
+            "attributes": [
+                {
+                    "externalReference": attribute_external_ref,
+                    "dropdown": {
+                        "externalReference": value_external_ref,
+                        "value": attribute_value.name,
+                    },
+                }
+            ],
+        }
+    ]
+
+    variables = {"productId": product_id, "variants": variants}
+
+    # when
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_UPDATE_MUTATION, variables
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantBulkUpdate"]
+
+    # then
+    assert not data["results"][0]["errors"]
+    assert data["count"] == 1
+    for rule in get_active_catalogue_promotion_rules():
+        assert rule.variants_dirty
+
+
 @override_settings(ENABLE_LIMITING_WEBHOOKS_FOR_IDENTICAL_PAYLOADS=True)
 @mock.patch(
     "saleor.graphql.product.bulk_mutations.product_variant_bulk_update.ProductVariantBulkUpdate.call_event"
@@ -921,3 +1485,137 @@ def test_product_variant_bulk_update_channel_listings_input_with_prior_price(
         new_variant_listing.prior_price_amount
         == not_existing_variant_listing_prior_price
     )
+
+
+def test_product_variant_bulk_update_channel_listings_availability_only(
+    staff_api_client, variant, permission_manage_products, channel_USD
+):
+    """The flag must be updatable on its own, without resending the price."""
+    # given
+    listing = variant.channel_listings.get(channel=channel_USD)
+    price_amount = listing.price_amount
+    assert listing.is_available_for_purchase is True
+
+    variants = [
+        {
+            "id": graphene.Node.to_global_id("ProductVariant", variant.pk),
+            "channelListings": {
+                "update": [
+                    {
+                        "channelListing": graphene.Node.to_global_id(
+                            "ProductVariantChannelListing", listing.pk
+                        ),
+                        "isAvailableForPurchase": False,
+                    }
+                ]
+            },
+        }
+    ]
+    variables = {
+        "productId": graphene.Node.to_global_id("Product", variant.product_id),
+        "variants": variants,
+    }
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    # when
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_UPDATE_MUTATION, variables
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantBulkUpdate"]
+    assert data["results"][0]["errors"] == []
+    assert data["count"] == 1
+
+    listing.refresh_from_db(fields=("is_available_for_purchase", "price_amount"))
+    assert listing.is_available_for_purchase is False
+    assert listing.price_amount == price_amount
+
+
+def test_product_variant_bulk_update_channel_listings_marks_product_price_dirty(
+    staff_api_client, variant, permission_manage_products, channel_USD
+):
+    """The stored product price range must be recalculated after a listing change."""
+    # given
+    listing = variant.channel_listings.get(channel=channel_USD)
+    product_listing = variant.product.channel_listings.get(channel=channel_USD)
+    product_listing.discounted_price_dirty = False
+    product_listing.save(update_fields=("discounted_price_dirty",))
+
+    variants = [
+        {
+            "id": graphene.Node.to_global_id("ProductVariant", variant.pk),
+            "channelListings": {
+                "update": [
+                    {
+                        "channelListing": graphene.Node.to_global_id(
+                            "ProductVariantChannelListing", listing.pk
+                        ),
+                        "isAvailableForPurchase": False,
+                    }
+                ]
+            },
+        }
+    ]
+    variables = {
+        "productId": graphene.Node.to_global_id("Product", variant.product_id),
+        "variants": variants,
+    }
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    # when
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_UPDATE_MUTATION, variables
+    )
+
+    # then
+    content = get_graphql_content(response)
+    assert content["data"]["productVariantBulkUpdate"]["results"][0]["errors"] == []
+
+    product_listing.refresh_from_db(fields=("discounted_price_dirty",))
+    assert product_listing.discounted_price_dirty is True
+
+
+def test_product_variant_bulk_update_channel_listings_create_with_availability(
+    staff_api_client, variant, permission_manage_products, channel_PLN
+):
+    # given
+    price = 20.0
+    product = variant.product
+    ProductChannelListing.objects.create(product=product, channel=channel_PLN)
+
+    variants = [
+        {
+            "id": graphene.Node.to_global_id("ProductVariant", variant.pk),
+            "channelListings": {
+                "create": [
+                    {
+                        "channelId": graphene.Node.to_global_id(
+                            "Channel", channel_PLN.pk
+                        ),
+                        "price": price,
+                        "isAvailableForPurchase": False,
+                    }
+                ]
+            },
+        }
+    ]
+    variables = {
+        "productId": graphene.Node.to_global_id("Product", product.pk),
+        "variants": variants,
+    }
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    # when
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_UPDATE_MUTATION, variables
+    )
+
+    # then
+    content = get_graphql_content(response)
+    assert content["data"]["productVariantBulkUpdate"]["results"][0]["errors"] == []
+
+    new_listing = variant.channel_listings.get(channel=channel_PLN)
+    assert new_listing.is_available_for_purchase is False
+    assert new_listing.price_amount == Decimal(str(price))

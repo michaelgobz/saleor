@@ -2,7 +2,7 @@ import graphene
 import pytest
 
 from .....attribute.models import AttributeTranslation, AttributeValueTranslation
-from ....attribute.utils import associate_attribute_values_to_instance
+from .....attribute.utils import associate_attribute_values_to_instance
 from ....tests.utils import get_graphql_content
 
 
@@ -32,10 +32,6 @@ def test_query_attribute(
                 }
                 valueRequired
                 visibleInStorefront
-                filterableInStorefront
-                filterableInDashboard
-                availableInGrid
-                storefrontSearchPosition
             }
         }
         """
@@ -78,10 +74,6 @@ def test_query_attributes(
                         }
                         valueRequired
                         visibleInStorefront
-                        filterableInStorefront
-                        filterableInDashboard
-                        availableInGrid
-                        storefrontSearchPosition
                     }
                 }
             }

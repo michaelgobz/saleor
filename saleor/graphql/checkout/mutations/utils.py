@@ -11,24 +11,13 @@ from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Q, QuerySet
+from django.utils import timezone
 from prices import Money
 
 from ....checkout import models
-from ....checkout.actions import call_checkout_info_event
+from ....checkout.delivery_context import is_shipping_required
 from ....checkout.error_codes import CheckoutErrorCode
-from ....checkout.fetch import CheckoutInfo, CheckoutLineInfo
-from ....checkout.utils import (
-    assign_built_in_shipping_to_checkout,
-    assign_collection_point_to_checkout,
-    assign_external_shipping_to_checkout,
-    calculate_checkout_quantity,
-    clear_delivery_method,
-    get_external_shipping_id,
-    invalidate_checkout,
-    is_shipping_required,
-    remove_delivery_method_from_checkout,
-    remove_external_shipping_from_checkout,
-)
+from ....checkout.fetch import CheckoutLineInfo
 from ....core.exceptions import InsufficientStock, PermissionDenied
 from ....discount import DiscountType, DiscountValueType
 from ....discount.interface import DiscountInfo
@@ -41,16 +30,13 @@ from ....discount.utils.promotion import (
 from ....permission.enums import CheckoutPermissions
 from ....product import models as product_models
 from ....product.models import ProductChannelListing, ProductVariant
-from ....shipping import interface as shipping_interface
-from ....warehouse import models as warehouse_models
 from ....warehouse.availability import check_stock_and_preorder_quantity_bulk
-from ....webhook.event_types import WebhookEventAsyncType
 from ...core import ResolveInfo
+from ...core.descriptions import ADDED_IN_323
 from ...core.validators import validate_one_of_args_is_in_mutation
 from ..types import Checkout
 
 if TYPE_CHECKING:
-    from ....plugins.manager import PluginsManager
     from ...core.mutations import BaseMutation
 
 
@@ -69,71 +55,19 @@ class CheckoutLineData:
     quantity_to_update: bool = False
     custom_price: Decimal | None = None
     custom_price_to_update: bool = False
+    custom_price_reason: str | None = None
+    custom_price_reason_to_update: bool = False
     metadata_list: list = field(default_factory=list)
+    force_new_line: bool = False
 
 
-def clean_delivery_method(
-    checkout_info: "CheckoutInfo",
-    method: shipping_interface.ShippingMethodData | warehouse_models.Warehouse | None,
-) -> bool:
-    """Check if current shipping method is valid."""
-    if not method:
-        # no shipping method was provided, it is valid
-        return True
-
-    if not checkout_info.shipping_address and isinstance(
-        method, shipping_interface.ShippingMethodData
-    ):
-        raise ValidationError(
-            "Cannot choose a shipping method for a checkout without the "
-            "shipping address.",
-            code=CheckoutErrorCode.SHIPPING_ADDRESS_NOT_SET.value,
-        )
-
-    if isinstance(method, shipping_interface.ShippingMethodData):
-        return method in checkout_info.valid_shipping_methods
-
-    return method in checkout_info.valid_pick_up_points
-
-
-def _is_external_shipping_valid(checkout_info: "CheckoutInfo") -> bool:
-    if external_shipping_id := get_external_shipping_id(checkout_info.checkout):
-        return external_shipping_id in [
-            method.id for method in checkout_info.valid_delivery_methods
-        ]
-    return True
-
-
-def update_checkout_external_shipping_method_if_invalid(
-    checkout_info: "CheckoutInfo", lines: list[CheckoutLineInfo]
-):
-    if not _is_external_shipping_valid(checkout_info):
-        remove_external_shipping_from_checkout(checkout_info.checkout, save=True)
-
-
-def update_checkout_shipping_method_if_invalid(
-    checkout_info: "CheckoutInfo", lines: list[CheckoutLineInfo]
+def mark_checkout_deliveries_as_stale_if_needed(
+    checkout: models.Checkout, lines: list[CheckoutLineInfo]
 ) -> list[str]:
-    """Check if current shipping method is valid and clean it if not.
-
-    The method is not saving the applied changes on checkout.
-    """
-    quantity = calculate_checkout_quantity(lines)
-    update_fields = []
-
-    # remove shipping method when empty checkout
-    if quantity == 0 or not is_shipping_required(lines):
-        update_fields = clear_delivery_method(checkout_info)
-
-    is_valid = clean_delivery_method(
-        checkout_info=checkout_info,
-        method=checkout_info.get_delivery_method_info().delivery_method,
-    )
-
-    if not is_valid:
-        update_fields = clear_delivery_method(checkout_info)
-
-    return update_fields
+    if not is_shipping_required(lines):
+        return []
+    checkout.delivery_methods_stale_at = timezone.now()
+    return ["delivery_methods_stale_at"]
 
 
 def get_variants_and_total_quantities(
@@ -164,6 +98,8 @@ def check_lines_quantity(
     country,
     channel_slug,
     global_quantity_limit,
+    *,
+    calculate_stocks_with_shipping_zones: bool,
     delivery_method_info=None,
     allow_zero_quantity=False,
     existing_lines=None,
@@ -209,6 +145,7 @@ def check_lines_quantity(
             existing_lines=existing_lines,
             replace=replace,
             check_reservations=check_reservations,
+            include_shipping_zones=calculate_stocks_with_shipping_zones,
         )
     except InsufficientStock as e:
         errors = [
@@ -378,12 +315,17 @@ def group_lines_input_on_add(
         variant_id = cast(str, line.get("variant_id"))
         force_new_line = line.get("force_new_line")
         metadata_list_from_input = line.get("metadata", [])
+        # if metadata is None in input, it should be treated as empty list
+        if not metadata_list_from_input:
+            metadata_list_from_input = []
 
         _, variant_db_id = graphene.Node.from_global_id(variant_id)
 
         if force_new_line:
             line_data = CheckoutLineData(
-                variant_id=variant_db_id, metadata_list=metadata_list_from_input
+                variant_id=variant_db_id,
+                metadata_list=metadata_list_from_input,
+                force_new_line=True,
             )
             grouped_checkout_lines_data.append(line_data)
         else:
@@ -422,6 +364,19 @@ def group_lines_input_on_add(
         if "price" in line:
             line_data.custom_price = line["price"]
             line_data.custom_price_to_update = True
+            # Reason is per-operation: it is tied to the price-setting operation.
+            # Setting a price without a reason clears any previous reason.
+            line_data.custom_price_reason = _clean_price_override_reason(
+                line.get("price_override_reason")
+            )
+            line_data.custom_price_reason_to_update = True
+        elif "price_override_reason" in line:
+            # Reason-only update; allowed when the line already has a price override
+            # (enforced later by `validate_price_override_reason`).
+            line_data.custom_price_reason = _clean_price_override_reason(
+                line.get("price_override_reason")
+            )
+            line_data.custom_price_reason_to_update = True
 
     grouped_checkout_lines_data += list(checkout_lines_data_map.values())
     return grouped_checkout_lines_data
@@ -471,6 +426,19 @@ def group_lines_input_data_on_update(
         if "price" in line:
             line_data.custom_price = line["price"]
             line_data.custom_price_to_update = True
+            # Reason is per-operation: it is tied to the price-setting operation.
+            # Setting a price without a reason clears any previous reason.
+            line_data.custom_price_reason = _clean_price_override_reason(
+                line.get("price_override_reason")
+            )
+            line_data.custom_price_reason_to_update = True
+        elif "price_override_reason" in line:
+            # Reason-only update; allowed when the line already has a price override
+            # (enforced later by `validate_price_override_reason`).
+            line_data.custom_price_reason = _clean_price_override_reason(
+                line.get("price_override_reason")
+            )
+            line_data.custom_price_reason_to_update = True
 
         line_data.metadata_list += metadata_list_from_input
 
@@ -484,10 +452,73 @@ def check_permissions_for_custom_prices(app, lines):
     Checkout line custom price can be changed only by app with
     handle checkout permission.
     """
-    if any("price" in line for line in lines) and (
+    if any("price" in line or "price_override_reason" in line for line in lines) and (
         not app or not app.has_perm(CheckoutPermissions.HANDLE_CHECKOUTS)
     ):
-        raise PermissionDenied(permissions=[CheckoutPermissions.HANDLE_CHECKOUTS])
+        raise PermissionDenied(
+            message="Setting the custom price is allowed only for apps with `MANAGE_CHECKOUTS` permission.",
+            permissions=[CheckoutPermissions.HANDLE_CHECKOUTS],
+        )
+
+
+PRICE_OVERRIDE_REASON_MAX_LENGTH = models.CheckoutLine._meta.get_field(
+    "price_override_reason"
+).max_length
+
+PRICE_OVERRIDE_REASON_INPUT_DESCRIPTION = (
+    "Reason explaining why a custom `price` was set on the line, for debugging "
+    "and auditing. Can be set only by apps with `HANDLE_CHECKOUTS` permission and "
+    "only when the line has a `price` override. Setting a new `price` without a "
+    "reason clears the previous reason. Blank values are stored as no reason. "
+    "Limited to 255 characters; longer values are truncated." + ADDED_IN_323
+)
+
+
+def _clean_price_override_reason(reason: str | None) -> str | None:
+    """Normalize a price override reason.
+
+    Blank strings are treated as no reason and the value is truncated to the
+    stored column's max length so an over-long reason cannot crash on save.
+    """
+    if reason is None:
+        return None
+    reason = reason.strip()[:PRICE_OVERRIDE_REASON_MAX_LENGTH]
+    return reason or None
+
+
+def validate_price_override_reason(
+    checkout_lines_data: list[CheckoutLineData],
+    existing_lines_info: list[CheckoutLineInfo] | None = None,
+):
+    """Reject a price override reason that is not backed by a price override.
+
+    A reason may only be stored when the line has a price override - either set in
+    the same operation or already present on the line.
+    """
+    existing_override_by_line_id = {
+        str(line_info.line.pk): line_info.line.price_override
+        for line_info in (existing_lines_info or [])
+    }
+    for line_data in checkout_lines_data:
+        reason_is_set = (
+            line_data.custom_price_reason_to_update
+            and line_data.custom_price_reason is not None
+        )
+        if not reason_is_set:
+            continue
+        # When the same operation sets the price, only the incoming value counts -
+        # a null price clears the override, so the existing one must not be credited.
+        if line_data.custom_price_to_update:
+            effective_override = line_data.custom_price
+        elif line_data.line_id:
+            effective_override = existing_override_by_line_id.get(line_data.line_id)
+        else:
+            effective_override = None
+        if effective_override is None:
+            raise ValidationError(
+                "Cannot set priceOverrideReason without a price override on the line.",
+                code=CheckoutErrorCode.PRICE_OVERRIDE_REASON_WITHOUT_OVERRIDE.value,
+            )
 
 
 def find_line_id_when_variant_parameter_used(
@@ -578,9 +609,7 @@ def apply_gift_reward_if_applicable_on_checkout_creation(
         currency=checkout.currency,
     )
     with transaction.atomic():
-        line, _line_created = create_gift_line(
-            checkout, gift_listing, line_discount_data
-        )
+        line = create_gift_line(checkout, gift_listing, line_discount_data)
         CheckoutLineDiscount.objects.create(line=line, **asdict(line_discount_data))
 
 
@@ -596,68 +625,15 @@ def _set_checkout_base_subtotal_and_total_on_checkout_creation(
             channel_id=checkout.channel_id,
         ).values_list("variant_id", "discounted_price_amount", "price_amount")
     }
-    subtotal = Decimal("0")
+    subtotal = Decimal(0)
     for line in checkout.lines.all():
         if price_amount := line.price_override:
             price = price_amount
         else:
-            price = variant_id_to_discounted_price.get(line.variant_id) or Decimal("0")
+            price = variant_id_to_discounted_price.get(line.variant_id) or Decimal(0)
         subtotal += price * line.quantity
     checkout.base_subtotal = Money(subtotal, checkout.currency)
     # base total and subtotal is the same, as there is no option to set the
     # delivery method during checkout creation
     checkout.base_total = checkout.base_subtotal
     checkout.save(update_fields=["base_subtotal_amount", "base_total_amount"])
-
-
-def assign_delivery_method_to_checkout(
-    checkout_info: CheckoutInfo,
-    lines_info: list[CheckoutLineInfo],
-    manager: "PluginsManager",
-    delivery_method_data: (
-        shipping_interface.ShippingMethodData | warehouse_models.Warehouse | None
-    ),
-):
-    fields_to_update = []
-    checkout = checkout_info.checkout
-    with transaction.atomic():
-        if delivery_method_data is None:
-            fields_to_update = remove_delivery_method_from_checkout(
-                checkout=checkout_info.checkout
-            )
-            checkout_info.shipping_method = None
-            checkout_info.collection_point = None
-
-        elif isinstance(delivery_method_data, shipping_interface.ShippingMethodData):
-            if delivery_method_data.is_external:
-                fields_to_update = assign_external_shipping_to_checkout(
-                    checkout, delivery_method_data
-                )
-                checkout_info.shipping_method = None
-                checkout_info.collection_point = None
-            else:
-                fields_to_update = assign_built_in_shipping_to_checkout(
-                    checkout, delivery_method_data
-                )
-                checkout_info.shipping_method = checkout.shipping_method
-                checkout_info.collection_point = None
-        elif isinstance(delivery_method_data, warehouse_models.Warehouse):
-            fields_to_update = assign_collection_point_to_checkout(
-                checkout, delivery_method_data
-            )
-            checkout_info.shipping_address = checkout.shipping_address
-            checkout_info.shipping_method = None
-
-        if not fields_to_update:
-            return
-
-        invalidate_prices_updated_fields = invalidate_checkout(
-            checkout_info, lines_info, manager, save=False
-        )
-        checkout.save(update_fields=fields_to_update + invalidate_prices_updated_fields)
-        call_checkout_info_event(
-            manager,
-            event_name=WebhookEventAsyncType.CHECKOUT_UPDATED,
-            checkout_info=checkout_info,
-            lines=lines_info,
-        )

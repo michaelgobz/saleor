@@ -3,17 +3,25 @@ from graphene import relay
 
 from ....discount import models
 from ....permission.enums import DiscountPermissions
-from ...channel import ChannelQsContext
-from ...channel.dataloaders import ChannelByIdLoader
-from ...channel.types import Channel, ChannelContext, ChannelContextType
+from ...channel.dataloaders.by_self import ChannelByIdLoader
+from ...channel.types import Channel
 from ...core import ResolveInfo, types
 from ...core.connection import CountableConnection, create_connection_slice
-from ...core.context import get_database_connection_name
-from ...core.descriptions import ADDED_IN_318, DEPRECATED_IN_3X_INPUT, PREVIEW_FEATURE
+from ...core.context import (
+    ChannelContext,
+    ChannelQsContext,
+    get_database_connection_name,
+)
+from ...core.descriptions import (
+    ADDED_IN_323,
+    DEPRECATED_IN_3X_INPUT,
+    PREVIEW_FEATURE,
+)
 from ...core.doc_category import DOC_CATEGORY_DISCOUNTS
 from ...core.fields import ConnectionField, PermissionsField
 from ...core.scalars import DateTime
 from ...core.types import ModelObjectType, Money, NonNullList
+from ...core.types.context import ChannelContextType
 from ...meta.types import ObjectWithMetadata
 from ...product.types import (
     CategoryCountableConnection,
@@ -67,7 +75,7 @@ class VoucherCode(ModelObjectType[models.VoucherCode]):
     created_at = DateTime(required=True, description="Date time of code creation.")
 
     class Meta:
-        description = "Represents voucher code." + ADDED_IN_318 + PREVIEW_FEATURE
+        description = "Represents voucher code." + PREVIEW_FEATURE
         model = models.VoucherCode
 
 
@@ -80,9 +88,12 @@ class VoucherCodeCountableConnection(CountableConnection):
 class Voucher(ChannelContextType[models.Voucher]):
     id = graphene.GlobalID(required=True, description="The ID of the voucher.")
     name = graphene.String(description="The name of the voucher.")
+    external_reference = graphene.String(
+        description=f"External ID of this voucher.{ADDED_IN_323}"
+    )
     codes = ConnectionField(
         VoucherCodeCountableConnection,
-        description="List of codes available for this voucher." + ADDED_IN_318,
+        description="List of codes available for this voucher.",
     )
     code = graphene.String(
         description="The code of the voucher." + DEPRECATED_IN_3X_INPUT
@@ -111,7 +122,6 @@ class Voucher(ChannelContextType[models.Voucher]):
         required=True,
         description=(
             "Determine if the voucher codes can be used once or multiple times."
-            + ADDED_IN_318
             + PREVIEW_FEATURE
         ),
     )

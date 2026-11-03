@@ -319,7 +319,7 @@ mutation OrderFulfillmentRefundProducts(
 """
 
 
-@patch("saleor.order.actions.gateway.refund")
+@patch("saleor.payment.gateway.refund")
 def test_fulfillment_refund_products_order_lines_by_old_id(
     mocked_refund,
     staff_api_client,
@@ -428,7 +428,7 @@ mutation OrderFulfillmentReturnProducts(
 """
 
 
-@patch("saleor.order.actions.gateway.refund")
+@patch("saleor.payment.gateway.refund")
 def test_fulfillment_return_products_order_lines_by_old_line_id(
     mocked_refund,
     staff_api_client,
@@ -600,7 +600,7 @@ def test_update_order_line_discount_old_id(
 
     line_price_before_discount = line_to_discount.unit_price
 
-    value = Decimal("5")
+    value = Decimal(5)
     reason = "New reason for unit discount"
     variables = {
         "orderLineId": graphene.Node.to_global_id("OrderLine", line_to_discount.old_id),

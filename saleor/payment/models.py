@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.contrib.postgres.fields import ArrayField
-from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.indexes import BTreeIndex, GinIndex
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -20,6 +20,7 @@ from ..permission.enums import PaymentPermissions
 from . import (
     ChargeStatus,
     CustomPaymentChoices,
+    PaymentMethodType,
     StorePaymentMethod,
     TransactionAction,
     TransactionEventType,
@@ -47,7 +48,7 @@ class TransactionItem(ModelWithMetadata):
     charged_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
     amount_authorized = MoneyField(
         amount_field="authorized_value", currency_field="currency"
@@ -55,7 +56,7 @@ class TransactionItem(ModelWithMetadata):
     authorized_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
     amount_refunded = MoneyField(
         amount_field="refunded_value", currency_field="currency"
@@ -63,7 +64,7 @@ class TransactionItem(ModelWithMetadata):
     refunded_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
     amount_canceled = MoneyField(
         amount_field="canceled_value", currency_field="currency"
@@ -71,7 +72,7 @@ class TransactionItem(ModelWithMetadata):
     canceled_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
     amount_refund_pending = MoneyField(
         amount_field="refund_pending_value", currency_field="currency"
@@ -79,7 +80,7 @@ class TransactionItem(ModelWithMetadata):
     refund_pending_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
 
     amount_charge_pending = MoneyField(
@@ -88,7 +89,7 @@ class TransactionItem(ModelWithMetadata):
     charge_pending_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
 
     amount_authorize_pending = MoneyField(
@@ -97,13 +98,13 @@ class TransactionItem(ModelWithMetadata):
     authorize_pending_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
 
     cancel_pending_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
     amount_cancel_pending = MoneyField(
         amount_field="cancel_pending_value", currency_field="currency"
@@ -150,10 +151,67 @@ class TransactionItem(ModelWithMetadata):
     # Set to False when automatic refund was triggered.
     last_refund_success = models.BooleanField(default=True)
 
+    cc_first_digits = models.CharField(
+        max_length=4,
+        blank=True,
+        null=True,
+    )
+    cc_last_digits = models.CharField(
+        max_length=4,
+        blank=True,
+        null=True,
+    )
+    cc_brand = models.CharField(max_length=40, blank=True, null=True)
+    cc_exp_month = models.PositiveIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(12)], null=True, blank=True
+    )
+    cc_exp_year = models.PositiveIntegerField(
+        validators=[MinValueValidator(2000)], null=True, blank=True
+    )
+    payment_method_type = models.CharField(
+        max_length=32,
+        blank=True,
+        null=True,
+        choices=PaymentMethodType.CHOICES,
+    )
+    payment_method_name = models.CharField(max_length=256, blank=True, null=True)
+    gift_card_last_chars = models.CharField(max_length=4, blank=True, null=True)
+    gift_card_brand = models.CharField(max_length=40, blank=True, null=True)
+
+    gift_card = models.ForeignKey(
+        "giftcard.GiftCard",
+        null=True,
+        on_delete=models.SET_NULL,
+    )
+
+    def has_money_movement(self) -> bool:
+        """Return True if any money was moved by this transaction.
+
+        A transaction with all amounts at zero is an abandoned payment attempt.
+        """
+        return any(
+            (
+                self.authorized_value,
+                self.authorize_pending_value,
+                self.charged_value,
+                self.charge_pending_value,
+                self.refunded_value,
+                self.refund_pending_value,
+                self.canceled_value,
+                self.cancel_pending_value,
+            )
+        )
+
     class Meta:
         ordering = ("pk",)
         indexes = [
             *ModelWithMetadata.Meta.indexes,
+            BTreeIndex(fields=["payment_method_type"], name="payment_method_type_ids"),
+            BTreeIndex(fields=["cc_brand"], name="cc_brand_idx"),
+            BTreeIndex(fields=["psp_reference"], name="psp_reference_idx"),
+            BTreeIndex(fields=["app_identifier"], name="app_identifier_idx"),
+            BTreeIndex(fields=["created_at"], name="transaction_created_at_idx"),
+            BTreeIndex(fields=["modified_at"], name="transaction_modified_at_idx"),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -182,7 +240,7 @@ class TransactionEvent(models.Model):
     amount_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -212,8 +270,16 @@ class TransactionEvent(models.Model):
         on_delete=models.SET_NULL,
     )
 
+    reason_reference = models.ForeignKey(
+        "page.Page", related_name="+", on_delete=models.SET_NULL, blank=True, null=True
+    )
+
     class Meta:
         ordering = ("pk",)
+        indexes = [
+            BTreeIndex(fields=["created_at"], name="transactionevent_created_at_idx"),
+            BTreeIndex(fields=["type"], name="transactionevent_type_idx"),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["transaction_id", "idempotency_key"],
@@ -240,7 +306,6 @@ class Payment(ModelWithMetadata):
     gateway = models.CharField(max_length=255)
     is_active = models.BooleanField(default=True)
     to_confirm = models.BooleanField(default=False)
-    partial = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     modified_at = models.DateTimeField(auto_now=True)
     charge_status = models.CharField(
@@ -439,6 +504,7 @@ class Transaction(models.Model):
     )
     error = models.TextField(null=True)
     customer_id = models.CharField(max_length=256, null=True)
+    # @deprecated
     gateway_response = JSONField(encoder=DjangoJSONEncoder)
     already_processed = models.BooleanField(default=False)
 

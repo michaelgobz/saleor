@@ -16,6 +16,7 @@ from .....order import OrderEvents, OrderStatus
 from .....order.calculations import fetch_order_prices_if_expired
 from .....order.error_codes import OrderErrorCode
 from .....order.interface import OrderTaxedPricesData
+from .....order.models import OrderEvent
 from .....order.utils import invalidate_order_prices
 from ....discount.enums import DiscountValueTypeEnum
 from ....tests.utils import assert_no_permission, get_graphql_content
@@ -41,8 +42,8 @@ mutation OrderDiscountAdd($orderId: ID!, $input: OrderDiscountCommonInput!){
 @pytest.mark.parametrize(
     ("value", "value_type"),
     [
-        (Decimal("2222222"), DiscountValueTypeEnum.FIXED.name),
-        (Decimal("101"), DiscountValueTypeEnum.PERCENTAGE.name),
+        (Decimal(2222222), DiscountValueTypeEnum.FIXED.name),
+        (Decimal(101), DiscountValueTypeEnum.PERCENTAGE.name),
     ],
 )
 def test_add_order_discount_incorrect_values(
@@ -72,7 +73,7 @@ def test_add_fixed_order_discount_order_is_not_draft(
     order_with_lines, staff_api_client, permission_group_manage_orders
 ):
     # given
-    value = Decimal("10")
+    value = Decimal(10)
     variables = {
         "orderId": graphene.Node.to_global_id("Order", order_with_lines.pk),
         "input": {"valueType": DiscountValueTypeEnum.FIXED.name, "value": value},
@@ -126,7 +127,7 @@ def test_add_fixed_order_discount_to_order(
     assert len(errors) == 0
 
     assert order.should_refresh_prices
-    fetch_order_prices_if_expired(order, plugins_manager)
+    fetch_order_prices_if_expired(order, plugins_manager, None).get()
 
     # Use `net` values in comparison due to that fixture have taxes incluted in
     # prices but after recalculation taxes are removed because in tests we
@@ -189,7 +190,7 @@ def test_add_percentage_order_discount_to_order(
     assert len(errors) == 0
 
     assert order.should_refresh_prices
-    fetch_order_prices_if_expired(order, plugins_manager)
+    fetch_order_prices_if_expired(order, plugins_manager, None).get()
 
     # Use `net` values in comparison due to that fixture have taxes included in
     # prices but after recalculation taxes are removed because in tests we
@@ -286,7 +287,7 @@ def test_add_fixed_order_discount_to_order_by_app(
     assert Decimal(discount_data["amount_value"]) == order_discount.amount.amount
 
     assert order.should_refresh_prices
-    fetch_order_prices_if_expired(order, plugins_manager)
+    fetch_order_prices_if_expired(order, plugins_manager, None).get()
 
     # Use `net` values in comparison due to that fixture have taxes incluted in
     # prices but after recalculation taxes are removed because in tests we
@@ -308,7 +309,7 @@ def test_add_manual_discount_replaces_entire_voucher(
     order.status = OrderStatus.DRAFT
     order.save(update_fields=["status", "should_refresh_prices"])
 
-    expected_voucher_discount_amount = Decimal("12")
+    expected_voucher_discount_amount = Decimal(12)
     assert voucher.type == VoucherType.ENTIRE_ORDER
     assert voucher.discount_value_type == DiscountValueType.FIXED
 
@@ -353,7 +354,7 @@ def test_add_manual_discount_replaces_entire_voucher(
     assert manual_discount.amount.amount == expected_discount_amount.amount
 
     assert order.should_refresh_prices
-    fetch_order_prices_if_expired(order, plugins_manager)
+    fetch_order_prices_if_expired(order, plugins_manager, None).get()
 
     assert (
         order.total_net_amount
@@ -398,7 +399,7 @@ def test_add_manual_discount_keeps_shipping_voucher(
     assert order.discounts.count() == 2
 
     shipping_discount = order.discounts.get(type=DiscountType.VOUCHER)
-    assert shipping_discount.value == Decimal("100")
+    assert shipping_discount.value == Decimal(100)
     assert shipping_discount.value_type == DiscountValueType.PERCENTAGE
     assert shipping_discount.amount == order.undiscounted_base_shipping_price
 
@@ -410,7 +411,7 @@ def test_add_manual_discount_keeps_shipping_voucher(
     applied_discount_amount = manual_discount_value + shipping_discount.amount_value
 
     assert order.should_refresh_prices
-    fetch_order_prices_if_expired(order, plugins_manager)
+    fetch_order_prices_if_expired(order, plugins_manager, None).get()
     assert (
         order.total_net_amount
         == order.undiscounted_total_net_amount - applied_discount_amount
@@ -461,7 +462,7 @@ def test_add_manual_discount_replaces_order_promotion(
     assert manual_discount.amount.amount == discount_value
 
     assert order.should_refresh_prices
-    fetch_order_prices_if_expired(order, plugins_manager)
+    fetch_order_prices_if_expired(order, plugins_manager, None).get()
 
     assert (
         order.total_net_amount == order.undiscounted_total_net_amount - discount_value
@@ -520,7 +521,7 @@ def test_add_manual_discount_replaces_gift_discount(
     assert manual_discount.amount.amount == discount_value
 
     assert order.should_refresh_prices
-    fetch_order_prices_if_expired(order, plugins_manager)
+    fetch_order_prices_if_expired(order, plugins_manager, None).get()
     assert (
         order.total_net_amount == order.undiscounted_total_net_amount - discount_value
     )
@@ -688,7 +689,7 @@ def test_update_order_discount_order_is_not_draft(
 
     order_discount = draft_order_with_fixed_discount_order.discounts.get()
 
-    value = Decimal("50")
+    value = Decimal(50)
     variables = {
         "discountId": graphene.Node.to_global_id("OrderDiscount", order_discount.pk),
         "input": {
@@ -712,8 +713,8 @@ def test_update_order_discount_order_is_not_draft(
 @pytest.mark.parametrize(
     ("value", "value_type"),
     [
-        (Decimal("2222222"), DiscountValueTypeEnum.FIXED.name),
-        (Decimal("101"), DiscountValueTypeEnum.PERCENTAGE.name),
+        (Decimal(2222222), DiscountValueTypeEnum.FIXED.name),
+        (Decimal(101), DiscountValueTypeEnum.PERCENTAGE.name),
     ],
 )
 def test_update_order_discount_incorrect_values(
@@ -1118,7 +1119,7 @@ def test_delete_manual_discount_from_order_with_entire_order_voucher(
     order.voucher_code = code
     order.voucher = voucher
     order.save(update_fields=["voucher_code", "voucher"])
-    fetch_order_prices_if_expired(order, plugins_manager, None, True)
+    fetch_order_prices_if_expired(order, plugins_manager, None, None, True).get()
     assert order.discounts.get() == manual_discount
     voucher_discount_amount = voucher.channel_listings.get().discount
     undiscounted_total_net_amount = order.undiscounted_total_net_amount
@@ -1213,7 +1214,7 @@ def test_update_order_line_discount(
 
     line_price_before_discount = line_to_discount.unit_price
 
-    value = Decimal("5")
+    value = Decimal(5)
     value_type = DiscountValueTypeEnum.FIXED
     reason = "New reason for unit discount"
     variables = {
@@ -1312,7 +1313,7 @@ def test_update_order_line_discount_by_user_no_channel_access(
     order.save(update_fields=["status", "channel"])
     line_to_discount = order.lines.first()
 
-    value = Decimal("5")
+    value = Decimal(5)
     reason = "New reason for unit discount"
     variables = {
         "orderLineId": graphene.Node.to_global_id("OrderLine", line_to_discount.pk),
@@ -1349,7 +1350,7 @@ def test_update_order_line_discount_by_app(
     order.save(update_fields=["status", "channel"])
     line_to_discount = order.lines.first()
 
-    value = Decimal("5")
+    value = Decimal(5)
     value_type = DiscountValueTypeEnum.FIXED
     reason = "New reason for unit discount"
     variables = {
@@ -1447,7 +1448,7 @@ def test_update_order_line_discount_line_with_discount(
 
     line_undiscounted_price = line_to_discount.undiscounted_unit_price
 
-    value = Decimal("50")
+    value = Decimal(50)
     value_type = DiscountValueTypeEnum.PERCENTAGE
     reason = "New reason for unit discount"
     variables = {
@@ -1530,7 +1531,7 @@ def test_update_order_line_discount_line_with_catalogue_promotion(
     unidscounted_unit_price = line.undiscounted_base_unit_price.amount
     tax_rate = Decimal("1.23")
 
-    manual_discount_value = Decimal("5")
+    manual_discount_value = Decimal(5)
     value_type = DiscountValueTypeEnum.FIXED
     reason = "Manual fixed line discount"
     variables = {
@@ -1603,7 +1604,7 @@ def test_update_order_line_discount_order_is_not_draft(
         "orderLineId": graphene.Node.to_global_id("OrderLine", line_to_discount.pk),
         "input": {
             "valueType": DiscountValueTypeEnum.FIXED.name,
-            "value": Decimal("5"),
+            "value": Decimal(5),
             "reason": "New reason for unit discount",
         },
     }
@@ -1621,7 +1622,7 @@ def test_update_order_line_discount_order_is_not_draft(
     assert error["field"] == "orderId"
     assert error["code"] == OrderErrorCode.CANNOT_DISCOUNT.name
 
-    assert line_to_discount.unit_discount_amount == Decimal("0")
+    assert line_to_discount.unit_discount_amount == Decimal(0)
 
 
 def test_add_manual_line_discount_order_with_voucher_specific_product(
@@ -1640,7 +1641,7 @@ def test_add_manual_line_discount_order_with_voucher_specific_product(
     tax_rate = Decimal("1.23")
 
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    voucher_discount_value = Decimal("2")
+    voucher_discount_value = Decimal(2)
     voucher_listing.discount_value = voucher_discount_value
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1661,7 +1662,7 @@ def test_add_manual_line_discount_order_with_voucher_specific_product(
         undiscounted_subtotal += line.undiscounted_base_unit_price * line.quantity
 
     permission_group_manage_orders.user_set.add(staff_api_client.user)
-    manual_line_discount_value = Decimal("3")
+    manual_line_discount_value = Decimal(3)
     variables = {
         "orderLineId": graphene.Node.to_global_id("OrderLine", discounted_line.pk),
         "input": {
@@ -1782,7 +1783,7 @@ def test_add_manual_line_discount_order_with_voucher_apply_once_per_order(
     tax_rate = Decimal("1.23")
 
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    voucher_discount_value = Decimal("3")
+    voucher_discount_value = Decimal(3)
     voucher_listing.discount_value = voucher_discount_value
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1803,7 +1804,7 @@ def test_add_manual_line_discount_order_with_voucher_apply_once_per_order(
         undiscounted_subtotal += line.undiscounted_base_unit_price * line.quantity
 
     permission_group_manage_orders.user_set.add(staff_api_client.user)
-    manual_line_discount_value = Decimal("3")
+    manual_line_discount_value = Decimal(3)
     variables = {
         "orderLineId": graphene.Node.to_global_id("OrderLine", discounted_line.pk),
         "input": {
@@ -2004,6 +2005,151 @@ def test_delete_discount_from_order_line(
     assert line_data.get("line_pk") == str(line.pk)
 
     assert not line.discounts.exists()
+
+
+ORDER_QUERY_WITH_EVENT_LINE_DISCOUNTS = """
+query OrderDetails($id: ID!) {
+  order(id: $id) {
+    events {
+      type
+      lines {
+        discount {
+          valueType
+          value
+          amount {
+            amount
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+@patch("saleor.plugins.manager.PluginsManager.calculate_order_line_unit")
+@patch("saleor.plugins.manager.PluginsManager.calculate_order_line_total")
+def test_query_order_after_line_discount_removed_returns_discount_event_data(
+    mocked_calculate_order_line_total,
+    mocked_calculate_order_line_unit,
+    draft_order,
+    staff_api_client,
+    permission_group_manage_orders,
+):
+    """We used to have a bug here where when we removed order line discount, the order event data was incorrectly captured.
+
+    This This test case removes order line discount and validates that the order event data is correctly captured now.
+    """
+    # given
+    order = draft_order
+    line = order.lines.first()
+
+    line_undiscounted_price = TaxedMoney(
+        line.undiscounted_base_unit_price, line.undiscounted_base_unit_price
+    )
+    line_undiscounted_total_price = line_undiscounted_price * line.quantity
+
+    mocked_calculate_order_line_unit.return_value = OrderTaxedPricesData(
+        undiscounted_price=line_undiscounted_price,
+        price_with_discounts=line_undiscounted_price,
+    )
+    mocked_calculate_order_line_total.return_value = OrderTaxedPricesData(
+        undiscounted_price=line_undiscounted_total_price,
+        price_with_discounts=line_undiscounted_total_price,
+    )
+
+    line.unit_discount_amount = Decimal("2.5")
+    line.unit_discount_type = DiscountValueType.FIXED
+    line.unit_discount_value = Decimal("2.5")
+    line.save()
+
+    discount = line.discounts.create(
+        type=DiscountType.MANUAL,
+        value_type=DiscountValueType.FIXED,
+        value=Decimal("2.5"),
+        currency=order.currency,
+    )
+
+    variables = {
+        "orderLineId": graphene.Node.to_global_id("OrderLine", line.pk),
+    }
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+
+    # when
+    staff_api_client.post_graphql(ORDER_LINE_DISCOUNT_REMOVE, variables)
+
+    # then - querying order events should not crash
+    order_id = graphene.Node.to_global_id("Order", order.pk)
+    response = staff_api_client.post_graphql(
+        ORDER_QUERY_WITH_EVENT_LINE_DISCOUNTS, {"id": order_id}
+    )
+    content = get_graphql_content(response)
+
+    order_data = content["data"]["order"]
+    assert len(order_data["events"]) == 1
+
+    event = order_data["events"][0]
+    assert event["type"] == OrderEvents.ORDER_LINE_DISCOUNT_REMOVED.upper()
+
+    event_lines = event["lines"]
+    assert len(event_lines) == 1
+
+    discount_data = event_lines[0]["discount"]
+    assert discount_data["valueType"] == discount.value_type.upper()
+    assert discount_data["value"] == discount.value
+
+
+def test_query_order_event_with_null_discount_value_type(
+    draft_order,
+    staff_api_client,
+    permission_group_manage_orders,
+):
+    """We used to have a bug here where when we removed order line discount, the order event data was incorrectly captured.
+
+    This in turn broke the resolver and made the code crash. This test replicates the
+    broken event and checks whether resolver asking for `value_type` crashes when the
+    value type is None.
+    """
+
+    # given
+    order = draft_order
+    line = order.lines.first()
+
+    OrderEvent.objects.create(
+        order=order,
+        type=OrderEvents.ORDER_LINE_DISCOUNT_REMOVED,
+        parameters={
+            "lines": [
+                {
+                    "quantity": line.quantity,
+                    "line_pk": str(line.pk),
+                    "item": str(line),
+                    "discount": {
+                        "value": Decimal(0),
+                        "amount_value": Decimal(0),
+                        "currency": order.currency,
+                        "value_type": None,
+                        "reason": None,
+                    },
+                }
+            ]
+        },
+    )
+
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+    order_id = graphene.Node.to_global_id("Order", order.pk)
+
+    # when
+    response = staff_api_client.post_graphql(
+        ORDER_QUERY_WITH_EVENT_LINE_DISCOUNTS, {"id": order_id}
+    )
+
+    # then
+    content = get_graphql_content(response)
+    order_data = content["data"]["order"]
+    assert len(order_data["events"]) == 1
+    event = order_data["events"][0]
+    assert event["type"] == OrderEvents.ORDER_LINE_DISCOUNT_REMOVED.upper()
 
 
 @patch("saleor.plugins.manager.PluginsManager.calculate_order_line_unit")

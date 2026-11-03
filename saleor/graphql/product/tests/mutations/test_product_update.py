@@ -26,76 +26,178 @@ from .....graphql.tests.utils import get_graphql_content
 from .....plugins.manager import PluginsManager
 from .....product.error_codes import ProductErrorCode
 from .....product.models import Product
-from ....attribute.utils import AttributeInputErrors
+from ....attribute.utils.type_handlers import AttributeInputErrors
 
 MUTATION_UPDATE_PRODUCT = """
-    mutation updateProduct($productId: ID!, $input: ProductInput!) {
-        productUpdate(id: $productId, input: $input) {
-                product {
-                    category {
-                        name
-                    }
-                    collections {
-                        name
-                    }
-                    rating
-                    description
-                    chargeTaxes
-                    variants {
-                        name
-                    }
-                    productVariants(first: 10) {
-                        edges {
-                            node {
-                                id
-                                name
-                            }
-                        }
-                    }
-                    taxType {
-                        taxCode
-                        description
-                    }
-                    name
-                    slug
-                    productType {
-                        name
-                    }
-                    metadata {
-                        key
-                        value
-                    }
-                    privateMetadata {
-                        key
-                        value
-                    }
-                    attributes {
-                        attribute {
-                            id
-                            name
-                        }
-                        values {
-                            id
-                            name
-                            slug
-                            boolean
-                            reference
-                            plainText
-                            file {
-                                url
-                                contentType
-                            }
-                        }
-                    }
-                    externalReference
-                }
-                errors {
-                    message
-                    field
-                    code
-                }
-            }
+mutation updateProduct($productId: ID!, $input: ProductInput!) {
+  productUpdate(id: $productId, input: $input) {
+    product {
+      category {
+        name
+      }
+      collections {
+        name
+      }
+      rating
+      description
+      chargeTaxes
+      variants {
+        name
+      }
+      productVariants(first: 10) {
+        edges {
+          node {
+            id
+            name
+          }
         }
+      }
+      taxType {
+        taxCode
+        description
+      }
+      name
+      slug
+      productType {
+        name
+      }
+      metadata {
+        key
+        value
+      }
+      privateMetadata {
+        key
+        value
+      }
+      assignedAttributes(limit:10) {
+        attribute {
+          slug
+        }
+        ... on AssignedNumericAttribute {
+          value
+        }
+        ... on AssignedTextAttribute {
+          text: value
+        }
+        ... on AssignedPlainTextAttribute {
+          plain_text: value
+        }
+        ... on AssignedFileAttribute {
+          file: value {
+            contentType
+            url
+          }
+        }
+        ... on AssignedMultiPageReferenceAttribute {
+          pages: value {
+            slug
+          }
+        }
+        ... on AssignedMultiProductReferenceAttribute {
+          products: value {
+            slug
+          }
+        }
+        ... on AssignedMultiCategoryReferenceAttribute {
+          categories: value {
+            slug
+          }
+        }
+        ... on AssignedMultiCollectionReferenceAttribute {
+          collections: value {
+            slug
+          }
+        }
+        ... on AssignedSinglePageReferenceAttribute {
+          page: value {
+            slug
+          }
+        }
+        ... on AssignedSingleProductReferenceAttribute {
+          product: value {
+            slug
+          }
+        }
+        ... on AssignedSingleProductVariantReferenceAttribute {
+          variant: value {
+            sku
+          }
+        }
+        ... on AssignedSingleCategoryReferenceAttribute {
+          category: value {
+            slug
+          }
+        }
+        ... on AssignedSingleCollectionReferenceAttribute {
+          collection: value {
+            slug
+          }
+        }
+        ... on AssignedMultiProductVariantReferenceAttribute {
+          variants: value {
+            sku
+          }
+        }
+        ... on AssignedSingleChoiceAttribute {
+          choice: value {
+            name
+            slug
+          }
+        }
+        ... on AssignedMultiChoiceAttribute {
+          multi: value {
+            name
+            slug
+          }
+        }
+        ... on AssignedSwatchAttribute {
+          swatch: value {
+            name
+            slug
+            hexColor
+            file {
+              url
+              contentType
+            }
+          }
+        }
+        ... on AssignedBooleanAttribute {
+          bool: value
+        }
+        ... on AssignedDateAttribute {
+          date: value
+        }
+        ... on AssignedDateTimeAttribute {
+          datetime: value
+        }
+      }
+      attributes {
+        attribute {
+          id
+          name
+        }
+        values {
+          id
+          name
+          slug
+          boolean
+          reference
+          plainText
+          file {
+            url
+            contentType
+          }
+        }
+      }
+      externalReference
+    }
+    errors {
+      message
+      field
+      code
+    }
+  }
+}
 """
 
 
@@ -118,7 +220,7 @@ def test_update_product(
     expected_other_description_json = other_description_json
     text = expected_other_description_json["blocks"][0]["data"]["text"]
     expected_other_description_json["blocks"][0]["data"]["text"] = strip_tags(text)
-    other_description_json = json.dumps(other_description_json)
+    other_description_json = json.dumps(other_description_json, sort_keys=True)
 
     product_id = graphene.Node.to_global_id("Product", product.pk)
     category_id = graphene.Node.to_global_id("Category", non_default_category.pk)
@@ -174,7 +276,9 @@ def test_update_product(
     assert data["errors"] == []
     assert data["product"]["name"] == product_name
     assert data["product"]["slug"] == product_slug
-    assert data["product"]["description"] == json.dumps(expected_other_description_json)
+    assert data["product"]["description"] == json.dumps(
+        expected_other_description_json, sort_keys=True
+    )
     assert data["product"]["chargeTaxes"] == product_charge_taxes
     assert data["product"]["taxType"]["taxCode"] == product_tax_rate
     assert not data["product"]["category"]["name"] == category.name
@@ -194,6 +298,10 @@ def test_update_product(
     assert attributes[0]["attribute"]["id"] == attribute_id
     assert attributes[0]["values"][0]["name"] == "Rainbow"
     assert attributes[0]["values"][0]["slug"] == "rainbow"
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    assert len(assigned_attributes) == 1
+    assert assigned_attributes[0]["choice"]["name"] == attr_value
 
     updated_webhook_mock.assert_called_once_with(product)
     created_webhook_mock.assert_not_called()
@@ -489,6 +597,13 @@ def test_update_product_with_boolean_attribute_value(
     }
     assert expected_att_data in attributes
 
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": boolean_attribute.slug},
+        "bool": new_value,
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     updated_webhook_mock.assert_called_once_with(product)
 
 
@@ -500,7 +615,6 @@ def test_update_product_with_file_attribute_value(
     product,
     product_type,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -511,7 +625,7 @@ def test_update_product_with_file_attribute_value(
     product_type.product_attributes.add(file_attribute)
 
     file_name = "new_test.jpg"
-    file_url = f"http://{site_settings.site.domain}{settings.MEDIA_URL}{file_name}"
+    file_url = f"https://example.com{settings.MEDIA_URL}{file_name}"
 
     variables = {
         "productId": product_id,
@@ -550,6 +664,16 @@ def test_update_product_with_file_attribute_value(
     }
     assert expected_file_att_data in attributes
 
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": file_attribute.slug},
+        "file": {
+            "url": file_url,
+            "contentType": None,
+        },
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     updated_webhook_mock.assert_called_once_with(product)
 
 
@@ -561,7 +685,6 @@ def test_update_product_with_file_attribute_value_new_value_is_not_created(
     product,
     product_type,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -578,8 +701,7 @@ def test_update_product_with_file_attribute_value_new_value_is_not_created(
     )
 
     values_count = len(attribute_values)
-    domain = site_settings.site.domain
-    file_url = f"http://{domain}{settings.MEDIA_URL}{existing_value.file_url}"
+    file_url = f"https://example.com{settings.MEDIA_URL}{existing_value.file_url}"
 
     variables = {
         "productId": product_id,
@@ -618,6 +740,16 @@ def test_update_product_with_file_attribute_value_new_value_is_not_created(
     }
     assert expected_file_att_data in attributes
 
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": file_attribute.slug},
+        "file": {
+            "url": file_url,
+            "contentType": existing_value.content_type,
+        },
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     file_attribute.refresh_from_db()
     assert file_attribute.values.count() == values_count
 
@@ -640,7 +772,8 @@ def test_update_product_with_numeric_attribute_value(
     attribute_id = graphene.Node.to_global_id("Attribute", numeric_attribute.pk)
     product_type.product_attributes.add(numeric_attribute)
 
-    new_value = "45.2"
+    numeric_value = 45.2
+    new_value = str(numeric_value)
 
     variables = {
         "productId": product_id,
@@ -666,7 +799,7 @@ def test_update_product_with_numeric_attribute_value(
                 "id": ANY,
                 "name": new_value,
                 "slug": slugify(
-                    f"{product.id}_{numeric_attribute.id}", allow_unicode=True
+                    f"product-{product.id}_{numeric_attribute.id}", allow_unicode=True
                 ),
                 "reference": None,
                 "file": None,
@@ -676,6 +809,18 @@ def test_update_product_with_numeric_attribute_value(
         ],
     }
     assert expected_att_data in attributes
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": numeric_attribute.slug},
+        "value": numeric_value,
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
+    assert numeric_attribute.values.filter(
+        name=new_value,
+        numeric=numeric_value,
+    ).exists()
 
     updated_webhook_mock.assert_called_once_with(product)
 
@@ -696,15 +841,18 @@ def test_update_product_with_numeric_attribute_value_new_value_is_not_created(
 
     attribute_id = graphene.Node.to_global_id("Attribute", numeric_attribute.pk)
     product_type.product_attributes.add(numeric_attribute)
-    slug_value = slugify(f"{product.id}_{numeric_attribute.id}", allow_unicode=True)
+    slug_value = slugify(
+        f"product-{product.id}_{numeric_attribute.id}", allow_unicode=True
+    )
     value = AttributeValue.objects.create(
-        attribute=numeric_attribute, slug=slug_value, name="20.0"
+        attribute=numeric_attribute, slug=slug_value, name="20.0", numeric=20.0
     )
     associate_attribute_values_to_instance(product, {numeric_attribute.pk: [value]})
 
     value_count = AttributeValue.objects.count()
 
-    new_value = "45.2"
+    numeric_value = 45.2
+    new_value = str(numeric_value)
 
     variables = {
         "productId": product_id,
@@ -740,9 +888,17 @@ def test_update_product_with_numeric_attribute_value_new_value_is_not_created(
     }
     assert expected_att_data in attributes
 
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": numeric_attribute.slug},
+        "value": numeric_value,
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     assert AttributeValue.objects.count() == value_count
     value.refresh_from_db()
     assert value.name == new_value
+    assert value.numeric == numeric_value
 
 
 @patch("saleor.plugins.manager.PluginsManager.product_updated")
@@ -761,6 +917,8 @@ def test_update_product_clear_attribute_values(
     attribute = get_product_attributes(product).first()
     attribute.value_required = False
     attribute.save(update_fields=["value_required"])
+
+    assert attribute.input_type == AttributeInputType.DROPDOWN
 
     attribute_id = graphene.Node.to_global_id("Attribute", attribute.pk)
 
@@ -783,6 +941,14 @@ def test_update_product_clear_attribute_values(
 
     assert len(attributes) == 1
     assert not attributes[0]["values"]
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": attribute.slug},
+        "choice": None,
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     assert not get_product_attribute_values(product, attribute).exists()
 
     updated_webhook_mock.assert_called_once_with(product)
@@ -831,6 +997,14 @@ def test_update_product_clean_boolean_attribute_value(
         "values": [],
     }
     assert expected_att_data in attributes
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": boolean_attribute.slug},
+        "bool": None,
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     assert get_product_attribute_values(product, product_attr).count() == 0
 
 
@@ -876,7 +1050,16 @@ def test_update_product_clean_file_attribute_value(
         "attribute": {"id": attribute_id, "name": file_attribute.name},
         "values": [],
     }
+    file_attribute.refresh_from_db()
     assert expected_att_data in attributes
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": file_attribute.slug},
+        "file": None,
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     assert get_product_attribute_values(product, file_attribute).count() == 0
 
 
@@ -896,6 +1079,8 @@ def test_update_product_none_as_attribute_values(
     attribute = get_product_attributes(product).first()
     attribute.value_required = False
     attribute.save(update_fields=["value_required"])
+
+    assert attribute.input_type == AttributeInputType.DROPDOWN
 
     attribute_id = graphene.Node.to_global_id("Attribute", attribute.pk)
 
@@ -918,6 +1103,14 @@ def test_update_product_none_as_attribute_values(
 
     assert len(attributes) == 1
     assert not attributes[0]["values"]
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": attribute.slug},
+        "choice": None,
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     assert not get_product_attribute_values(product, attribute).exists()
 
     updated_webhook_mock.assert_called_once_with(product)
@@ -964,7 +1157,7 @@ def test_update_product_with_plain_text_attribute_value(
         "values": [
             {
                 "id": ANY,
-                "slug": f"{product.id}_{plain_text_attribute.id}",
+                "slug": f"product-{product.id}_{plain_text_attribute.id}",
                 "name": text,
                 "reference": None,
                 "file": None,
@@ -974,6 +1167,13 @@ def test_update_product_with_plain_text_attribute_value(
         ],
     }
     assert expected_att_data in attributes
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": plain_text_attribute.slug},
+        "plain_text": text,
+    }
+    assert expected_assigned_attribute in assigned_attributes
 
     updated_webhook_mock.assert_called_once_with(product)
 
@@ -1022,7 +1222,7 @@ def test_update_product_with_plain_text_attribute_value_required(
         "values": [
             {
                 "id": ANY,
-                "slug": f"{product.id}_{plain_text_attribute.id}",
+                "slug": f"product-{product.id}_{plain_text_attribute.id}",
                 "name": text,
                 "reference": None,
                 "file": None,
@@ -1032,6 +1232,13 @@ def test_update_product_with_plain_text_attribute_value_required(
         ],
     }
     assert expected_att_data in attributes
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": plain_text_attribute.slug},
+        "plain_text": text,
+    }
+    assert expected_assigned_attribute in assigned_attributes
 
     updated_webhook_mock.assert_called_once_with(product)
 
@@ -1164,10 +1371,299 @@ def test_update_product_with_page_reference_attribute_value(
     }
     assert expected_file_att_data in attributes
 
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": product_type_page_reference_attribute.slug},
+        "pages": [{"slug": page.slug}],
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     updated_webhook_mock.assert_called_once_with(product)
 
     product_type_page_reference_attribute.refresh_from_db()
     assert product_type_page_reference_attribute.values.count() == values_count + 1
+
+
+@patch("saleor.plugins.manager.PluginsManager.product_updated")
+def test_update_product_with_single_reference_attribute_value(
+    updated_webhook_mock,
+    staff_api_client,
+    product_type_page_single_reference_attribute,
+    product_type_product_single_reference_attribute,
+    product_type_variant_single_reference_attribute,
+    product_type_category_single_reference_attribute,
+    product_type_collection_single_reference_attribute,
+    product,
+    product_type,
+    product_variant_list,
+    categories,
+    collection,
+    page,
+    permission_manage_products,
+):
+    # given
+    query = MUTATION_UPDATE_PRODUCT
+
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+
+    attributes = [
+        product_type_page_single_reference_attribute,
+        product_type_product_single_reference_attribute,
+        product_type_variant_single_reference_attribute,
+        product_type_category_single_reference_attribute,
+        product_type_collection_single_reference_attribute,
+    ]
+    product_type.product_attributes.add(*attributes)
+    references = [
+        (page, product_type_page_single_reference_attribute, page.title),
+        (product, product_type_product_single_reference_attribute, product.name),
+        (
+            product_variant_list[0],
+            product_type_variant_single_reference_attribute,
+            f"{product_variant_list[0].product.name}: {product_variant_list[0].name}",
+        ),
+        (
+            categories[0],
+            product_type_category_single_reference_attribute,
+            categories[0].name,
+        ),
+        (
+            collection,
+            product_type_collection_single_reference_attribute,
+            collection.name,
+        ),
+    ]
+    attributes = [
+        {
+            "id": graphene.Node.to_global_id("Attribute", attr.pk),
+            "reference": graphene.Node.to_global_id(attr.entity_type, ref.pk),
+        }
+        for ref, attr, _name in references
+    ]
+
+    variables = {
+        "productId": product_id,
+        "input": {"attributes": attributes},
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productUpdate"]
+    assert data["errors"] == []
+
+    attributes_data = data["product"]["attributes"]
+    assert len(attributes_data) == product_type.product_attributes.count()
+
+    expected_attributes_data = [
+        {
+            "attribute": {
+                "id": graphene.Node.to_global_id("Attribute", attr.pk),
+                "name": attr.name,
+            },
+            "values": [
+                {
+                    "id": ANY,
+                    "slug": f"{product.id}_{ref.id}",
+                    "name": name,
+                    "file": None,
+                    "plainText": None,
+                    "boolean": None,
+                    "reference": graphene.Node.to_global_id(attr.entity_type, ref.pk),
+                }
+            ],
+        }
+        for ref, attr, name in references
+    ]
+    for attr_data in expected_attributes_data:
+        assert attr_data in attributes_data
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+
+    expected_assigned_page_attribute = {
+        "attribute": {"slug": product_type_page_single_reference_attribute.slug},
+        "page": {"slug": page.slug},
+    }
+    expected_assigned_product_attribute = {
+        "attribute": {"slug": product_type_product_single_reference_attribute.slug},
+        "product": {"slug": product.slug},
+    }
+    expected_assigned_variant_attribute = {
+        "attribute": {"slug": product_type_variant_single_reference_attribute.slug},
+        "variant": {"sku": product_variant_list[0].sku},
+    }
+    expected_assigned_category_attribute = {
+        "attribute": {"slug": product_type_category_single_reference_attribute.slug},
+        "category": {"slug": categories[0].slug},
+    }
+    expected_assigned_collection_attribute = {
+        "attribute": {"slug": product_type_collection_single_reference_attribute.slug},
+        "collection": {"slug": collection.slug},
+    }
+    assert expected_assigned_page_attribute in assigned_attributes
+    assert expected_assigned_product_attribute in assigned_attributes
+    assert expected_assigned_variant_attribute in assigned_attributes
+    assert expected_assigned_category_attribute in assigned_attributes
+    assert expected_assigned_collection_attribute in assigned_attributes
+
+
+@patch("saleor.plugins.manager.PluginsManager.product_updated")
+def test_update_product_with_page_reference_attribute_value_and_reference_types(
+    updated_webhook_mock,
+    staff_api_client,
+    product_type_page_reference_attribute,
+    product,
+    product_type,
+    page,
+    permission_manage_products,
+):
+    # given
+    query = MUTATION_UPDATE_PRODUCT
+
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+
+    attribute_id = graphene.Node.to_global_id(
+        "Attribute", product_type_page_reference_attribute.pk
+    )
+    product_type.product_attributes.add(product_type_page_reference_attribute)
+    product_type_page_reference_attribute.reference_page_types.add(page.page_type)
+
+    values_count = product_type_page_reference_attribute.values.count()
+
+    reference = graphene.Node.to_global_id("Page", page.pk)
+
+    variables = {
+        "productId": product_id,
+        "input": {"attributes": [{"id": attribute_id, "references": [reference]}]},
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productUpdate"]
+    assert data["errors"] == []
+
+    attributes = data["product"]["attributes"]
+
+    assert len(attributes) == 2
+    expected_file_att_data = {
+        "attribute": {
+            "id": attribute_id,
+            "name": product_type_page_reference_attribute.name,
+        },
+        "values": [
+            {
+                "id": ANY,
+                "name": page.title,
+                "slug": f"{product.id}_{page.id}",
+                "file": None,
+                "reference": reference,
+                "boolean": None,
+                "plainText": None,
+            }
+        ],
+    }
+    assert expected_file_att_data in attributes
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_page_ref_assigned_attribute = {
+        "attribute": {"slug": product_type_page_reference_attribute.slug},
+        "pages": [{"slug": page.slug}],
+    }
+    assert expected_page_ref_assigned_attribute in assigned_attributes
+
+    updated_webhook_mock.assert_called_once_with(product)
+
+    product_type_page_reference_attribute.refresh_from_db()
+    assert product_type_page_reference_attribute.values.count() == values_count + 1
+
+
+@patch("saleor.plugins.manager.PluginsManager.product_updated")
+def test_update_product_with_variant_single_ref_attribute_value_and_reference_types(
+    updated_webhook_mock,
+    staff_api_client,
+    product_type_variant_single_reference_attribute,
+    product,
+    product_type,
+    variant,
+    permission_manage_products,
+):
+    # given
+    query = MUTATION_UPDATE_PRODUCT
+
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+
+    attribute_id = graphene.Node.to_global_id(
+        "Attribute", product_type_variant_single_reference_attribute.pk
+    )
+    product_type.product_attributes.add(product_type_variant_single_reference_attribute)
+    product_type_variant_single_reference_attribute.reference_product_types.add(
+        product_type
+    )
+
+    values_count = product_type_variant_single_reference_attribute.values.count()
+
+    reference = graphene.Node.to_global_id("ProductVariant", variant.pk)
+
+    variables = {
+        "productId": product_id,
+        "input": {"attributes": [{"id": attribute_id, "reference": reference}]},
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productUpdate"]
+    assert data["errors"] == []
+
+    attributes = data["product"]["attributes"]
+
+    assert len(attributes) == 2
+    expected_file_att_data = {
+        "attribute": {
+            "id": attribute_id,
+            "name": product_type_variant_single_reference_attribute.name,
+        },
+        "values": [
+            {
+                "id": ANY,
+                "name": f"{variant.product.name}: {variant.name}",
+                "slug": f"{product.id}_{variant.id}",
+                "file": None,
+                "reference": reference,
+                "boolean": None,
+                "plainText": None,
+            }
+        ],
+    }
+    assert expected_file_att_data in attributes
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_page_ref_assigned_attribute = {
+        "attribute": {"slug": product_type_variant_single_reference_attribute.slug},
+        "variant": {"sku": variant.sku},
+    }
+    assert expected_page_ref_assigned_attribute in assigned_attributes
+
+    updated_webhook_mock.assert_called_once_with(product)
+
+    product_type_variant_single_reference_attribute.refresh_from_db()
+    assert (
+        product_type_variant_single_reference_attribute.values.count()
+        == values_count + 1
+    )
 
 
 def test_update_product_without_supplying_required_product_attribute(
@@ -1179,10 +1675,16 @@ def test_update_product_without_supplying_required_product_attribute(
     product_type = product.product_type
     color_attribute_id = graphene.Node.to_global_id("Attribute", color_attribute.id)
 
+    assert color_attribute.input_type == AttributeInputType.DROPDOWN
+
     # Create and assign a new attribute requiring a value to be always supplied
     required_attribute = Attribute.objects.create(
-        name="Required One", slug="required-one", value_required=True
+        name="Required One",
+        slug="required-one",
+        value_required=True,
+        input_type=AttributeInputType.DROPDOWN,
     )
+
     product_type.product_attributes.add(required_attribute)
     required_attribute_id = graphene.Node.to_global_id(
         "Attribute", required_attribute.id
@@ -1221,6 +1723,18 @@ def test_update_product_without_supplying_required_product_attribute(
             }
         ],
     } in attributes_data
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_color_assigned_attribute = {
+        "attribute": {"slug": color_attribute.slug},
+        "choice": {"name": value, "slug": value.lower()},
+    }
+    assert expected_color_assigned_attribute in assigned_attributes
+    expected_required_assigned_attribute = {
+        "attribute": {"slug": required_attribute.slug},
+        "choice": None,
+    }
+    assert expected_required_assigned_attribute in assigned_attributes
 
 
 def test_update_product_with_empty_input_collections(
@@ -1273,7 +1787,6 @@ def test_update_product_with_page_reference_attribute_existing_value(
     query = MUTATION_UPDATE_PRODUCT
 
     product_id = graphene.Node.to_global_id("Product", product.pk)
-
     attribute_id = graphene.Node.to_global_id(
         "Attribute", product_type_page_reference_attribute.pk
     )
@@ -1287,9 +1800,7 @@ def test_update_product_with_page_reference_attribute_existing_value(
     associate_attribute_values_to_instance(
         product, {product_type_page_reference_attribute.pk: [attr_value]}
     )
-
     values_count = product_type_page_reference_attribute.values.count()
-
     reference = graphene.Node.to_global_id("Page", page.pk)
 
     variables = {
@@ -1329,6 +1840,13 @@ def test_update_product_with_page_reference_attribute_existing_value(
     }
     assert expected_file_att_data in attributes
 
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": product_type_page_reference_attribute.slug},
+        "pages": [{"slug": page.slug}],
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     updated_webhook_mock.assert_called_once_with(product)
 
     product_type_page_reference_attribute.refresh_from_db()
@@ -1349,9 +1867,7 @@ def test_update_product_with_page_reference_attribute_value_not_given(
 
     product_type_page_reference_attribute.value_required = True
     product_type_page_reference_attribute.save(update_fields=["value_required"])
-
     product_id = graphene.Node.to_global_id("Product", product.pk)
-
     attribute_id = graphene.Node.to_global_id(
         "Attribute", product_type_page_reference_attribute.pk
     )
@@ -1395,14 +1911,11 @@ def test_update_product_with_product_reference_attribute_value(
     product = product_list[0]
     product_id = graphene.Node.to_global_id("Product", product.pk)
     product_ref = product_list[1]
-
     attribute_id = graphene.Node.to_global_id(
         "Attribute", product_type_product_reference_attribute.pk
     )
     product_type.product_attributes.add(product_type_product_reference_attribute)
-
     values_count = product_type_product_reference_attribute.values.count()
-
     reference = graphene.Node.to_global_id("Product", product_ref.pk)
 
     variables = {
@@ -1442,6 +1955,13 @@ def test_update_product_with_product_reference_attribute_value(
     }
     assert expected_file_att_data in attributes
 
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": product_type_product_reference_attribute.slug},
+        "products": [{"slug": product_ref.slug}],
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     updated_webhook_mock.assert_called_once_with(product)
 
     product_type_product_reference_attribute.refresh_from_db()
@@ -1463,14 +1983,11 @@ def test_update_product_with_variant_reference_attribute_value(
     product = product_list[0]
     product_id = graphene.Node.to_global_id("Product", product.pk)
     variant_ref = product_list[1].variants.first()
-
     attribute_id = graphene.Node.to_global_id(
         "Attribute", product_type_variant_reference_attribute.pk
     )
     product_type.product_attributes.add(product_type_variant_reference_attribute)
-
     values_count = product_type_variant_reference_attribute.values.count()
-
     reference = graphene.Node.to_global_id("ProductVariant", variant_ref.pk)
 
     variables = {
@@ -1510,10 +2027,206 @@ def test_update_product_with_variant_reference_attribute_value(
     }
     assert expected_file_att_data in attributes
 
-    updated_webhook_mock.assert_called_once_with(product)
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": product_type_variant_reference_attribute.slug},
+        "variants": [{"sku": variant_ref.sku}],
+    }
+    assert expected_assigned_attribute in assigned_attributes
 
     product_type_variant_reference_attribute.refresh_from_db()
     assert product_type_variant_reference_attribute.values.count() == values_count + 1
+
+    updated_webhook_mock.assert_called_once_with(product)
+
+
+@patch("saleor.plugins.manager.PluginsManager.product_updated")
+def test_update_product_with_category_reference_attribute_value(
+    updated_webhook_mock,
+    staff_api_client,
+    product_type_category_reference_attribute,
+    product,
+    product_type,
+    category,
+    permission_manage_products,
+):
+    # given
+    query = MUTATION_UPDATE_PRODUCT
+
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+    attribute_id = graphene.Node.to_global_id(
+        "Attribute", product_type_category_reference_attribute.pk
+    )
+    product_type.product_attributes.add(product_type_category_reference_attribute)
+    values_count = product_type_category_reference_attribute.values.count()
+    reference = graphene.Node.to_global_id("Category", category.pk)
+
+    variables = {
+        "productId": product_id,
+        "input": {"attributes": [{"id": attribute_id, "references": [reference]}]},
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productUpdate"]
+    assert data["errors"] == []
+
+    attributes = data["product"]["attributes"]
+
+    assert len(attributes) == 2
+    expected_file_att_data = {
+        "attribute": {
+            "id": attribute_id,
+            "name": product_type_category_reference_attribute.name,
+        },
+        "values": [
+            {
+                "id": ANY,
+                "name": category.name,
+                "slug": f"{product.id}_{category.id}",
+                "file": None,
+                "reference": reference,
+                "boolean": None,
+                "plainText": None,
+            }
+        ],
+    }
+    assert expected_file_att_data in attributes
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": product_type_category_reference_attribute.slug},
+        "categories": [{"slug": category.slug}],
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
+    product_type_category_reference_attribute.refresh_from_db()
+    assert product_type_category_reference_attribute.values.count() == values_count + 1
+
+    updated_webhook_mock.assert_called_once_with(product)
+
+
+@patch("saleor.plugins.manager.PluginsManager.product_updated")
+def test_update_product_with_collection_reference_attribute_value(
+    updated_webhook_mock,
+    staff_api_client,
+    product_type_collection_reference_attribute,
+    product,
+    product_type,
+    collection,
+    permission_manage_products,
+):
+    # given
+    query = MUTATION_UPDATE_PRODUCT
+
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+    attribute_id = graphene.Node.to_global_id(
+        "Attribute", product_type_collection_reference_attribute.pk
+    )
+    product_type.product_attributes.add(product_type_collection_reference_attribute)
+    values_count = product_type_collection_reference_attribute.values.count()
+    reference = graphene.Node.to_global_id("Collection", collection.pk)
+
+    variables = {
+        "productId": product_id,
+        "input": {"attributes": [{"id": attribute_id, "references": [reference]}]},
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productUpdate"]
+    assert data["errors"] == []
+
+    attributes = data["product"]["attributes"]
+    assert len(attributes) == 2
+    expected_file_att_data = {
+        "attribute": {
+            "id": attribute_id,
+            "name": product_type_collection_reference_attribute.name,
+        },
+        "values": [
+            {
+                "id": ANY,
+                "name": collection.name,
+                "slug": f"{product.id}_{collection.id}",
+                "file": None,
+                "reference": reference,
+                "boolean": None,
+                "plainText": None,
+            }
+        ],
+    }
+    assert expected_file_att_data in attributes
+    product_type_collection_reference_attribute.refresh_from_db()
+    assert (
+        product_type_collection_reference_attribute.values.count() == values_count + 1
+    )
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": product_type_collection_reference_attribute.slug},
+        "collections": [{"slug": collection.slug}],
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
+    updated_webhook_mock.assert_called_once_with(product)
+
+
+@patch("saleor.plugins.manager.PluginsManager.product_updated")
+def test_update_product_with_page_reference_attribute_value_not_in_available_choices(
+    updated_webhook_mock,
+    staff_api_client,
+    product_type_page_reference_attribute,
+    product,
+    product_type,
+    page,
+    page_type_list,
+    permission_manage_products,
+):
+    # given
+    query = MUTATION_UPDATE_PRODUCT
+
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+
+    attribute_id = graphene.Node.to_global_id(
+        "Attribute", product_type_page_reference_attribute.pk
+    )
+    product_type.product_attributes.add(product_type_page_reference_attribute)
+    product_type_page_reference_attribute.reference_page_types.add(page_type_list[0])
+
+    values_count = product_type_page_reference_attribute.values.count()
+
+    reference = graphene.Node.to_global_id("Page", page.pk)
+
+    variables = {
+        "productId": product_id,
+        "input": {"attributes": [{"id": attribute_id, "references": [reference]}]},
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productUpdate"]
+    assert not data["product"]
+    assert data["errors"]
+    assert len(data["errors"]) == 1
+    assert data["errors"][0]["field"] == "attributes"
+    assert data["errors"][0]["code"] == ProductErrorCode.INVALID.name
+    assert product_type_page_reference_attribute.values.count() == values_count
 
 
 def test_update_product_with_attribute_without_id_or_external_ref(
@@ -1616,6 +2329,13 @@ def test_update_product_with_product_reference_attribute_existing_value(
     }
     assert expected_file_att_data in attributes
 
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": product_type_product_reference_attribute.slug},
+        "products": [{"slug": product_ref.slug}],
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
     updated_webhook_mock.assert_called_once_with(product)
 
     product_type_product_reference_attribute.refresh_from_db()
@@ -1712,6 +2432,8 @@ def test_update_product_change_values_ordering(
         ).values_list("value_id", flat=True)
     ) == [attr_value_2.pk, attr_value_1.pk]
 
+    expected_first_page = page_list[0]
+    expected_second_page = page_list[1]
     variables = {
         "productId": product_id,
         "input": {
@@ -1719,8 +2441,8 @@ def test_update_product_change_values_ordering(
                 {
                     "id": attribute_id,
                     "references": [
-                        graphene.Node.to_global_id("Page", page_list[0].pk),
-                        graphene.Node.to_global_id("Page", page_list[1].pk),
+                        graphene.Node.to_global_id("Page", expected_first_page.pk),
+                        graphene.Node.to_global_id("Page", expected_second_page.pk),
                     ],
                 }
             ]
@@ -1746,6 +2468,14 @@ def test_update_product_change_values_ordering(
         graphene.Node.to_global_id("AttributeValue", val.pk)
         for val in [attr_value_1, attr_value_2]
     ]
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    assert len(assigned_attributes) == 1
+    assigned_values = assigned_attributes[0]["pages"]
+    assert len(assigned_values) == 2
+    assert assigned_values[0]["slug"] == expected_first_page.slug
+    assert assigned_values[1]["slug"] == expected_second_page.slug
+
     product.refresh_from_db()
 
     attribute = get_product_attributes(product).first()
@@ -2142,7 +2872,8 @@ def test_update_product_with_numeric_attribute_value_by_numeric_field(
     attribute_id = graphene.Node.to_global_id("Attribute", numeric_attribute.pk)
     product_type.product_attributes.add(numeric_attribute)
 
-    new_value = "45.2"
+    numeric_value = 45.2
+    new_value = str(numeric_value)
 
     variables = {
         "productId": product_id,
@@ -2168,7 +2899,7 @@ def test_update_product_with_numeric_attribute_value_by_numeric_field(
                 "id": ANY,
                 "name": new_value,
                 "slug": slugify(
-                    f"{product.id}_{numeric_attribute.id}", allow_unicode=True
+                    f"product-{product.id}_{numeric_attribute.id}", allow_unicode=True
                 ),
                 "reference": None,
                 "file": None,
@@ -2178,6 +2909,17 @@ def test_update_product_with_numeric_attribute_value_by_numeric_field(
         ],
     }
     assert expected_att_data in attributes
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": numeric_attribute.slug},
+        "value": numeric_value,
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
+    assert numeric_attribute.values.filter(
+        name=new_value, numeric=numeric_value
+    ).first()
 
     updated_webhook_mock.assert_called_once_with(product)
 
@@ -2196,9 +2938,11 @@ def test_update_product_with_numeric_attribute_by_numeric_field_null_value(
 
     attribute_id = graphene.Node.to_global_id("Attribute", numeric_attribute.pk)
     product_type.product_attributes.add(numeric_attribute)
-    slug_value = slugify(f"{product.id}_{numeric_attribute.id}", allow_unicode=True)
+    slug_value = slugify(
+        f"product-{product.id}_{numeric_attribute.id}", allow_unicode=True
+    )
     value = AttributeValue.objects.create(
-        attribute=numeric_attribute, slug=slug_value, name="20.0"
+        attribute=numeric_attribute, slug=slug_value, name="20.0", numeric=20.0
     )
     associate_attribute_values_to_instance(product, {numeric_attribute.pk: [value]})
 
@@ -2218,6 +2962,13 @@ def test_update_product_with_numeric_attribute_by_numeric_field_null_value(
     assert data["errors"] == []
     assert not data["product"]["attributes"][1]["values"]
 
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": numeric_attribute.slug},
+        "value": None,
+    }
+    assert expected_assigned_attribute in assigned_attributes
+
 
 def test_update_product_with_numeric_attribute_by_numeric_field_new_value_not_created(
     staff_api_client,
@@ -2233,15 +2984,18 @@ def test_update_product_with_numeric_attribute_by_numeric_field_new_value_not_cr
 
     attribute_id = graphene.Node.to_global_id("Attribute", numeric_attribute.pk)
     product_type.product_attributes.add(numeric_attribute)
-    slug_value = slugify(f"{product.id}_{numeric_attribute.id}", allow_unicode=True)
+    slug_value = slugify(
+        f"product-{product.id}_{numeric_attribute.id}", allow_unicode=True
+    )
     value = AttributeValue.objects.create(
-        attribute=numeric_attribute, slug=slug_value, name="20.0"
+        attribute=numeric_attribute, slug=slug_value, name="20.0", numeric=20.0
     )
     associate_attribute_values_to_instance(product, {numeric_attribute.pk: [value]})
 
     value_count = AttributeValue.objects.count()
 
-    new_value = "45.2"
+    numeric_value = 45.2
+    new_value = str(numeric_value)
 
     variables = {
         "productId": product_id,
@@ -2276,10 +3030,17 @@ def test_update_product_with_numeric_attribute_by_numeric_field_new_value_not_cr
         ],
     }
     assert expected_att_data in attributes
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_attribute = {
+        "attribute": {"slug": numeric_attribute.slug},
+        "value": numeric_value,
+    }
+    assert expected_assigned_attribute in assigned_attributes
 
     assert AttributeValue.objects.count() == value_count
     value.refresh_from_db()
     assert value.name == new_value
+    assert value.numeric == numeric_value
 
 
 @patch("saleor.plugins.manager.PluginsManager.product_updated")
@@ -2290,7 +3051,6 @@ def test_update_product_with_dropdown_attribute_non_existing_value(
     product,
     product_type,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -2300,6 +3060,9 @@ def test_update_product_with_dropdown_attribute_non_existing_value(
     attribute_id = graphene.Node.to_global_id("Attribute", color_attribute.pk)
     product_type.product_attributes.add(color_attribute)
 
+    assert color_attribute.input_type == AttributeInputType.DROPDOWN
+
+    new_color_name = "new-color"
     variables = {
         "productId": product_id,
         "input": {
@@ -2307,7 +3070,7 @@ def test_update_product_with_dropdown_attribute_non_existing_value(
                 {
                     "id": attribute_id,
                     "dropdown": {
-                        "value": "new color",
+                        "value": new_color_name,
                     },
                 }
             ]
@@ -2325,7 +3088,18 @@ def test_update_product_with_dropdown_attribute_non_existing_value(
     errors = data["errors"]
 
     assert not errors
-    assert data["product"]["attributes"][0]["values"][0]["name"] == "new color"
+    assert data["product"]["attributes"][0]["values"][0]["name"] == new_color_name
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_choice_attribute = {
+        "attribute": {"slug": color_attribute.slug},
+        "choice": {
+            "name": new_color_name,
+            "slug": new_color_name.lower(),
+        },
+    }
+    assert expected_assigned_choice_attribute in assigned_attributes
+
     updated_webhook_mock.assert_called_once_with(product)
 
 
@@ -2336,7 +3110,6 @@ def test_update_product_with_dropdown_attribute_existing_value(
     product,
     product_type,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -2344,12 +3117,13 @@ def test_update_product_with_dropdown_attribute_existing_value(
     product_id = graphene.Node.to_global_id("Product", product.pk)
     attribute = product_type.product_attributes.first()
 
+    assert attribute.input_type == AttributeInputType.DROPDOWN
+
     attribute_id = graphene.Node.to_global_id("Attribute", attribute.pk)
     attribute_value = attribute.values.model.objects.first()
     attribute_value_id = graphene.Node.to_global_id(
         "AttributeValue", attribute_value.pk
     )
-    attribute_value_name = attribute.values.model.objects.first().name
     product_type.product_attributes.add(attribute)
 
     variables = {
@@ -2377,7 +3151,18 @@ def test_update_product_with_dropdown_attribute_existing_value(
     errors = data["errors"]
 
     assert not errors
-    assert data["product"]["attributes"][0]["values"][0]["name"] == attribute_value_name
+    assert data["product"]["attributes"][0]["values"][0]["name"] == attribute_value.name
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_choice_attribute = {
+        "attribute": {"slug": attribute.slug},
+        "choice": {
+            "name": attribute_value.name,
+            "slug": attribute_value.slug,
+        },
+    }
+    assert expected_assigned_choice_attribute in assigned_attributes
+
     updated_webhook_mock.assert_called_once_with(product)
 
 
@@ -2388,19 +3173,20 @@ def test_update_product_with_dropdown_attribute_existing_value_passed_as_new_val
     product,
     product_type,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
 
     product_id = graphene.Node.to_global_id("Product", product.pk)
     attribute = product_type.product_attributes.first()
+
+    assert attribute.input_type == AttributeInputType.DROPDOWN
+
     attribute_id = graphene.Node.to_global_id("Attribute", attribute.pk)
     attribute_value = attribute.values.model.objects.first()
     attribute_value_id = graphene.Node.to_global_id(
         "AttributeValue", attribute_value.pk
     )
-    attribute_value_name = attribute.values.model.objects.first().name
     product_type.product_attributes.add(attribute)
 
     value_count = AttributeValue.objects.count()
@@ -2412,7 +3198,7 @@ def test_update_product_with_dropdown_attribute_existing_value_passed_as_new_val
                 {
                     "id": attribute_id,
                     "dropdown": {
-                        "value": attribute_value_name,
+                        "value": attribute_value.name,
                     },
                 }
             ]
@@ -2431,6 +3217,17 @@ def test_update_product_with_dropdown_attribute_existing_value_passed_as_new_val
 
     assert not errors
     assert data["product"]["attributes"][0]["values"][0]["id"] == attribute_value_id
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_choice_attribute = {
+        "attribute": {"slug": attribute.slug},
+        "choice": {
+            "name": attribute_value.name,
+            "slug": attribute_value.slug,
+        },
+    }
+    assert expected_assigned_choice_attribute in assigned_attributes
+
     assert AttributeValue.objects.count() == value_count
     updated_webhook_mock.assert_called_once_with(product)
 
@@ -2443,7 +3240,6 @@ def test_update_product_with_dropdown_attribute_null_value(
     product,
     product_type,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -2478,6 +3274,13 @@ def test_update_product_with_dropdown_attribute_null_value(
 
     assert not errors
     assert not data["product"]["attributes"][0]["values"]
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_choice_attribute = {
+        "attribute": {"slug": color_attribute.slug},
+        "choice": None,
+    }
+    assert expected_assigned_choice_attribute in assigned_attributes
     updated_webhook_mock.assert_called_once_with(product)
 
 
@@ -2487,7 +3290,6 @@ def test_update_product_with_multiselect_attribute_non_existing_values(
     staff_api_client,
     product_with_multiple_values_attributes,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -2499,13 +3301,18 @@ def test_update_product_with_multiselect_attribute_non_existing_values(
 
     value_count = AttributeValue.objects.count()
 
+    first_value_name = "new-mode-1"
+    second_value_name = "new-mode-2"
     variables = {
         "productId": product_id,
         "input": {
             "attributes": [
                 {
                     "id": attribute_id,
-                    "multiselect": [{"value": "new mode 1"}, {"value": "new mode 2"}],
+                    "multiselect": [
+                        {"value": first_value_name},
+                        {"value": second_value_name},
+                    ],
                 }
             ]
         },
@@ -2524,8 +3331,22 @@ def test_update_product_with_multiselect_attribute_non_existing_values(
     assert not errors
     values = data["product"]["attributes"][0]["values"]
     assert len(values) == 2
-    assert values[0]["name"] == "new mode 1"
-    assert values[1]["name"] == "new mode 2"
+    assert values[0]["name"] == first_value_name
+    assert values[1]["name"] == second_value_name
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_choice_attribute = {
+        "attribute": {"slug": attribute.slug},
+        "multi": [
+            {"name": first_value_name, "slug": first_value_name.lower()},
+            {
+                "name": second_value_name,
+                "slug": second_value_name.lower(),
+            },
+        ],
+    }
+    assert expected_assigned_choice_attribute in assigned_attributes
+
     updated_webhook_mock.assert_called_once_with(product)
 
     assert AttributeValue.objects.count() == value_count + 2
@@ -2537,7 +3358,6 @@ def test_update_product_with_multiselect_attribute_existing_values(
     staff_api_client,
     product_with_multiple_values_attributes,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -2550,10 +3370,8 @@ def test_update_product_with_multiselect_attribute_existing_values(
     attribute_values = get_product_attribute_values(product, attribute)
     attr_value_1 = attribute_values[0]
     attr_value_id_1 = graphene.Node.to_global_id("AttributeValue", attr_value_1.pk)
-    attr_value_name_1 = attr_value_1.name
     attr_value_2 = attribute_values[1]
     attr_value_id_2 = graphene.Node.to_global_id("AttributeValue", attr_value_2.pk)
-    attr_value_name_2 = attr_value_2.name
 
     associate_attribute_values_to_instance(product, {attribute.pk: [attr_value_1]})
 
@@ -2585,8 +3403,18 @@ def test_update_product_with_multiselect_attribute_existing_values(
     assert not errors
     values = data["product"]["attributes"][0]["values"]
     assert len(values) == 2
-    assert values[0]["name"] == attr_value_name_1
-    assert values[1]["name"] == attr_value_name_2
+    assert values[0]["name"] == attr_value_1.name
+    assert values[1]["name"] == attr_value_2.name
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_choice_attribute = {
+        "attribute": {"slug": attribute.slug},
+        "multi": [
+            {"name": attr_value_1.name, "slug": attr_value_1.slug},
+            {"name": attr_value_2.name, "slug": attr_value_2.slug},
+        ],
+    }
+    assert expected_assigned_choice_attribute in assigned_attributes
     updated_webhook_mock.assert_called_once_with(product)
 
 
@@ -2609,11 +3437,9 @@ def test_update_product_with_multiselect_attribute_new_values_not_created(
 
     attr_value_1 = attr_values[0]
     attr_value_id_1 = graphene.Node.to_global_id("AttributeValue", attr_value_1.pk)
-    attr_value_name_1 = attr_value_1.name
 
     attr_value_2 = attr_values[1]
     attr_value_id_2 = graphene.Node.to_global_id("AttributeValue", attr_value_2.pk)
-    attr_value_name_2 = attr_value_2.name
 
     value_count = AttributeValue.objects.count()
 
@@ -2626,8 +3452,8 @@ def test_update_product_with_multiselect_attribute_new_values_not_created(
                 {
                     "id": attribute_id,
                     "multiselect": [
-                        {"value": attr_value_name_1},
-                        {"value": attr_value_name_2},
+                        {"value": attr_value_1.name},
+                        {"value": attr_value_2.name},
                     ],
                 }
             ]
@@ -2649,6 +3475,17 @@ def test_update_product_with_multiselect_attribute_new_values_not_created(
     assert len(values) == 2
     assert values[0]["id"] == attr_value_id_1
     assert values[1]["id"] == attr_value_id_2
+
+    assigned_attributes = data["product"]["assignedAttributes"]
+    expected_assigned_choice_attribute = {
+        "attribute": {"slug": attribute.slug},
+        "multi": [
+            {"name": attr_value_1.name, "slug": attr_value_1.slug},
+            {"name": attr_value_2.name, "slug": attr_value_2.slug},
+        ],
+    }
+    assert expected_assigned_choice_attribute in assigned_attributes
+
     assert AttributeValue.objects.count() == value_count
     updated_webhook_mock.assert_called_once_with(product)
 
@@ -2659,7 +3496,6 @@ def test_update_product_with_selectable_attribute_by_both_id_and_value(
     product,
     product_type,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -2694,15 +3530,15 @@ def test_update_product_with_selectable_attribute_by_both_id_and_value(
 
     assert not data["product"]
     assert len(errors) == 1
-    assert errors[0]["message"] == AttributeInputErrors.ERROR_ID_AND_VALUE[0]
+    assert errors[0]["message"] == AttributeInputErrors.ID_AND_VALUE_PROVIDED[0]
 
 
 @pytest.mark.parametrize(
     ("value", "expected_result"),
     [
-        ("", AttributeInputErrors.ERROR_NO_VALUE_GIVEN),
-        ("  ", AttributeInputErrors.ERROR_BLANK_VALUE),
-        (None, AttributeInputErrors.ERROR_NO_VALUE_GIVEN),
+        ("", AttributeInputErrors.VALUE_REQUIRED),
+        ("  ", AttributeInputErrors.BLANK_VALUE),
+        (None, AttributeInputErrors.VALUE_REQUIRED),
     ],
 )
 def test_update_product_with_selectable_attribute_value_required(
@@ -2713,7 +3549,6 @@ def test_update_product_with_selectable_attribute_value_required(
     product,
     product_type,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -2760,7 +3595,6 @@ def test_update_product_with_selectable_attribute_exceed_max_length(
     product,
     product_type,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -2795,14 +3629,13 @@ def test_update_product_with_selectable_attribute_exceed_max_length(
 
     assert not data["product"]
     assert len(errors) == 1
-    assert errors[0]["message"] == AttributeInputErrors.ERROR_MAX_LENGTH[0]
+    assert errors[0]["message"] == AttributeInputErrors.MAX_LENGTH_EXCEEDED[0]
 
 
 def test_update_product_with_multiselect_attribute_by_both_id_and_value(
     staff_api_client,
     product_with_multiple_values_attributes,
     permission_manage_products,
-    site_settings,
 ):
     # given
     query = MUTATION_UPDATE_PRODUCT
@@ -2838,7 +3671,7 @@ def test_update_product_with_multiselect_attribute_by_both_id_and_value(
 
     assert not data["product"]
     assert len(errors) == 1
-    assert errors[0]["message"] == AttributeInputErrors.ERROR_ID_AND_VALUE[0]
+    assert errors[0]["message"] == AttributeInputErrors.ID_AND_VALUE_PROVIDED[0]
 
 
 def test_update_product_with_multiselect_attribute_by_id_duplicated(
@@ -2880,7 +3713,7 @@ def test_update_product_with_multiselect_attribute_by_id_duplicated(
 
     assert not data["product"]
     assert len(errors) == 1
-    assert errors[0]["message"] == AttributeInputErrors.ERROR_DUPLICATED_VALUES[0]
+    assert errors[0]["message"] == AttributeInputErrors.DUPLICATED_VALUES[0]
 
 
 def test_update_product_with_multiselect_attribute_by_name_duplicated(
@@ -2924,7 +3757,7 @@ def test_update_product_with_multiselect_attribute_by_name_duplicated(
 
     assert not data["product"]
     assert len(errors) == 1
-    assert errors[0]["message"] == AttributeInputErrors.ERROR_DUPLICATED_VALUES[0]
+    assert errors[0]["message"] == AttributeInputErrors.DUPLICATED_VALUES[0]
 
 
 MUTATION_UPDATE_PRODUCT_BY_EXTERNAL_REFERENCE = """

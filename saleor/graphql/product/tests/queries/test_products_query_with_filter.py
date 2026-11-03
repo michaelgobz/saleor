@@ -138,7 +138,7 @@ def test_products_query_with_filter_numeric_attributes(
         category=category,
     )
     attr_value = AttributeValue.objects.create(
-        attribute=numeric_attribute, name="5", slug="5"
+        attribute=numeric_attribute, name="5", slug="5", numeric=5.0
     )
 
     associate_attribute_values_to_instance(
@@ -153,7 +153,7 @@ def test_products_query_with_filter_numeric_attributes(
         category=category,
     )
     attr_value = AttributeValue.objects.create(
-        attribute=numeric_attribute, name="5", slug="5_X"
+        attribute=numeric_attribute, name="5", slug="5_X", numeric=5.0
     )
 
     associate_attribute_values_to_instance(
@@ -370,7 +370,7 @@ def test_products_query_with_filter_by_attributes_values_and_range(
         category=category,
     )
     attr_value_2 = AttributeValue.objects.create(
-        attribute=numeric_attribute, name="5.2", slug="5_2"
+        attribute=numeric_attribute, name="5.2", slug="5_2", numeric=5.2
     )
 
     associate_attribute_values_to_instance(
@@ -1378,7 +1378,8 @@ def test_products_query_with_filter_search_by_numeric_attribute_value(
 
     numeric_attr_value = numeric_attribute.values.first()
     numeric_attr_value.name = "13456"
-    numeric_attr_value.save(update_fields=["name"])
+    numeric_attr_value.numeric = 13456
+    numeric_attr_value.save(update_fields=["name", "numeric"])
 
     associate_attribute_values_to_instance(
         product_with_numeric_attr,
@@ -1426,7 +1427,8 @@ def test_products_query_with_filter_search_by_numeric_attribute_value_without_un
 
     numeric_attr_value = numeric_attribute.values.first()
     numeric_attr_value.name = "13456"
-    numeric_attr_value.save(update_fields=["name"])
+    numeric_attr_value.numeric = 13456
+    numeric_attr_value.save(update_fields=["name", "numeric"])
 
     associate_attribute_values_to_instance(
         product_with_numeric_attr,
@@ -1612,14 +1614,20 @@ def test_products_query_with_is_published_filter_one_variant_without_price(
     assert len(products) == 1
 
 
+@pytest.mark.parametrize("include_shipping_zones", [True, False])
 def test_products_query_with_filter_stock_availability_as_staff(
+    include_shipping_zones,
     staff_api_client,
     product_list,
     order_line,
     permission_manage_products,
     channel_USD,
+    site_settings,
 ):
     # given
+    site_settings.use_legacy_shipping_zone_stock_availability = include_shipping_zones
+    site_settings.save(update_fields=["use_legacy_shipping_zone_stock_availability"])
+
     for product in product_list:
         stock = product.variants.first().stocks.first()
         Allocation.objects.create(
@@ -1645,7 +1653,9 @@ def test_products_query_with_filter_stock_availability_as_staff(
     assert len(products) == 3
 
 
+@pytest.mark.parametrize("include_shipping_zones", [True, False])
 def test_products_query_with_filter_stock_availability_including_reservations(
+    include_shipping_zones,
     staff_api_client,
     product_list,
     order_line,
@@ -1654,8 +1664,12 @@ def test_products_query_with_filter_stock_availability_including_reservations(
     channel_USD,
     warehouse_JPY,
     stock,
+    site_settings,
 ):
     # given
+    site_settings.use_legacy_shipping_zone_stock_availability = include_shipping_zones
+    site_settings.save(update_fields=["use_legacy_shipping_zone_stock_availability"])
+
     stocks = [product.variants.first().stocks.first() for product in product_list]
     stock.quantity = 50
     stock.product_variant = stocks[2].product_variant
@@ -1705,14 +1719,20 @@ def test_products_query_with_filter_stock_availability_including_reservations(
     )
 
 
+@pytest.mark.parametrize("include_shipping_zones", [True, False])
 def test_products_query_with_filter_stock_availability_as_user(
+    include_shipping_zones,
     user_api_client,
     product_list,
     order_line,
     permission_manage_products,
     channel_USD,
+    site_settings,
 ):
     # given
+    site_settings.use_legacy_shipping_zone_stock_availability = include_shipping_zones
+    site_settings.save(update_fields=["use_legacy_shipping_zone_stock_availability"])
+
     for product in product_list:
         stock = product.variants.first().stocks.first()
         Allocation.objects.create(
@@ -1770,14 +1790,50 @@ def test_products_query_with_filter_stock_availability_channel_without_shipping_
     assert products[0]["node"]["id"] == product_id
 
 
+def test_products_filter_stock_availability_without_shipping_zones_excluded_from_stock_calculations(
+    staff_api_client,
+    product,
+    permission_manage_products,
+    channel_USD,
+    site_settings,
+):
+    # given
+    site_settings.use_legacy_shipping_zone_stock_availability = False
+    site_settings.save(update_fields=["use_legacy_shipping_zone_stock_availability"])
+
+    channel_USD.shipping_zones.clear()
+    variables = {
+        "filter": {"stockAvailability": "IN_STOCK"},
+        "channel": channel_USD.slug,
+    }
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
+    content = get_graphql_content(response)
+
+    # then - with flag disabled, product is still in stock despite no shipping zones
+    products = content["data"]["products"]["edges"]
+    product_id = graphene.Node.to_global_id("Product", product.id)
+
+    assert len(products) == 1
+    assert products[0]["node"]["id"] == product_id
+
+
+@pytest.mark.parametrize("include_shipping_zones", [True, False])
 def test_products_query_with_filter_stock_availability_only_stock_in_cc_warehouse(
+    include_shipping_zones,
     user_api_client,
     product,
     order_line,
     channel_USD,
     warehouse_for_cc,
+    site_settings,
 ):
     # given
+    site_settings.use_legacy_shipping_zone_stock_availability = include_shipping_zones
+    site_settings.save(update_fields=["use_legacy_shipping_zone_stock_availability"])
+
     variant = product.variants.first()
     variant.stocks.all().delete()
 
@@ -1919,101 +1975,3 @@ def test_query_products_with_filter_ids(api_client, product_list, channel_USD):
 
     assert len(products_data) == 2
     assert [node["node"]["id"] for node in products_data] == product_ids
-
-
-def test_products_query_with_filter_has_preordered_variants_false(
-    staff_api_client,
-    preorder_variant_global_threshold,
-    product_without_shipping,
-    permission_manage_products,
-):
-    # given
-    product = product_without_shipping
-    variables = {"filter": {"hasPreorderedVariants": False}}
-    staff_api_client.user.user_permissions.add(permission_manage_products)
-
-    # when
-    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
-    content = get_graphql_content(response)
-
-    # then
-    product_id = graphene.Node.to_global_id("Product", product.id)
-    products = content["data"]["products"]["edges"]
-
-    assert len(products) == 1
-    assert products[0]["node"]["id"] == product_id
-    assert products[0]["node"]["name"] == product.name
-
-
-def test_products_query_with_filter_has_preordered_variants_true(
-    staff_api_client,
-    preorder_variant_global_threshold,
-    product_without_shipping,
-    permission_manage_products,
-):
-    # given
-    product = preorder_variant_global_threshold.product
-    variables = {"filter": {"hasPreorderedVariants": True}}
-    staff_api_client.user.user_permissions.add(permission_manage_products)
-
-    # when
-    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
-    content = get_graphql_content(response)
-
-    # then
-    product_id = graphene.Node.to_global_id("Product", product.id)
-    products = content["data"]["products"]["edges"]
-
-    assert len(products) == 1
-    assert products[0]["node"]["id"] == product_id
-    assert products[0]["node"]["name"] == product.name
-
-
-def test_products_query_with_filter_has_preordered_variants_before_end_date(
-    staff_api_client,
-    preorder_variant_global_threshold,
-    permission_manage_products,
-):
-    # given
-    variant = preorder_variant_global_threshold
-    variant.preorder_end_date = timezone.now() + datetime.timedelta(days=3)
-    variant.save(update_fields=["preorder_end_date"])
-
-    product = preorder_variant_global_threshold.product
-    variables = {"filter": {"hasPreorderedVariants": True}}
-    staff_api_client.user.user_permissions.add(permission_manage_products)
-
-    # when
-    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
-    content = get_graphql_content(response)
-
-    # then
-    product_id = graphene.Node.to_global_id("Product", product.id)
-    products = content["data"]["products"]["edges"]
-
-    assert len(products) == 1
-    assert products[0]["node"]["id"] == product_id
-    assert products[0]["node"]["name"] == product.name
-
-
-def test_products_query_with_filter_has_preordered_variants_after_end_date(
-    staff_api_client,
-    preorder_variant_global_threshold,
-    permission_manage_products,
-):
-    # given
-    variant = preorder_variant_global_threshold
-    variant.preorder_end_date = timezone.now() - datetime.timedelta(days=3)
-    variant.save(update_fields=["preorder_end_date"])
-
-    variables = {"filter": {"hasPreorderedVariants": True}}
-    staff_api_client.user.user_permissions.add(permission_manage_products)
-
-    # when
-    response = staff_api_client.post_graphql(QUERY_PRODUCTS_WITH_FILTER, variables)
-    content = get_graphql_content(response)
-
-    # then
-    products = content["data"]["products"]["edges"]
-
-    assert len(products) == 0

@@ -2,8 +2,11 @@ from django.db.models import Exists, OuterRef, QuerySet
 
 from ...channel.models import Channel
 from ...discount import models
-from ..channel import ChannelContext, ChannelQsContext
-from ..core.context import get_database_connection_name
+from ..core.context import (
+    ChannelContext,
+    ChannelQsContext,
+    get_database_connection_name,
+)
 from .filters import filter_sale_search, filter_voucher_search
 
 
@@ -14,6 +17,15 @@ def resolve_voucher(info, id, channel):
         .first()
     )
     return ChannelContext(node=sale, channel_slug=channel) if sale else None
+
+
+def resolve_voucher_by_external_reference(info, external_reference, channel):
+    voucher = (
+        models.Voucher.objects.using(get_database_connection_name(info.context))
+        .filter(external_reference=external_reference)
+        .first()
+    )
+    return ChannelContext(node=voucher, channel_slug=channel) if voucher else None
 
 
 def resolve_vouchers(info, channel_slug, **kwargs) -> ChannelQsContext:
@@ -63,6 +75,14 @@ def resolve_promotion(info, id):
     return (
         models.Promotion.objects.using(get_database_connection_name(info.context))
         .filter(id=id)
+        .first()
+    )
+
+
+def resolve_promotion_by_external_reference(info, external_reference):
+    return (
+        models.Promotion.objects.using(get_database_connection_name(info.context))
+        .filter(external_reference=external_reference)
         .first()
     )
 

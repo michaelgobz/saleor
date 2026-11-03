@@ -1,4 +1,6 @@
 import datetime
+import importlib.metadata
+import json
 import logging
 import os
 import os.path
@@ -10,7 +12,6 @@ import dj_database_url
 import dj_email_url
 import django_cache_url
 import django_stubs_ext
-import pkg_resources
 import sentry_sdk
 import sentry_sdk.utils
 from celery.schedules import crontab
@@ -28,11 +29,23 @@ from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScr
 
 from . import PatchedSubscriberExecutionContext, __version__
 from .account.i18n_rules_override import i18n_rules_override
+from .core.cleaners.html import HtmlCleanerSettings
 from .core.db.patch import patch_db
 from .core.languages import LANGUAGES as CORE_LANGUAGES
 from .core.rlimit import validate_and_set_rlimit
-from .core.schedules import initiated_promotion_webhook_schedule
-from .graphql.executor import patch_executor
+from .core.schedules import (
+    initiated_checkout_automatic_completion_schedule,
+    initiated_checkout_search_update_schedule,
+    initiated_gift_card_search_update_schedule,
+    initiated_page_search_update_schedule,
+    initiated_product_search_update_schedule,
+    initiated_promotion_webhook_schedule,
+)
+from .graphql.graphql_core import (
+    patch_execution_context,
+    patch_execution_result,
+    patch_executor,
+)
 from .graphql.promise import patch_promise
 from .patch_local import patch_local
 
@@ -113,13 +126,21 @@ DATABASE_CONNECTION_DEFAULT_NAME = "default"
 # This variable should be set to `replica`
 DATABASE_CONNECTION_REPLICA_NAME = "replica"
 
+if "DATABASE_URL_REPLICA" in os.environ:
+    DATABASE_URL_REPLICA_ENV_NAME = "DATABASE_URL_REPLICA"
+else:
+    # If replica env is not set, then always try to use the
+    # default env first.
+    DATABASE_URL_REPLICA_ENV_NAME = dj_database_url.DEFAULT_ENV
+
 DATABASES = {
     DATABASE_CONNECTION_DEFAULT_NAME: dj_database_url.config(
+        env=dj_database_url.DEFAULT_ENV,
         default="postgres://saleor:saleor@localhost:5432/saleor",
         conn_max_age=DB_CONN_MAX_AGE,
     ),
     DATABASE_CONNECTION_REPLICA_NAME: dj_database_url.config(
-        env="DATABASE_URL_REPLICA",
+        env=DATABASE_URL_REPLICA_ENV_NAME,
         default="postgres://saleor:saleor@localhost:5432/saleor",
         # TODO: We need to add read only user to saleor platform,
         # and we need to update docs.
@@ -350,6 +371,7 @@ LOGGING = {
             "datefmt": "%Y-%m-%dT%H:%M:%SZ",
             "format": (
                 "%(asctime)s %(levelname)s %(celeryTaskId)s %(celeryTaskName)s "
+                "%(message)s "
             ),
         },
         "celery_task_json": {
@@ -407,6 +429,11 @@ LOGGING = {
         },
     },
     "loggers": {
+        "django.request": {
+            "handlers": ["default"],
+            "level": "ERROR",
+            "propagate": False,
+        },
         "django": {"level": "INFO", "propagate": True},
         "django.server": {
             "handlers": ["django.server"],
@@ -414,6 +441,11 @@ LOGGING = {
             "propagate": False,
         },
         "celery.app.trace": {
+            "handlers": ["celery_app"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "celery.worker": {
             "handlers": ["celery_app"],
             "level": "INFO",
             "propagate": False,
@@ -439,6 +471,7 @@ LOGGING = {
     },
 }
 
+
 AUTH_USER_MODEL = "account.User"
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -458,9 +491,22 @@ DEFAULT_CURRENCY_CODE_LENGTH = 3
 # Following the recommendation of https://tools.ietf.org/html/rfc5322#section-2.1.1
 DEFAULT_MAX_EMAIL_DISPLAY_NAME_LENGTH = 78
 
-COUNTRIES_OVERRIDE = {"EU": "European Union"}
+COUNTRIES_OVERRIDE = {
+    "EU": "European Union",
+    "XK": "Kosovo",
+}
 
 MAX_USER_ADDRESSES = int(os.environ.get("MAX_USER_ADDRESSES", 100))
+MAX_IMAGE_FILE_SIZE = int(
+    os.environ.get("MAX_IMAGE_FILE_SIZE", 10 * 1024 * 1024)
+)  # 10MB
+
+# Maximum number of pixels (width * height) of an image we are willing to decode.
+# This bounds decode memory, which `MAX_IMAGE_FILE_SIZE` does not: an 8000x8000 WebP
+# is 0.11MB on disk but needs ~1GB of RAM to decode, because the encoded size says
+# nothing about the decoded size. The default admits 5000x5000 with some headroom.
+# Applied to Pillow in `CoreAppConfig.ready`.
+MAX_IMAGE_PIXELS = int(os.environ.get("MAX_IMAGE_PIXELS", 30_000_000))
 
 TEST_RUNNER = "saleor.tests.runner.PytestTestRunner"
 
@@ -495,7 +541,6 @@ AWS_S3_FILE_OVERWRITE = get_bool_from_env("AWS_S3_FILE_OVERWRITE", True)
 # Google Cloud Storage configuration
 # See https://django-storages.readthedocs.io/en/latest/backends/gcloud.html
 GS_PROJECT_ID = os.environ.get("GS_PROJECT_ID")
-GS_BUCKET_NAME = os.environ.get("GS_BUCKET_NAME")
 GS_BUCKET_NAME = os.environ.get("GS_BUCKET_NAME")
 GS_LOCATION = os.environ.get("GS_LOCATION", "")
 GS_CUSTOM_ENDPOINT = os.environ.get("GS_CUSTOM_ENDPOINT")
@@ -587,6 +632,12 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_BROKER_URL = (
     os.environ.get("CELERY_BROKER_URL", os.environ.get("CLOUDAMQP_URL")) or ""
 )
+
+# Mitigation of https://github.com/celery/kombu/issues/2400
+# Allows passing MessageGroupId for non-FIFO queues
+if CELERY_BROKER_URL.startswith("sqs://"):
+    CELERY_BROKER_TRANSPORT = "saleor.core.sqs.Transport"
+
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", None)
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_ALWAYS_EAGER = not CELERY_BROKER_URL
@@ -662,13 +713,27 @@ CELERY_BEAT_SCHEDULE = {
     },
     "update-products-search-vectors": {
         "task": "saleor.product.tasks.update_products_search_vector_task",
-        "schedule": datetime.timedelta(seconds=BEAT_UPDATE_SEARCH_SEC),
-        "options": {"expires": BEAT_UPDATE_SEARCH_EXPIRE_AFTER_SEC},
+        # Scheduled task that runs every 60 seconds to check for products
+        # requiring a search index rebuild.
+        "schedule": initiated_product_search_update_schedule,
     },
     "update-gift-cards-search-vectors": {
         "task": "saleor.giftcard.tasks.update_gift_cards_search_vector_task",
-        "schedule": datetime.timedelta(seconds=BEAT_UPDATE_SEARCH_SEC),
-        "options": {"expires": BEAT_UPDATE_SEARCH_EXPIRE_AFTER_SEC},
+        # Scheduled task that runs every 60 seconds to check for gift cards
+        # requiring a search index rebuild.
+        "schedule": initiated_gift_card_search_update_schedule,
+    },
+    "update-pages-search-vectors": {
+        "task": "saleor.page.tasks.update_pages_search_vector_task",
+        # Scheduled task that runs every 60 seconds to check for pages
+        # requiring a search index rebuild.
+        "schedule": initiated_page_search_update_schedule,
+    },
+    "update-checkouts-search-vectors": {
+        "task": "saleor.checkout.tasks.update_checkouts_search_vector_task",
+        # Scheduled task that runs every 60 seconds to check for checkouts
+        # requiring a search index rebuild.
+        "schedule": initiated_checkout_search_update_schedule,
     },
     "expire-orders": {
         "task": "saleor.order.tasks.expire_orders_task",
@@ -694,6 +759,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "saleor.product.tasks.recalculate_discounted_price_for_products_task",
         "schedule": datetime.timedelta(seconds=BEAT_PRICE_RECALCULATION_SCHEDULE),
         "options": {"expires": BEAT_PRICE_RECALCULATION_SCHEDULE_EXPIRE_AFTER_SEC},
+    },
+    "checkout-automatic-completion": {
+        # Scheduled task that runs every 60 seconds to check for checkout
+        # readiness for automatic completion.
+        "task": "saleor.checkout.tasks.trigger_automatic_checkout_completion_task",
+        "schedule": initiated_checkout_automatic_completion_schedule,
     },
 }
 
@@ -793,6 +864,14 @@ def SENTRY_INIT(dsn: str, sentry_opts: dict):
         "street_address_1",
         "street_address_2",
         "user_email",
+        # Order/customer filter input (`customer` CharFilter) accepts a raw
+        # email or name fragment as a scalar string value, so the PII lives
+        # directly under the `customer` key rather than a nested `email` key.
+        # It must be denylisted by name; recursion alone won't redact it.
+        "customer",
+        "line1",
+        "line2",
+        "from_street_address",
     ]
 
     sentry_sdk.init(
@@ -800,7 +879,9 @@ def SENTRY_INIT(dsn: str, sentry_opts: dict):
         release=__version__,
         send_default_pii=False,
         event_scrubber=EventScrubber(
-            denylist=SALEOR_DENYLIST, pii_denylist=SALEOR_PII_DENYLIST
+            denylist=SALEOR_DENYLIST,
+            pii_denylist=SALEOR_PII_DENYLIST,
+            recursive=True,
         ),
         **sentry_opts,
     )
@@ -808,8 +889,20 @@ def SENTRY_INIT(dsn: str, sentry_opts: dict):
     ignore_logger("graphql.execution.executor")
 
 
+# Number of seconds after which GraphQL requests will marked
+# as slow (error status)
+GRAPHQL_SPANS_MARK_SLOW_AFTER: float = 30.0
+
 GRAPHQL_PAGINATION_LIMIT = 100
 GRAPHQL_MIDDLEWARE: list[str] = []
+GRAPHQL_BATCH_MAX_COUNT: int = int(os.environ.get("GRAPHQL_BATCH_MAX_COUNT", 1))
+GRAPHQL_ALIAS_COUNT_LIMIT: int = int(os.environ.get("GRAPHQL_ALIAS_COUNT_LIMIT", 100))
+GRAPHQL_MUTATION_COUNT_LIMIT: int = int(
+    os.environ.get("GRAPHQL_MUTATION_COUNT_LIMIT", 4)
+)
+
+# Maximum number of IDs accepted by a single bulk delete mutation call
+BULK_DELETE_LIMIT: int = int(os.environ.get("BULK_DELETE_LIMIT", 100))
 
 # Set GRAPHQL_QUERY_MAX_COMPLEXITY=0 in env to disable (not recommended)
 GRAPHQL_QUERY_MAX_COMPLEXITY = int(
@@ -822,28 +915,46 @@ GRAPHQL_QUERY_MAX_COMPLEXITY = int(
 # Set FEDERATED_QUERY_MAX_ENTITIES=0 in env to disable (not recommended)
 FEDERATED_QUERY_MAX_ENTITIES = int(os.environ.get("FEDERATED_QUERY_MAX_ENTITIES", 100))
 
+# Optional - Python import path of a GraphQL resolver to allow Saleor to return
+# announcements. See ``saleor/site/apps.py`` and ``saleor/graphql/shop/types.py``
+# for details around the Announcements API.
+#
+# Value must be an import path, e.g.:
+#   SHOP_ANNOUNCEMENT_RESOLVER_IMPORT="saleor.custom.announcements.resolve_announcements"
+#
+# Where ``resolve_announcements`` should have the following signature:
+#
+# >>> from saleor.graphql.shop.types import Announcement
+# >>>
+# >>> def resolve_announcements() -> list[Announcement]: ...
+SHOP_ANNOUNCEMENT_RESOLVER_IMPORT = None
+
+# Optional - Python import path of a function returning the namespace (the
+# Postgres `classid` integer) used by ``saleor.core.db.locks`` for advisory
+# locks. When unset, the built-in default namespace is used.
+#
+# Value must be an import path, e.g.:
+#   ADVISORY_LOCK_NAMESPACE_IMPORT="saleor.custom.locks.get_namespace"
+#
+# Where ``get_namespace`` should have the following signature:
+#
+# >>> def get_namespace() -> int: ...
+ADVISORY_LOCK_NAMESPACE_IMPORT = None
+
 BUILTIN_PLUGINS = [
-    "saleor.plugins.avatax.plugin.AvataxPlugin",
+    "saleor.plugins.avatax.plugin.DeprecatedAvataxPlugin",
     "saleor.plugins.webhook.plugin.WebhookPlugin",
-    "saleor.payment.gateways.dummy.plugin.DummyGatewayPlugin",
-    "saleor.payment.gateways.dummy_credit_card.plugin.DummyCreditCardGatewayPlugin",
     "saleor.payment.gateways.stripe.plugin.StripeGatewayPlugin",
-    "saleor.payment.gateways.braintree.plugin.BraintreeGatewayPlugin",
-    "saleor.payment.gateways.razorpay.plugin.RazorpayGatewayPlugin",
-    "saleor.payment.gateways.adyen.plugin.AdyenGatewayPlugin",
-    "saleor.payment.gateways.authorize_net.plugin.AuthorizeNetGatewayPlugin",
-    "saleor.payment.gateways.np_atobarai.plugin.NPAtobaraiGatewayPlugin",
     "saleor.plugins.user_email.plugin.UserEmailPlugin",
     "saleor.plugins.admin_email.plugin.AdminEmailPlugin",
-    "saleor.plugins.sendgrid.plugin.SendgridEmailPlugin",
     "saleor.plugins.openid_connect.plugin.OpenIDConnectPlugin",
 ]
 
 # Plugin discovery
 EXTERNAL_PLUGINS = []
-installed_plugins = pkg_resources.iter_entry_points("saleor.plugins")
+installed_plugins = importlib.metadata.entry_points(group="saleor.plugins")
 for entry_point in installed_plugins:
-    plugin_path = f"{entry_point.module_name}.{entry_point.attrs[0]}"
+    plugin_path = f"{entry_point.module}.{entry_point.attr}"
     if plugin_path not in BUILTIN_PLUGINS and plugin_path not in EXTERNAL_PLUGINS:
         if entry_point.name not in INSTALLED_APPS:
             INSTALLED_APPS.append(entry_point.name)
@@ -878,7 +989,6 @@ CACHE_URL = (
 CACHES = {"default": django_cache_url.config()}
 CACHES["default"]["TIMEOUT"] = parse(os.environ.get("CACHE_TIMEOUT", "7 days"))
 
-JWT_EXPIRE = True
 JWT_TTL_ACCESS = datetime.timedelta(
     seconds=parse(os.environ.get("JWT_TTL_ACCESS", "5 minutes"))
 )
@@ -897,6 +1007,9 @@ JWT_TTL_REQUEST_EMAIL_CHANGE = datetime.timedelta(
 CHECKOUT_PRICES_TTL = datetime.timedelta(
     seconds=parse(os.environ.get("CHECKOUT_PRICES_TTL", "1 hour"))
 )
+CHECKOUT_DELIVERY_OPTIONS_TTL = datetime.timedelta(
+    seconds=parse(os.environ.get("CHECKOUT_DELIVERY_OPTIONS_TTL", "24 hours"))
+)
 
 CHECKOUT_TTL_BEFORE_RELEASING_FUNDS = datetime.timedelta(
     seconds=parse(os.environ.get("CHECKOUT_TTL_BEFORE_RELEASING_FUNDS", "6 hours"))
@@ -904,7 +1017,13 @@ CHECKOUT_TTL_BEFORE_RELEASING_FUNDS = datetime.timedelta(
 TRANSACTION_BATCH_FOR_RELEASING_FUNDS = os.environ.get(
     "TRANSACTION_BATCH_FOR_RELEASING_FUNDS", 60
 )
-
+# Oldest checkout modification for automatic completion. Older checkouts will not be
+# processed.
+AUTOMATIC_CHECKOUT_COMPLETION_OLDEST_MODIFIED = datetime.timedelta(
+    seconds=parse(
+        os.environ.get("AUTOMATIC_CHECKOUT_COMPLETION_OLDEST_MODIFIED", "30 days")
+    )
+)
 
 # The maximum SearchVector expression count allowed per index SQL statement
 # If the count is exceeded, the expression list will be truncated
@@ -915,12 +1034,39 @@ SEARCH_ORDERS_MAX_INDEXED_TRANSACTIONS = 20
 SEARCH_ORDERS_MAX_INDEXED_PAYMENTS = 20
 SEARCH_ORDERS_MAX_INDEXED_DISCOUNTS = 20
 SEARCH_ORDERS_MAX_INDEXED_LINES = 100
+SEARCH_ORDERS_MAX_INDEXED_INVOICES = 20
+SEARCH_ORDERS_MAX_INDEXED_EVENTS = 50
 
 # Maximum related objects that can be indexed in a product
 PRODUCT_MAX_INDEXED_ATTRIBUTES = 1000
 PRODUCT_MAX_INDEXED_ATTRIBUTE_VALUES = 100
 PRODUCT_MAX_INDEXED_VARIANTS = 1000
 
+# Maximum related objects that can be indexed in a page
+PAGE_MAX_INDEXED_ATTRIBUTES = 1000
+PAGE_MAX_INDEXED_ATTRIBUTE_VALUES = 100
+
+# Maximum related objects that can be indexed in a gift card
+GIFT_CARD_MAX_INDEXED_TAGS = 100
+
+# Maximum related objects that can be indexed in a checkout
+CHECKOUT_MAX_INDEXED_LINES = 100
+CHECKOUT_MAX_INDEXED_TRANSACTIONS = 20
+CHECKOUT_MAX_INDEXED_PAYMENTS = 20
+
+# Number of parallel tasks to spawn for updating checkout search vectors.
+# Each task processes a batch of checkouts concurrently to improve throughput.
+CHECKOUT_SEARCH_UPDATE_PARALLEL_TASKS = int(
+    os.environ.get("CHECKOUT_SEARCH_UPDATE_PARALLEL_TASKS", 5)
+)
+
+# Sets the default behavior for new Saleor installations.
+# When set to 'False', it disables account merging by default in DB
+# migrations, and when to 'True', it enables account merging but requires
+# password confirmation.
+# This setting has no effect against existing Saleor installations and
+# shouldn't be changed.
+ACCOUNT_CONFIRM_ASSOCIATE_ANONYMOUS_OBJECTS = False
 
 # Patch SubscriberExecutionContext class from `graphql-core-legacy` package
 # to fix bug causing not returning errors for subscription queries.
@@ -928,6 +1074,9 @@ PRODUCT_MAX_INDEXED_VARIANTS = 1000
 executor.SubscriberExecutionContext = PatchedSubscriberExecutionContext  # type: ignore[assignment,misc]
 
 patch_executor()
+
+# Default queue into which messages will be pushed.
+CELERY_TASK_DEFAULT_QUEUE = os.environ.get("CELERY_TASK_DEFAULT_QUEUE", "celery")
 
 # Optional queue names for Celery tasks.
 # Set None to route to the default queue, or a string value to use a separate one
@@ -938,6 +1087,11 @@ UPDATE_SEARCH_VECTOR_INDEX_QUEUE_NAME = os.environ.get(
 )
 # Queue name for "async webhook" events
 WEBHOOK_CELERY_QUEUE_NAME = os.environ.get("WEBHOOK_CELERY_QUEUE_NAME", None)
+
+WEBHOOK_DEFERRED_PAYLOAD_QUEUE_NAME = os.environ.get(
+    "WEBHOOK_DEFERRED_PAYLOAD_QUEUE_NAME", None
+)
+
 WEBHOOK_SQS_CELERY_QUEUE_NAME = os.environ.get(
     "WEBHOOK_SQS_CELERY_QUEUE_NAME", WEBHOOK_CELERY_QUEUE_NAME
 )
@@ -962,6 +1116,13 @@ COLLECTION_PRODUCT_UPDATED_QUEUE_NAME = os.environ.get(
 AUTOMATIC_CHECKOUT_COMPLETION_QUEUE_NAME = os.environ.get(
     "AUTOMATIC_CHECKOUT_COMPLETION_QUEUE_NAME", None
 )
+
+# Queue name for Celery data migration tasks
+DATA_MIGRATIONS_TASKS_QUEUE_NAME = os.environ.get(
+    "DATA_MIGRATIONS_TASKS_QUEUE_NAME", None
+)
+
+FETCH_IMAGES_QUEUE_NAME = os.environ.get("FETCH_IMAGES_QUEUE_NAME", None)
 
 # Lock time for request password reset mutation per user (seconds)
 RESET_PASSWORD_LOCK_TIME = parse(
@@ -1007,6 +1168,11 @@ ORDER_RULES_LIMIT = os.environ.get("ORDER_RULES_LIMIT", 100)
 # The max number of gits assigned to promotion rule
 GIFTS_LIMIT_PER_RULE = os.environ.get("GIFTS_LIMIT_PER_RULE", 500)
 
+# Default automatic completion delay for checkout in minutes.
+DEFAULT_AUTOMATIC_CHECKOUT_COMPLETION_DELAY = int(
+    os.environ.get("AUTOMATIC_CHECKOUT_COMPLETION_DELAY", 30)
+)
+
 # Whether to enable the comparison of pre-save and post-save webhook payloads in
 # mutations, in order to limit sending webhooks where the payload has not changed as
 # a result of the mutation. Note: this works only for subscriptions webhooks; legacy
@@ -1049,9 +1215,89 @@ BREAKER_BOARD_DRY_RUN_SYNC_EVENTS = get_list(
 
 TELEMETRY_TRACER_CLASS = "saleor.core.telemetry.trace.Tracer"
 TELEMETRY_METER_CLASS = "saleor.core.telemetry.metric.Meter"
+# OpenTelemetry library instrumentors enabled when telemetry is initialized, by
+# entry point name in the `opentelemetry_instrumentor` group (registered by the
+# opentelemetry-instrumentation-* packages). They produce spans for database
+# queries, cache and broker calls, AWS calls and Celery tasks. The
+# threading instrumentor produces no spans of its own, it carries the current trace
+# context into threads and thread pools (for example the ones boto3 uses for S3
+# uploads and downloads), so spans created there keep their parent.
+#
+# The requests instrumentor (opentelemetry-instrumentation-requests) is deliberately not installed and must not be added here. It opens its own span for every outgoing HTTP request and writes that span's context into the `traceparent` header. For webhooks this overwrites the `traceparent` that `send_webhook_using_http` injects for the `webhooks.<event>` span, so apps would continue the instrumentor's span instead of the webhook span, and the header sent would differ from the one stored in the delivery attempt's `request_headers`. Every other outgoing call would get a `traceparent` with internal span ids.
+#
+# Set to an empty string to disable library instrumentation.
+TELEMETRY_INSTRUMENTORS = get_list(
+    os.environ.get("TELEMETRY_INSTRUMENTORS", "psycopg,celery,redis,botocore,threading")
+)
 # Whether to raise or log exceptions for telemetry unit conversion errors
 # Disabled by default to prevent disruptions caused by unexpected unit conversion issues
 TELEMETRY_RAISE_UNIT_CONVERSION_ERRORS = False
+# The default threshold for slow operations is set to 1 second, based on production monitoring data.
+# Only a small percentage of queries are expected to exceed this threshold.
+TELEMETRY_SLOW_GRAPHQL_OPERATION_THRESHOLD = float(
+    os.environ.get("TELEMETRY_SLOW_GRAPHQL_OPERATION_THRESHOLD", 1.0)
+)
+
+# Additional hash suffix, allowing to invalidate cached schema. In production usually we want this to be empty.
+# For development envs, where schema may change often, it may be convenient to set it to e.g. commit hash value.
+GRAPHQL_CACHE_SUFFIX = os.environ.get("GRAPHQL_CACHE_SUFFIX", "")
+
+# Maximum depth for EditorJS nested lists. This value shouldn't be set too high to
+# prevent abuses. It's not recommended to increase it further than 10, if strictly
+# necessary (not recommended), it could be increase up to 100.
+#
+# HINT: in the frontend configuration, set `maxLevel` to the same value to improve
+#       user-experience on the client-side (https://github.com/editor-js/list/blob/f8cde313224499ed5bcf3e93864fc11c45fe7efb/README.md#config-params)
+EDITOR_JS_LISTS_MAX_DEPTH = int(os.environ.get("EDITOR_JS_LISTS_MAX_DEPTH", 10))
+
+HTML_CLEANER_PREFS = HtmlCleanerSettings.parse()
+
+# File upload settings
+# Allowed mime types for file uploads (safe, non-executable formats)
+# Dict structure: {<mime-type>: [<extensions>]}
+ALLOWED_MIME_TYPES = {
+    "image/avif": [".avif"],
+    "image/bmp": [".bmp"],
+    "image/gif": [".gif"],
+    "image/jpeg": [".jpg", ".jpeg", ".jpe", ".jfif"],
+    "image/png": [".png"],
+    "image/tiff": [".tiff", ".tif"],
+    "image/webp": [".webp"],
+    # Documents
+    "application/msword": [".doc"],
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [
+        ".docx"
+    ],
+    "application/vnd.ms-excel": [".xls"],
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+    "application/vnd.ms-powerpoint": [".ppt"],
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": [
+        ".pptx"
+    ],
+    # Videos
+    "video/mp4": [".mp4"],
+    "video/webm": [".webm"],
+    "video/ogg": [".ogv", ".ogg"],
+    "video/quicktime": [".mov"],
+    # Audio
+    "audio/mpeg": [".mp3", ".mpeg"],
+    "audio/mp4": [".m4a"],
+    "audio/webm": [".weba"],
+    "audio/ogg": [".oga", ".ogg"],
+    "audio/wav": [".wav"],
+    # Text (plain only)
+    "text/plain": [".txt"],
+    "text/csv": [".csv"],
+}
+ALLOWED_MIME_TYPES.update(
+    json.loads(os.environ.get("UPLOAD_ADDITIONAL_ALLOWED_MIME_TYPES", "{}"))
+)
+
+# Usage telemetry
+SEND_USAGE_TELEMETRY = get_bool_from_env("SEND_USAGE_TELEMETRY", True)
+SEND_USAGE_TELEMETRY_AFTER_TIMEDELTA = datetime.timedelta(
+    seconds=parse(os.environ.get("SEND_USAGE_TELEMETRY_AFTER_TIMEDELTA", "1 day"))
+)
 
 # Library `google-i18n-address` use `AddressValidationMetadata` form Google to provide address validation rules.
 # Patch `i18n` module to allows to override the default address rules.
@@ -1069,3 +1315,11 @@ patch_db()
 # Patch `Local` to remove all references that could result in reference cycles,
 # allowing memory to be freed immediately, without the need of a deep garbage collection cycle.
 patch_local()
+
+# Patch `ExecutionContext` to remove all references that could result in reference cycles,
+# allowing memory to be freed immediately, without the need of a deep garbage collection cycle.
+patch_execution_context()
+
+# Patch `ExecutionResult` to remove all references that could result in reference cycles,
+# allowing memory to be freed immediately, without the need of a deep garbage collection cycle.
+patch_execution_result()

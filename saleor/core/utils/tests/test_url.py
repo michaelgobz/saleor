@@ -21,12 +21,12 @@ def test_prepare_url_with_existing_query():
     assert result == f"{redirect_url}&param3=abc&param4=xyz"
 
 
-def test_get_default_storage_root_url(site_settings):
+def test_get_default_storage_root_url():
     # when
     root_url = get_default_storage_root_url()
 
     # then
-    assert root_url == f"http://{site_settings.site.domain}{settings.MEDIA_URL}"
+    assert root_url == f"https://example.com{settings.MEDIA_URL}"
 
 
 @pytest.mark.parametrize(
@@ -51,3 +51,27 @@ def test_get_default_storage_root_url(site_settings):
 )
 def test_sanitize_url_for_logging(url, expected):
     assert sanitize_url_for_logging(url) == expected
+
+
+@pytest.mark.parametrize(
+    ("strip_querystring", "strip_fragment", "expected"),
+    [
+        (False, False, "https://***:***@example.com/test?token=secret#frag"),
+        (True, False, "https://***:***@example.com/test#frag"),
+        (False, True, "https://***:***@example.com/test?token=secret"),
+        (True, True, "https://***:***@example.com/test"),
+    ],
+)
+def test_sanitize_url_for_logging_strips_querystring_and_fragment(
+    strip_querystring, strip_fragment, expected
+):
+    # given
+    url = "https://user:password@example.com/test?token=secret#frag"
+
+    # when
+    result = sanitize_url_for_logging(
+        url, strip_querystring=strip_querystring, strip_fragment=strip_fragment
+    )
+
+    # then
+    assert result == expected

@@ -6,9 +6,10 @@ from .....core.tracing import traced_atomic_transaction
 from .....discount.utils.promotion import mark_active_catalogue_promotion_rules_as_dirty
 from .....permission.enums import ProductPermissions
 from .....product import models
-from ....attribute.utils import AttrValuesInput, ProductAttributeAssignmentMixin
-from ....channel import ChannelContext
+from ....attribute.utils.attribute_assignment import AttributeAssignmentMixin
+from ....attribute.utils.shared import AttrValuesInput
 from ....core import ResolveInfo
+from ....core.context import ChannelContext
 from ....core.mutations import ModelWithExtRefMutation
 from ....core.types.common import ProductError
 from ....core.validators import clean_seo_fields
@@ -50,7 +51,7 @@ class ProductUpdate(ModelWithExtRefMutation):
         # prefetch them.
         object_id = cls.get_object_id(**data)
         if object_id and data.get("attributes"):
-            # Prefetches needed by ProductAttributeAssignmentMixin and
+            # Prefetches needed by AttributeAssignmentMixin and
             # associate_attribute_values_to_instance
             qs = cls.Meta.model.objects.prefetch_related(
                 "product_type__product_attributes__values",
@@ -84,10 +85,8 @@ class ProductUpdate(ModelWithExtRefMutation):
         if attributes and product_type:
             try:
                 attributes_qs = product_type.product_attributes.all()
-                cleaned_input["attributes"] = (
-                    ProductAttributeAssignmentMixin.clean_input(
-                        attributes, attributes_qs, creation=False
-                    )
+                cleaned_input["attributes"] = AttributeAssignmentMixin.clean_input(
+                    attributes, attributes_qs, creation=False
                 )
             except ValidationError as e:
                 raise ValidationError({"attributes": e}) from e
@@ -109,13 +108,13 @@ class ProductUpdate(ModelWithExtRefMutation):
         )
 
     @classmethod
-    def save(cls, info: ResolveInfo, instance, cleaned_input):
+    def save(cls, info: ResolveInfo, instance, cleaned_input, instance_tracker=None):
         with traced_atomic_transaction():
             instance.search_index_dirty = True
             instance.save()
             attributes = cleaned_input.get("attributes")
             if attributes:
-                ProductAttributeAssignmentMixin.save(instance, attributes)
+                AttributeAssignmentMixin.save(instance, attributes)
 
     @classmethod
     def _save_m2m(cls, _info: ResolveInfo, instance, cleaned_data):

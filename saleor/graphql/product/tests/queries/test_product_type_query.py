@@ -355,10 +355,11 @@ def test_product_type_query_only_assigned_variant_selections_value_set(
 
 QUERY_AVAILABLE_ATTRIBUTES = """
     query(
-        $productTypeId:ID!, $filters: AttributeFilterInput, $where: AttributeWhereInput
+        $productTypeId:ID!, $filters: AttributeFilterInput, $where: AttributeWhereInput,
+        $search: String
     ) {
       productType(id: $productTypeId) {
-        availableAttributes(first: 10, filter: $filters, where: $where) {
+        availableAttributes(first: 10, filter: $filters, where: $where, search: $search) {
           edges {
             node {
               id
@@ -447,6 +448,42 @@ def test_product_type_get_unassigned_product_type_attributes(
     assert received_ids == expected_ids
 
 
+def test_product_type_no_available_attributes_when_all_are_assigned(
+    staff_api_client, permission_manage_products
+):
+    # given a product type that has every product type attribute assigned
+    product_type = ProductType.objects.create(
+        name="Fully assigned", slug="fully-assigned", kind=ProductTypeKind.NORMAL
+    )
+    product_attribute, variant_attribute = Attribute.objects.bulk_create(
+        [
+            Attribute(slug="color", name="Color", type=AttributeType.PRODUCT_TYPE),
+            Attribute(slug="size", name="Size", type=AttributeType.PRODUCT_TYPE),
+        ]
+    )
+    product_type.product_attributes.add(product_attribute)
+    product_type.variant_attributes.add(variant_attribute)
+    assert not Attribute.objects.get_unassigned_product_type_attributes(
+        product_type.pk
+    ).exists()
+
+    # when
+    available_attributes = get_graphql_content(
+        staff_api_client.post_graphql(
+            QUERY_AVAILABLE_ATTRIBUTES,
+            {
+                "productTypeId": graphene.Node.to_global_id(
+                    "ProductType", product_type.pk
+                )
+            },
+            permissions=[permission_manage_products],
+        )
+    )["data"]["productType"]["availableAttributes"]["edges"]
+
+    # then
+    assert available_attributes == []
+
+
 def test_product_type_filter_unassigned_attributes(
     staff_api_client, permission_manage_products, product_type_attribute_list
 ):
@@ -491,6 +528,34 @@ def test_product_type_where_filter_unassigned_attributes(
         )
     )["data"]["productType"]["availableAttributes"]["edges"]
 
+    assert len(found_attributes) == 1
+
+    _, attribute_id = graphene.Node.from_global_id(found_attributes[0]["node"]["id"])
+    assert attribute_id == str(expected_attribute.pk)
+
+
+def test_product_type_search_unassigned_attributes(
+    staff_api_client, permission_manage_products, product_type_attribute_list
+):
+    # given
+    expected_attribute = product_type_attribute_list[0]
+    query = QUERY_AVAILABLE_ATTRIBUTES
+    product_type = ProductType.objects.create(
+        name="Empty Type", kind=ProductTypeKind.NORMAL
+    )
+    product_type_id = graphene.Node.to_global_id("ProductType", product_type.pk)
+    filters = {"search": expected_attribute.name}
+
+    # when
+    found_attributes = get_graphql_content(
+        staff_api_client.post_graphql(
+            query,
+            {"productTypeId": product_type_id, "filters": filters},
+            permissions=[permission_manage_products],
+        )
+    )["data"]["productType"]["availableAttributes"]["edges"]
+
+    # then
     assert len(found_attributes) == 1
 
     _, attribute_id = graphene.Node.from_global_id(found_attributes[0]["node"]["id"])
@@ -550,7 +615,7 @@ def test_query_product_type_for_federation(api_client, product, channel_USD):
         ],
     }
     query = """
-      query GetProductTypeInFederation($representations: [_Any]) {
+      query GetProductTypeInFederation($representations: [_Any!]!) {
         _entities(representations: $representations) {
           __typename
           ... on ProductType {

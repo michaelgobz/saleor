@@ -1,4 +1,4 @@
-from functools import partial
+from functools import partial, wraps
 
 import graphql
 from django.urls import reverse
@@ -6,6 +6,8 @@ from django.utils.functional import SimpleLazyObject
 from graphql import (
     GraphQLCachedBackend,
     GraphQLCoreBackend,
+    GraphQLInterfaceType,
+    GraphQLObjectType,
     GraphQLScalarType,
     GraphQLSchema,
     execute,
@@ -20,6 +22,7 @@ from ..graphql.notifications.schema import ExternalNotificationMutations
 from .account.schema import AccountMutations, AccountQueries
 from .app.schema import AppMutations, AppQueries
 from .attribute.schema import AttributeMutations, AttributeQueries
+from .attribute.types import ASSIGNED_ATTRIBUTE_TYPES
 from .channel.schema import ChannelMutations, ChannelQueries
 from .checkout.schema import CheckoutMutations, CheckoutQueries
 from .core.enums import unit_enums
@@ -31,9 +34,10 @@ from .giftcard.schema import GiftCardMutations, GiftCardQueries
 from .invoice.schema import InvoiceMutations
 from .menu.schema import MenuMutations, MenuQueries
 from .meta.schema import MetaMutations
+from .metrics import record_field_usage
 from .order.schema import OrderMutations, OrderQueries
 from .page.schema import PageMutations, PageQueries
-from .payment.schema import PaymentMutations, PaymentQueries
+from .payment.schema import PAYMENT_ADDITIONAL_TYPES, PaymentMutations, PaymentQueries
 from .plugins.schema import PluginsMutations, PluginsQueries
 from .product.schema import ProductMutations, ProductQueries
 from .shipping.schema import ShippingMutations, ShippingQueries
@@ -50,6 +54,39 @@ from .webhook.schema import WebhookMutations, WebhookQueries
 from .webhook.subscription_types import WEBHOOK_TYPES_MAP, Subscription
 
 API_PATH = SimpleLazyObject(lambda: reverse("api"))
+
+
+def monitor_fields_usage(schema: graphql.GraphQLSchema) -> None:
+    """Wrap resolvers of tracked fields to record usage metrics on each call.
+
+    A field is tracked when at least one of the following is true:
+    - `deprecation_reason` is set.
+    - `monitor_usage=True` is passed to a `BaseField` declaration.
+    """
+    for gql_type in schema.get_type_map().values():
+        if not isinstance(
+            gql_type, GraphQLObjectType | GraphQLInterfaceType
+        ) or gql_type.name.startswith("__"):
+            continue
+        for gql_field_name, gql_field in gql_type.fields.items():
+            if gql_field.resolver is None:
+                continue
+            is_deprecated = bool(gql_field.deprecation_reason)
+            should_monitor = getattr(gql_field.resolver, "monitor_usage", False)
+            if not is_deprecated and not should_monitor:
+                continue
+
+            def wrapper(original, type_name, field_name, deprecated):
+                @wraps(original)
+                def _wrapper(*args, **kwargs):
+                    record_field_usage(type_name, field_name, deprecated)
+                    return original(*args, **kwargs)
+
+                return _wrapper
+
+            gql_field.resolver = wrapper(
+                gql_field.resolver, gql_type.name, gql_field_name, is_deprecated
+            )
 
 
 class Query(
@@ -123,6 +160,7 @@ GraphQLDocDirective = graphql.GraphQLDirective(
         graphql.DirectiveLocation.FIELD_DEFINITION,
         graphql.DirectiveLocation.INPUT_OBJECT,
         graphql.DirectiveLocation.OBJECT,
+        graphql.DirectiveLocation.INTERFACE,
     ],
 )
 
@@ -176,11 +214,17 @@ GraphQLWebhookEventsInfoDirective = graphql.GraphQLDirective(
 schema = build_federated_schema(
     Query,
     mutation=Mutation,
-    types=unit_enums + list(WEBHOOK_TYPES_MAP.values()),
+    types=(
+        unit_enums
+        + list(WEBHOOK_TYPES_MAP.values())
+        + PAYMENT_ADDITIONAL_TYPES
+        + ASSIGNED_ATTRIBUTE_TYPES
+    ),
     subscription=Subscription,
     directives=graphql.specified_directives
     + [GraphQLDocDirective, GraphQLWebhookEventsInfoDirective],
 )
+monitor_fields_usage(schema)
 
 
 def _fail(errors, **_kwargs) -> ExecutionResult:

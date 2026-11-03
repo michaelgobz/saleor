@@ -1,5 +1,6 @@
 import logging
 from typing import cast
+from urllib.parse import urlparse
 
 from authlib.common.errors import AuthlibBaseError
 from django.core import signing
@@ -42,6 +43,7 @@ from .utils import (
     get_user_from_token,
     is_owner_of_token_valid,
     send_user_event,
+    update_is_staff,
     validate_refresh_token,
 )
 
@@ -218,6 +220,45 @@ class OpenIDConnectPlugin(BasePlugin):
                 }
             )
 
+    def _is_google_provider(self) -> bool:
+        """Detect Google as the OIDC provider from configured URLs."""
+        urls_to_check = [
+            self.config.authorization_url or "",
+            self.config.json_web_key_set_url or "",
+            self.config.token_url or "",
+        ]
+        google_domains = {"accounts.google.com", "googleapis.com", "www.googleapis.com"}
+        return any(
+            urlparse(url).hostname in google_domains for url in urls_to_check if url
+        )
+
+    def _is_cognito_provider(self) -> bool:
+        """Detect AWS Cognito as the OIDC provider from the JWKS URL.
+
+        Cognito JWKS URLs follow the pattern:
+        https://cognito-idp.<Region>.amazonaws.com/<userPoolId>/.well-known/jwks.json
+        """
+        return bool(
+            self.config.json_web_key_set_url
+            and "cognito-idp." in self.config.json_web_key_set_url
+        )
+
+    def _should_include_offline_access_scope(self) -> bool:
+        if not self.config.enable_refresh_token:
+            return False
+        if not self.config.json_web_key_set_url:
+            return False
+        if self._is_cognito_provider():
+            # AWS Cognito does not support this scope, refresh tokens are issued
+            # out of the box.
+            return False
+        if self._is_google_provider():
+            # Google uses `access_type=offline` as an authorization parameter
+            # instead of the `offline_access` scope. The parameter is added in
+            # `external_authentication_url`.
+            return False
+        return True
+
     def _get_oauth_session(self):
         scope = "openid profile email"
         if self.config.use_scope_permissions:
@@ -225,7 +266,7 @@ class OpenIDConnectPlugin(BasePlugin):
             permissions.append(SALEOR_STAFF_PERMISSION)
             scope_permissions = " ".join(permissions)
             scope += f" {scope_permissions}"
-        if self.config.enable_refresh_token:
+        if self._should_include_offline_access_scope():
             scope += " offline_access"
         return OAuth2Client(
             client_id=self.config.client_id,
@@ -308,7 +349,7 @@ class OpenIDConnectPlugin(BasePlugin):
         user_permissions = []
         is_staff_user_email = self.is_staff_user_email(user)
         if self.config.use_scope_permissions or is_staff_user_email:
-            scope = token_data.get("scope")
+            scope = token_data.get("scope", [])
             user_permissions = self._use_scope_permissions(user, scope)
 
             is_staff_in_scope = SALEOR_STAFF_PERMISSION in scope
@@ -317,14 +358,10 @@ class OpenIDConnectPlugin(BasePlugin):
                 assign_staff_to_default_group_and_update_permissions(
                     user, self.config.default_group_name
                 )
-                if not user.is_staff:
-                    user.is_staff = True
+                if not user.is_staff and update_is_staff(user, True):
                     user_updated = True
-                    user.save(update_fields=["is_staff"])
-            elif user.is_staff and not is_staff_user:
-                user.is_staff = False
+            elif user.is_staff and not is_staff_user and update_is_staff(user, False):
                 user_updated = True
-                user.save(update_fields=["is_staff"])
 
         if user_created or user_updated:
             send_user_event(user, user_created, user_updated)
@@ -365,6 +402,11 @@ class OpenIDConnectPlugin(BasePlugin):
         }
         if self.config.audience:
             kwargs["audience"] = self.config.audience
+        if self.config.enable_refresh_token and self._is_google_provider():
+            # Google does not support the standard `offline_access` scope.
+            # Instead, it requires `access_type=offline` as a query parameter
+            # on the authorization URL to issue refresh tokens.
+            kwargs["access_type"] = "offline"
         uri, state = self.oauth.create_authorization_url(
             self.config.authorization_url, **kwargs
         )
@@ -508,7 +550,7 @@ class OpenIDConnectPlugin(BasePlugin):
                 user = get_user_from_access_payload(payload, request)
             except (InvalidTokenError, DecodeError):
                 return previous_value
-            if user.is_staff:
+            if user and user.is_staff:
                 assign_staff_to_default_group_and_update_permissions(
                     user, self.config.default_group_name
                 )

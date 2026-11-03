@@ -33,6 +33,7 @@ def test_delete_public_metadata_for_checkout(api_client, checkout):
     checkout.metadata_storage.store_value_in_metadata({PUBLIC_KEY: PUBLIC_VALUE})
     checkout.metadata_storage.save(update_fields=["metadata"])
     checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    old_last_change = checkout.last_change
 
     # when
     response = execute_clear_public_metadata_for_item(
@@ -45,6 +46,8 @@ def test_delete_public_metadata_for_checkout(api_client, checkout):
         checkout.metadata_storage,
         checkout_id,
     )
+    checkout.refresh_from_db()
+    assert checkout.last_change > old_last_change
 
 
 def test_delete_public_metadata_for_checkout_by_token(api_client, checkout):
@@ -52,6 +55,7 @@ def test_delete_public_metadata_for_checkout_by_token(api_client, checkout):
     checkout.metadata_storage.store_value_in_metadata({PUBLIC_KEY: PUBLIC_VALUE})
     checkout.metadata_storage.save(update_fields=["metadata"])
     checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    old_last_change = checkout.last_change
 
     # when
     response = execute_clear_public_metadata_for_item(
@@ -64,6 +68,8 @@ def test_delete_public_metadata_for_checkout_by_token(api_client, checkout):
         checkout.metadata_storage,
         checkout_id,
     )
+    checkout.refresh_from_db()
+    assert checkout.last_change > old_last_change
 
 
 def test_delete_public_metadata_for_checkout_line(api_client, checkout_line):
@@ -92,6 +98,7 @@ def test_delete_private_metadata_for_checkout(
     )
     checkout.metadata_storage.save(update_fields=["private_metadata"])
     checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    old_last_change = checkout.last_change
 
     # when
     response = execute_clear_private_metadata_for_item(
@@ -104,6 +111,8 @@ def test_delete_private_metadata_for_checkout(
         checkout.metadata_storage,
         checkout_id,
     )
+    checkout.refresh_from_db()
+    assert checkout.last_change > old_last_change
 
 
 def test_delete_private_metadata_for_checkout_by_token(
@@ -115,6 +124,7 @@ def test_delete_private_metadata_for_checkout_by_token(
     )
     checkout.metadata_storage.save(update_fields=["private_metadata"])
     checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    old_last_change = checkout.last_change
 
     # when
     response = execute_clear_private_metadata_for_item(
@@ -127,6 +137,8 @@ def test_delete_private_metadata_for_checkout_by_token(
         checkout.metadata_storage,
         checkout_id,
     )
+    checkout.refresh_from_db()
+    assert checkout.last_change > old_last_change
 
 
 def test_delete_private_metadata_for_checkout_line(
@@ -153,6 +165,7 @@ def test_delete_private_metadata_for_checkout_line(
 def test_add_public_metadata_for_checkout(api_client, checkout):
     # given
     checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    old_last_change = checkout.last_change
 
     # when
     response = execute_update_public_metadata_for_item(
@@ -165,6 +178,8 @@ def test_add_public_metadata_for_checkout(api_client, checkout):
         checkout.metadata_storage,
         checkout_id,
     )
+    checkout.refresh_from_db()
+    assert checkout.last_change > old_last_change
 
 
 def test_add_public_metadata_for_checkout_no_checkout_metadata_storage(
@@ -206,6 +221,7 @@ def test_add_public_metadata_for_checkout_line(api_client, checkout_line):
 def test_add_public_metadata_for_checkout_by_token(api_client, checkout):
     # given
     checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    old_last_change = checkout.last_change
 
     # when
     response = execute_update_public_metadata_for_item(
@@ -218,14 +234,18 @@ def test_add_public_metadata_for_checkout_by_token(api_client, checkout):
         checkout.metadata_storage,
         checkout_id,
     )
+    checkout.refresh_from_db()
+    assert checkout.last_change > old_last_change
 
 
 @patch("saleor.plugins.manager.PluginsManager.checkout_updated")
-def test_add_metadata_for_checkout_triggers_checkout_updated_hook(
-    mock_checkout_updated, api_client, checkout
+def test_add_metadata_for_checkout_triggers_checkout_updated_hook_use_legacy_update_webhook_emission_on(
+    mock_checkout_updated, api_client, checkout, site_settings
 ):
     # given
     checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    site_settings.use_legacy_update_webhook_emission = True
+    site_settings.save(update_fields=["use_legacy_update_webhook_emission"])
 
     # when
     response = execute_update_public_metadata_for_item(
@@ -237,11 +257,31 @@ def test_add_metadata_for_checkout_triggers_checkout_updated_hook(
     mock_checkout_updated.assert_called_once_with(checkout, webhooks=set())
 
 
+@patch("saleor.plugins.manager.PluginsManager.checkout_updated")
+def test_add_metadata_for_checkout_triggers_checkout_updated_hook_use_legacy_update_webhook_emission_off(
+    mock_checkout_updated, api_client, checkout, site_settings
+):
+    # given
+    checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    site_settings.use_legacy_update_webhook_emission = False
+    site_settings.save(update_fields=["use_legacy_update_webhook_emission"])
+
+    # when
+    response = execute_update_public_metadata_for_item(
+        api_client, None, checkout_id, "Checkout"
+    )
+
+    # then
+    assert response["data"]["updateMetadata"]["errors"] == []
+    mock_checkout_updated.assert_not_called()
+
+
 def test_add_private_metadata_for_checkout(
     staff_api_client, checkout, permission_manage_checkouts
 ):
     # given
     checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    old_last_change = checkout.last_change
 
     # when
     response = execute_update_private_metadata_for_item(
@@ -254,6 +294,8 @@ def test_add_private_metadata_for_checkout(
         checkout.metadata_storage,
         checkout_id,
     )
+    checkout.refresh_from_db()
+    assert checkout.last_change > old_last_change
 
 
 def test_add_private_metadata_for_checkout_no_checkout_metadata_storage(
@@ -302,6 +344,7 @@ def test_add_private_metadata_for_checkout_by_token(
 ):
     # given
     checkout_id = graphene.Node.to_global_id("Checkout", checkout.pk)
+    old_last_change = checkout.last_change
 
     # when
     response = execute_update_private_metadata_for_item(
@@ -314,6 +357,8 @@ def test_add_private_metadata_for_checkout_by_token(
         checkout.metadata_storage,
         checkout_id,
     )
+    checkout.refresh_from_db()
+    assert checkout.last_change > old_last_change
 
 
 def test_update_private_metadata_for_checkout_line(
@@ -382,11 +427,14 @@ def test_add_metadata_for_checkout_triggers_webhooks_with_checkout_updated(
     checkout_with_item,
     address,
     shipping_method,
+    site_settings,
 ):
     # given
 
     # Include item so shipping webhooks are emitted
     checkout = checkout_with_item
+    site_settings.use_legacy_update_webhook_emission = True
+    site_settings.save(update_fields=["use_legacy_update_webhook_emission"])
 
     mocked_send_webhook_request_sync.return_value = []
     (
@@ -424,9 +472,7 @@ def test_add_metadata_for_checkout_triggers_webhooks_with_checkout_updated(
             "telemetry_context": ANY,
         },
         queue=settings.CHECKOUT_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
-        bind=True,
-        retry_backoff=10,
-        retry_kwargs={"max_retries": 5},
+        MessageGroupId="example.com:saleorappadditional",
     )
 
     # confirm each sync webhook con was called without saving event delivery
@@ -435,8 +481,20 @@ def test_add_metadata_for_checkout_triggers_webhooks_with_checkout_updated(
         webhook_id=checkout_updated_webhook.id
     ).exists()
 
-    shipping_methods_call, filter_shipping_call, tax_delivery_call = (
-        mocked_send_webhook_request_sync.mock_calls
+    filter_shipping_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == shipping_filter_webhook.id
+    )
+    tax_delivery_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == tax_webhook.id
+    )
+    shipping_methods_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == shipping_webhook.id
     )
     shipping_methods_delivery = shipping_methods_call.args[0]
     assert shipping_methods_delivery.webhook_id == shipping_webhook.id
@@ -521,9 +579,7 @@ def test_add_metadata_for_checkout_triggers_webhooks_with_updated_metadata(
             "telemetry_context": ANY,
         },
         queue=None,
-        bind=True,
-        retry_backoff=10,
-        retry_kwargs={"max_retries": 5},
+        MessageGroupId="example.com:saleorappadditional",
     )
 
     # confirm each sync webhook con was called without saving event delivery
@@ -532,8 +588,20 @@ def test_add_metadata_for_checkout_triggers_webhooks_with_updated_metadata(
         webhook_id=checkout_metadata_updated_webhook.id
     ).exists()
 
-    shipping_methods_call, filter_shipping_call, tax_delivery_call = (
-        mocked_send_webhook_request_sync.mock_calls
+    filter_shipping_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == shipping_filter_webhook.id
+    )
+    tax_delivery_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == tax_webhook.id
+    )
+    shipping_methods_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == shipping_webhook.id
     )
     shipping_methods_delivery = shipping_methods_call.args[0]
     assert shipping_methods_delivery.webhook_id == shipping_webhook.id

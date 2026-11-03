@@ -3,24 +3,24 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from django.conf import settings
+from django.db.models import Model, QuerySet
 from django.http import HttpRequest
 from django.utils.functional import empty
 
-from ...account.models import User
-from ...app.models import App
-
 if TYPE_CHECKING:
+    from ...account.models import User
+    from ...app.models import App
     from .dataloaders import DataLoader
 
 
 class SaleorContext(HttpRequest):
-    _cached_user: User | None
+    _cached_user: "User | None"
     decoded_auth_token: dict[str, Any] | None
     allow_replica: bool = True
     dataloaders: dict[str, "DataLoader"]
-    app: App | None
-    user: User | None  # type: ignore[assignment]
-    requestor: App | User | None
+    app: "App | None"
+    user: "User | None"  # type: ignore[assignment]
+    requestor: "App | User | None"
     request_time: datetime.datetime
 
     def __init__(self, *args, **kwargs):
@@ -60,10 +60,17 @@ def get_database_connection_name(context: SaleorContext) -> str:
 
 
 def setup_context_user(context: SaleorContext) -> None:
-    if hasattr(context.user, "_wrapped") and (
-        context.user._wrapped is empty or context.user._wrapped is None  # type: ignore[union-attr]
-    ):
-        context.user._setup()  # type: ignore[union-attr]
+    """Replace the lazy ``context.user`` proxy with the resolved user object.
+
+    Resolve the ``SimpleLazyObject`` if it has not been accessed yet, then unwrap
+    it unconditionally. Unwrapping only in the ``empty``/``None`` case leaves the
+    proxy in place whenever something (e.g. the storefront-traffic guard) already
+    forced authentication earlier in the request, so downstream code would see a
+    ``SimpleLazyObject`` instead of a plain ``User``.
+    """
+    if hasattr(context.user, "_wrapped"):
+        if context.user._wrapped is empty:  # type: ignore[union-attr]
+            context.user._setup()  # type: ignore[union-attr]
         context.user = context.user._wrapped  # type: ignore[union-attr]
 
 
@@ -71,7 +78,7 @@ N = TypeVar("N")
 
 
 @dataclass
-class BaseContext(Generic[N]):
+class BaseContext[N]:
     node: N
 
 
@@ -82,3 +89,17 @@ class SyncWebhookControlContext(BaseContext[N]):
     def __init__(self, node: N, allow_sync_webhooks: bool = True):
         self.node = node
         self.allow_sync_webhooks = allow_sync_webhooks
+
+
+@dataclass
+class ChannelContext(BaseContext[N]):
+    channel_slug: str | None
+
+
+M = TypeVar("M", bound=Model)
+
+
+@dataclass
+class ChannelQsContext(Generic[M]):
+    qs: QuerySet[M]
+    channel_slug: str | None

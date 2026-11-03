@@ -8,8 +8,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from ...core.db.connection import allow_writer
-from ...discount.models import VoucherCode
-from ...giftcard.models import GiftCard
+from ...core.utils.batches import queryset_in_batches
 from ...product.models import Product
 from .. import FileTypes
 from ..notifications import send_export_download_link_notification
@@ -32,7 +31,7 @@ def export_products(
     file_type: str,
     delimiter: str = ",",
 ):
-    from ...graphql.product.filters import ProductFilter
+    from ...graphql.product.filters.product import ProductFilter
 
     file_name = get_filename("product", file_type)
     queryset = get_queryset(Product, ProductFilter, scope)
@@ -58,71 +57,6 @@ def export_products(
     save_csv_file_in_export_file(export_file, temporary_file, file_name)
     temporary_file.close()
     send_export_download_link_notification(export_file, "products")
-
-
-def export_gift_cards(
-    export_file: "ExportFile",
-    scope: dict[str, str | dict],
-    file_type: str,
-    delimiter: str = ",",
-):
-    from ...graphql.giftcard.filters import GiftCardFilter
-
-    file_name = get_filename("gift_card", file_type)
-
-    queryset = get_queryset(GiftCard, GiftCardFilter, scope)
-    # only unused gift cards codes can be exported
-    queryset = queryset.filter(used_by_email__isnull=True)
-
-    export_fields = ["code"]
-    temporary_file = create_file_with_headers(export_fields, delimiter, file_type)
-
-    export_gift_cards_in_batches(
-        queryset,
-        export_fields,
-        delimiter,
-        temporary_file,
-        file_type,
-    )
-
-    save_csv_file_in_export_file(export_file, temporary_file, file_name)
-    temporary_file.close()
-    send_export_download_link_notification(export_file, "gift cards")
-
-
-def export_voucher_codes(
-    export_file: "ExportFile",
-    file_type: str,
-    voucher_id: int | None = None,
-    ids: list[int] | None = None,
-    delimiter: str = ",",
-):
-    file_name = get_filename("voucher_code", file_type)
-
-    qs = VoucherCode.objects.using(settings.DATABASE_CONNECTION_REPLICA_NAME).all()
-    if voucher_id:
-        qs = VoucherCode.objects.using(
-            settings.DATABASE_CONNECTION_REPLICA_NAME
-        ).filter(voucher_id=voucher_id)
-    if ids:
-        qs = VoucherCode.objects.using(
-            settings.DATABASE_CONNECTION_REPLICA_NAME
-        ).filter(id__in=ids)
-
-    export_fields = ["code"]
-    temporary_file = create_file_with_headers(export_fields, delimiter, file_type)
-
-    export_voucher_codes_in_batches(
-        qs,
-        export_fields,
-        delimiter,
-        temporary_file,
-        file_type,
-    )
-
-    save_csv_file_in_export_file(export_file, temporary_file, file_name)
-    temporary_file.close()
-    send_export_download_link_notification(export_file, "voucher codes")
 
 
 def get_filename(model_name: str, file_type: str) -> str:
@@ -201,7 +135,7 @@ def export_products_in_batches(
     attributes = export_info.get("attributes")
     channels = export_info.get("channels")
 
-    for batch_pks in queryset_in_batches(queryset):
+    for batch_pks in queryset_in_batches(queryset, BATCH_SIZE):
         product_batch = (
             Product.objects.using(settings.DATABASE_CONNECTION_REPLICA_NAME)
             .filter(pk__in=batch_pks)
@@ -219,59 +153,6 @@ def export_products_in_batches(
         )
 
         append_to_file(export_data, headers, temporary_file, file_type, delimiter)
-
-
-def export_gift_cards_in_batches(
-    queryset: "QuerySet",
-    export_fields: list[str],
-    delimiter: str,
-    temporary_file: Any,
-    file_type: str,
-):
-    for batch_pks in queryset_in_batches(queryset):
-        gift_card_batch = GiftCard.objects.using(
-            settings.DATABASE_CONNECTION_REPLICA_NAME
-        ).filter(pk__in=batch_pks)
-
-        export_data = list(gift_card_batch.values(*export_fields))
-
-        append_to_file(export_data, export_fields, temporary_file, file_type, delimiter)
-
-
-def export_voucher_codes_in_batches(
-    queryset: "QuerySet",
-    export_fields: list[str],
-    delimiter: str,
-    temporary_file: Any,
-    file_type: str,
-):
-    for batch_pks in queryset_in_batches(queryset):
-        voucher_codes_batch = VoucherCode.objects.using(
-            settings.DATABASE_CONNECTION_REPLICA_NAME
-        ).filter(pk__in=batch_pks)
-
-        export_data = list(voucher_codes_batch.values(*export_fields))
-
-        append_to_file(export_data, export_fields, temporary_file, file_type, delimiter)
-
-
-def queryset_in_batches(queryset):
-    """Slice a queryset into batches.
-
-    Input queryset should be sorted be pk.
-    """
-    start_pk = 0
-
-    while True:
-        qs = queryset.order_by("pk").filter(pk__gt=start_pk)[:BATCH_SIZE]
-        pks = list(qs.values_list("pk", flat=True))
-
-        if not pks:
-            break
-
-        yield pks
-
-        start_pk = pks[-1]
 
 
 def append_to_file(

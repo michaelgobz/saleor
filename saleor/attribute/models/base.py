@@ -1,18 +1,23 @@
 from typing import TYPE_CHECKING, TypeVar, Union
 
-from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.indexes import BTreeIndex, GinIndex
 from django.db import models, transaction
 from django.db.models import Case, Exists, F, OrderBy, OuterRef, Q, Value, When
 
+from ...account.models import CustomerType
 from ...core.db.fields import SanitizedJSONField
+from ...core.editorjs import clean_editorjs
 from ...core.models import ModelWithExternalReference, ModelWithMetadata, SortableModel
 from ...core.units import MeasurementUnits
-from ...core.utils.editorjs import clean_editor_js
 from ...core.utils.translations import Translation
 from ...page.models import Page, PageType
-from ...permission.enums import PageTypePermissions, ProductTypePermissions
+from ...permission.enums import (
+    CustomerTypePermissions,
+    PageTypePermissions,
+    ProductTypePermissions,
+)
 from ...permission.utils import has_one_of_permissions
-from ...product.models import Product, ProductType, ProductVariant
+from ...product.models import Category, Collection, Product, ProductType, ProductVariant
 from .. import AttributeEntityType, AttributeInputType, AttributeType
 
 if TYPE_CHECKING:
@@ -44,6 +49,7 @@ class BaseAttributeQuerySet(models.QuerySet[T]):
             [
                 PageTypePermissions.MANAGE_PAGE_TYPES_AND_ATTRIBUTES,
                 ProductTypePermissions.MANAGE_PRODUCT_TYPES_AND_ATTRIBUTES,
+                CustomerTypePermissions.MANAGE_CUSTOMER_TYPES_AND_ATTRIBUTES,
             ],
         ):
             return self.all()
@@ -82,6 +88,16 @@ class AttributeQuerySet(BaseAttributeQuerySet[T]):
             Q(attributepage__page_type_id=product_type_pk)
         )
 
+    def get_unassigned_customer_type_attributes(self, customer_type_pk: int):
+        return self.customer_type_attributes().exclude(
+            attributecustomertype__customer_type_id=customer_type_pk
+        )
+
+    def get_assigned_customer_type_attributes(self, customer_type_pk: int):
+        return self.customer_type_attributes().filter(
+            attributecustomertype__customer_type_id=customer_type_pk
+        )
+
     def get_public_attributes(self):
         return self.filter(visible_in_storefront=True)
 
@@ -109,6 +125,9 @@ class AttributeQuerySet(BaseAttributeQuerySet[T]):
     def page_type_attributes(self):
         return self.filter(type=AttributeType.PAGE_TYPE)
 
+    def customer_type_attributes(self):
+        return self.filter(type=AttributeType.CUSTOMER_TYPE)
+
 
 AttributeManager = models.Manager.from_queryset(AttributeQuerySet)
 
@@ -125,6 +144,22 @@ class Attribute(ModelWithMetadata, ModelWithExternalReference):
     )
     entity_type = models.CharField(
         max_length=50, choices=AttributeEntityType.CHOICES, blank=True, null=True
+    )
+    # The product types that are used to narrow down the choices of products
+    # or variants for a reference attribute.
+    # Applicable only for attributes with the `PRODUCT` and `VARIANT` entity types.
+    reference_product_types = models.ManyToManyField(
+        ProductType,
+        blank=True,
+        related_name="+",
+    )
+    # The page types that are used to narrow down the choices of pages
+    # for a reference attribute.
+    # Applicable only for attributes with the `PAGE` entity type.
+    reference_page_types = models.ManyToManyField(
+        PageType,
+        blank=True,
+        related_name="+",
     )
 
     product_types = models.ManyToManyField(
@@ -148,6 +183,13 @@ class Attribute(ModelWithMetadata, ModelWithExternalReference):
         through="attribute.AttributePage",
         through_fields=("attribute", "page_type"),
     )
+    customer_types = models.ManyToManyField(
+        CustomerType,
+        blank=True,
+        related_name="customer_attributes",
+        through="attribute.AttributeCustomerType",
+        through_fields=("attribute", "customer_type"),
+    )
 
     unit = models.CharField(
         max_length=100,
@@ -160,17 +202,12 @@ class Attribute(ModelWithMetadata, ModelWithExternalReference):
     is_variant_only = models.BooleanField(default=False, blank=True)
     visible_in_storefront = models.BooleanField(default=True, blank=True)
 
-    filterable_in_storefront = models.BooleanField(default=False, blank=True)
-    filterable_in_dashboard = models.BooleanField(default=False, blank=True)
-
-    storefront_search_position = models.IntegerField(default=0, blank=True)
-    available_in_grid = models.BooleanField(default=False, blank=True)
     max_sort_order = models.IntegerField(default=None, null=True, blank=True)
 
     objects = AttributeManager()
 
     class Meta(ModelWithMetadata.Meta):
-        ordering = ("storefront_search_position", "slug")
+        ordering = ("slug",)
         indexes = [
             *ModelWithMetadata.Meta.indexes,
             GinIndex(
@@ -319,10 +356,18 @@ class AttributeValueManager(models.Manager):
             )
 
         if objects_to_be_updated:
-            self.bulk_update(
-                objects_to_be_updated,
-                fields=update_fields,
-            )
+            from ..lock_objects import attribute_value_qs_select_for_update
+
+            with transaction.atomic():
+                _locked_ids = list(
+                    attribute_value_qs_select_for_update()
+                    .filter(pk__in=[obj.pk for obj in objects_to_be_updated])
+                    .values_list("pk", flat=True)
+                )
+                self.bulk_update(
+                    objects_to_be_updated,
+                    fields=update_fields,
+                )
 
         return results
 
@@ -348,13 +393,14 @@ class AttributeValue(ModelWithExternalReference):
     attribute = models.ForeignKey(
         Attribute, related_name="values", on_delete=models.CASCADE
     )
-    rich_text = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editor_js)
+    rich_text = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editorjs)
     plain_text = models.TextField(
         blank=True,
         null=True,
     )
     boolean = models.BooleanField(blank=True, null=True)
     date_time = models.DateTimeField(blank=True, null=True)
+    numeric = models.FloatField(null=True, blank=True)
 
     reference_product = models.ForeignKey(
         Product,
@@ -372,9 +418,26 @@ class AttributeValue(ModelWithExternalReference):
         blank=True,
     )
 
+    reference_collection = models.ForeignKey(
+        Collection,
+        related_name="references",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+    )
+
+    reference_category = models.ForeignKey(
+        Category,
+        related_name="references",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+    )
+
     reference_page = models.ForeignKey(
         Page, related_name="references", on_delete=models.CASCADE, null=True, blank=True
     )
+
     sort_order = models.IntegerField(editable=False, db_index=True, null=True)
 
     objects = AttributeValueManager()
@@ -388,7 +451,11 @@ class AttributeValue(ModelWithExternalReference):
                 # `opclasses` and `fields` should be the same length
                 fields=["name", "slug"],
                 opclasses=["gin_trgm_ops"] * 2,
-            )
+            ),
+            BTreeIndex(
+                fields=["numeric"],
+                name="attribute_value_numeric_idx",
+            ),
         ]
 
     def __str__(self) -> str:
@@ -459,7 +526,7 @@ class AttributeValueTranslation(Translation):
         AttributeValue, related_name="translations", on_delete=models.CASCADE
     )
     name = models.CharField(max_length=250)
-    rich_text = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editor_js)
+    rich_text = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editorjs)
     plain_text = models.TextField(
         blank=True,
         null=True,

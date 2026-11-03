@@ -1,3 +1,5 @@
+from enum import Enum
+
 # defines the available thumbnail resolutions
 THUMBNAIL_SIZES = [32, 64, 128, 256, 512, 1024, 2048, 4096]
 
@@ -18,6 +20,19 @@ class ThumbnailFormat:
     ]
 
 
+class ThumbnailSizeRounding(str, Enum):
+    """Determine how a requested size is matched to an available thumbnail size.
+
+    NEAREST - use the closest available size; it may be smaller than requested.
+    UP - use the smallest available size that is not smaller than requested.
+    """
+
+    NEAREST = "NEAREST"
+    UP = "UP"
+
+
+DEFAULT_THUMBNAIL_SIZE_ROUNDING = ThumbnailSizeRounding.UP
+
 ALLOWED_THUMBNAIL_FORMATS = {ThumbnailFormat.AVIF, ThumbnailFormat.WEBP}
 
 # PIL-supported file formats as found here:
@@ -30,6 +45,7 @@ MIME_TYPE_TO_PIL_IDENTIFIER = {
     "image/eps": "EPS",
     "image/gif": "GIF",
     "image/jpeg": "JPEG",
+    "image/jpg": "JPEG",  # Invalid MIME for JPEG but some servers return it
     "image/pcd": "PCD",
     "image/pcx": "PCX",
     "image/png": "PNG",

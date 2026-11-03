@@ -6,13 +6,18 @@ import pytest
 from django.utils.functional import SimpleLazyObject
 from freezegun import freeze_time
 
+from .....attribute import AttributeEntityType, AttributeInputType
 from .....attribute.error_codes import AttributeErrorCode
 from .....attribute.models import Attribute, AttributeValue
+from .....attribute.tests.model_helpers import (
+    get_product_attribute_values,
+    get_product_attributes,
+)
 from .....core.utils.json_serializer import CustomJsonEncoder
 from .....webhook.event_types import WebhookEventAsyncType
 from .....webhook.payloads import generate_meta, generate_requestor
 from ....core.enums import MeasurementUnitsEnum
-from ....tests.utils import get_graphql_content
+from ....tests.utils import assert_no_permission, get_graphql_content
 
 UPDATE_ATTRIBUTE_MUTATION = """
     mutation updateAttribute(
@@ -30,6 +35,17 @@ UPDATE_ATTRIBUTE_MUTATION = """
             name
             slug
             unit
+            entityType
+            referenceTypes {
+                ... on ProductType {
+                    id
+                    slug
+                }
+                ... on PageType {
+                    id
+                    slug
+                }
+            }
             externalReference
             choices(first: 10) {
                 edges {
@@ -344,51 +360,6 @@ def test_update_attribute_with_file_input_type_and_values(
     assert len(errors) == 1
     assert errors[0]["field"] == "addValues"
     assert errors[0]["code"] == AttributeErrorCode.INVALID.name
-
-
-def test_update_attribute_with_file_input_type_invalid_settings(
-    staff_api_client,
-    file_attribute_with_file_input_type_without_values,
-    permission_manage_product_types_and_attributes,
-):
-    # given
-    query = UPDATE_ATTRIBUTE_MUTATION
-    attribute = file_attribute_with_file_input_type_without_values
-    name = "Wings name"
-    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
-
-    variables = {
-        "id": node_id,
-        "input": {
-            "name": name,
-            "addValues": [],
-            "removeValues": [],
-            "filterableInStorefront": True,
-            "filterableInDashboard": True,
-            "availableInGrid": True,
-            "storefrontSearchPosition": 3,
-        },
-    }
-
-    # when
-    response = staff_api_client.post_graphql(
-        query, variables, permissions=[permission_manage_product_types_and_attributes]
-    )
-
-    # then
-    content = get_graphql_content(response)
-    attribute.refresh_from_db()
-    data = content["data"]["attributeUpdate"]
-    errors = data["errors"]
-    assert not data["attribute"]
-    assert len(errors) == 4
-    assert {error["field"] for error in errors} == {
-        "filterableInStorefront",
-        "filterableInDashboard",
-        "availableInGrid",
-        "storefrontSearchPosition",
-    }
-    assert {error["code"] for error in errors} == {AttributeErrorCode.INVALID.name}
 
 
 def test_update_attribute_provide_existing_value_name(
@@ -851,3 +822,556 @@ def test_update_attribute_name_similar_value(
     assert len(values_edges) == 2
     slugs = [node["node"]["slug"] for node in values_edges]
     assert set(slugs) == {"15", "15-2"}
+
+
+@pytest.mark.parametrize(
+    "input_type",
+    [
+        AttributeInputType.SINGLE_REFERENCE,
+        AttributeInputType.REFERENCE,
+    ],
+)
+def test_update_attribute_reference_types(
+    input_type,
+    staff_api_client,
+    product_type_product_single_reference_attribute,
+    permission_manage_product_types_and_attributes,
+    product_type,
+    product_type_with_product_attributes,
+):
+    # given
+    query = UPDATE_ATTRIBUTE_MUTATION
+    attribute = product_type_product_single_reference_attribute
+    attribute.input_type = input_type
+    attribute.reference_product_types.add(product_type_with_product_attributes)
+    attribute.save()
+
+    new_ref_product_type_id = graphene.Node.to_global_id("ProductType", product_type.id)
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {
+        "input": {"referenceTypes": [new_ref_product_type_id]},
+        "id": node_id,
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_product_types_and_attributes]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    attribute.refresh_from_db()
+    data = content["data"]["attributeUpdate"]
+    assert not data["errors"]
+    assert data["attribute"]
+    assert len(data["attribute"]["referenceTypes"]) == 1
+    assert data["attribute"]["referenceTypes"][0]["id"] == new_ref_product_type_id
+
+
+def test_update_attribute_clear_reference_types(
+    staff_api_client,
+    product_type_product_single_reference_attribute,
+    permission_manage_product_types_and_attributes,
+    product_type,
+):
+    # given
+    query = UPDATE_ATTRIBUTE_MUTATION
+    attribute = product_type_product_single_reference_attribute
+    attribute.reference_product_types.add(product_type)
+    attribute.save()
+
+    assert attribute.reference_product_types.count() == 1
+
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {
+        "input": {"referenceTypes": []},
+        "id": node_id,
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_product_types_and_attributes]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    attribute.refresh_from_db()
+    data = content["data"]["attributeUpdate"]
+    assert not data["errors"]
+    assert data["attribute"]
+    assert len(data["attribute"]["referenceTypes"]) == 0
+
+
+@pytest.mark.parametrize(
+    "entity_type",
+    [
+        AttributeEntityType.COLLECTION,
+        AttributeEntityType.CATEGORY,
+    ],
+)
+def test_update_reference_attribute_with_reference_types_not_valid_entity_type(
+    entity_type,
+    staff_api_client,
+    permission_manage_product_types_and_attributes,
+    product_type_product_single_reference_attribute,
+    product_type,
+):
+    # given
+    query = UPDATE_ATTRIBUTE_MUTATION
+
+    attribute = product_type_product_single_reference_attribute
+    attribute.entity_type = entity_type
+    attribute.save()
+
+    product_reference_type_id = graphene.Node.to_global_id(
+        "ProductType", product_type.id
+    )
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {
+        "id": node_id,
+        "input": {
+            "referenceTypes": [product_reference_type_id],
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query,
+        variables,
+        permissions=[permission_manage_product_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    errors = content["data"]["attributeUpdate"]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["field"] == "referenceTypes"
+    assert errors[0]["code"] == AttributeErrorCode.INVALID.name
+
+
+def test_update_attribute_with_reference_types_invalid_input_type(
+    staff_api_client,
+    permission_manage_product_types_and_attributes,
+    product_type_product_single_reference_attribute,
+    product_type,
+):
+    # given
+    query = UPDATE_ATTRIBUTE_MUTATION
+
+    attribute = product_type_product_single_reference_attribute
+    attribute.input_type = AttributeInputType.DROPDOWN
+    attribute.save()
+
+    product_reference_type_id = graphene.Node.to_global_id(
+        "ProductType", product_type.id
+    )
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {
+        "id": node_id,
+        "input": {
+            "referenceTypes": [product_reference_type_id],
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query,
+        variables,
+        permissions=[permission_manage_product_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    errors = content["data"]["attributeUpdate"]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["field"] == "referenceTypes"
+    assert errors[0]["code"] == AttributeErrorCode.INVALID.name
+
+
+@mock.patch("saleor.graphql.attribute.mutations.mixins.REFERENCE_TYPES_LIMIT", 1)
+def test_update_attribute_with_reference_types_limit_exceeded(
+    staff_api_client,
+    permission_manage_product_types_and_attributes,
+    product_type_product_single_reference_attribute,
+    product_type,
+    product_type_with_product_attributes,
+):
+    # given
+    query = UPDATE_ATTRIBUTE_MUTATION
+
+    attribute = product_type_product_single_reference_attribute
+    attribute.input_type = AttributeInputType.REFERENCE
+    attribute.save()
+
+    product_type_ids = [
+        graphene.Node.to_global_id("ProductType", ref_type.id)
+        for ref_type in [product_type_with_product_attributes, product_type]
+    ]
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {
+        "id": node_id,
+        "input": {
+            "referenceTypes": product_type_ids,
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query,
+        variables,
+        permissions=[permission_manage_product_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    errors = content["data"]["attributeUpdate"]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["field"] == "referenceTypes"
+    assert errors[0]["code"] == AttributeErrorCode.INVALID.name
+
+
+def test_update_attribute_with_reference_types_page_types_provided_for_variant_ref(
+    staff_api_client,
+    permission_manage_product_types_and_attributes,
+    product_type_product_single_reference_attribute,
+    page_type_list,
+):
+    # given
+    query = UPDATE_ATTRIBUTE_MUTATION
+
+    attribute = product_type_product_single_reference_attribute
+
+    page_type_ids = [
+        graphene.Node.to_global_id("PageType", ref_type.id)
+        for ref_type in page_type_list
+    ]
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {
+        "id": node_id,
+        "input": {
+            "referenceTypes": page_type_ids,
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query,
+        variables,
+        permissions=[permission_manage_product_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    errors = content["data"]["attributeUpdate"]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["field"] == "referenceTypes"
+    assert errors[0]["code"] == AttributeErrorCode.INVALID.name
+
+
+def test_update_attribute_with_reference_types_product_types_provided_for_page_ref(
+    staff_api_client,
+    permission_manage_product_types_and_attributes,
+    product_type_page_single_reference_attribute,
+    product_type,
+):
+    # given
+    query = UPDATE_ATTRIBUTE_MUTATION
+
+    attribute = product_type_page_single_reference_attribute
+
+    product_type_id = graphene.Node.to_global_id("ProductType", product_type.id)
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {
+        "id": node_id,
+        "input": {
+            "referenceTypes": [product_type_id],
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query,
+        variables,
+        permissions=[permission_manage_product_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    errors = content["data"]["attributeUpdate"]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["field"] == "referenceTypes"
+    assert errors[0]["code"] == AttributeErrorCode.INVALID.name
+
+
+def test_update_attribute_remove_value_marks_product_search_index_dirty(
+    staff_api_client, product, permission_manage_product_types_and_attributes
+):
+    # given
+    query = UPDATE_ATTRIBUTE_MUTATION
+    attribute = get_product_attributes(product).first()
+    value = get_product_attribute_values(product, attribute).first()
+
+    assert product.search_index_dirty is False
+
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    value_id = graphene.Node.to_global_id("AttributeValue", value.id)
+    variables = {
+        "id": node_id,
+        "input": {
+            "removeValues": [value_id],
+            "addValues": [],
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_product_types_and_attributes]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["attributeUpdate"]
+    assert not data["errors"]
+
+    product.refresh_from_db()
+    assert product.search_index_dirty is True
+
+
+def test_update_attribute_add_value_does_not_mark_product_search_index_dirty(
+    staff_api_client, product, permission_manage_product_types_and_attributes
+):
+    # given
+    attribute = get_product_attributes(product).first()
+    assert product.search_index_dirty is False
+
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {
+        "id": node_id,
+        "input": {
+            "addValues": [{"name": "New value"}],
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        UPDATE_ATTRIBUTE_MUTATION,
+        variables,
+        permissions=[permission_manage_product_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["attributeUpdate"]
+    assert not data["errors"]
+
+    product.refresh_from_db()
+    assert product.search_index_dirty is False
+
+
+def test_update_attribute_remove_value_marks_page_search_index_dirty(
+    staff_api_client, page, permission_manage_page_types_and_attributes
+):
+    # given
+    value = page.attributevalues.first().value
+    attribute = value.attribute
+
+    assert page.search_index_dirty is False
+
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    value_id = graphene.Node.to_global_id("AttributeValue", value.id)
+    variables = {
+        "id": node_id,
+        "input": {
+            "removeValues": [value_id],
+            "addValues": [],
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        UPDATE_ATTRIBUTE_MUTATION,
+        variables,
+        permissions=[permission_manage_page_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["attributeUpdate"]
+    assert not data["errors"]
+
+    page.refresh_from_db()
+    assert page.search_index_dirty is True
+
+
+def test_update_attribute_add_value_does_not_mark_page_search_index_dirty(
+    staff_api_client, page, permission_manage_page_types_and_attributes
+):
+    # given
+    attribute = page.attributevalues.first().value.attribute
+
+    assert page.search_index_dirty is False
+
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {
+        "id": node_id,
+        "input": {
+            "addValues": [{"name": "New value"}],
+        },
+    }
+
+    # when
+    response = staff_api_client.post_graphql(
+        UPDATE_ATTRIBUTE_MUTATION,
+        variables,
+        permissions=[permission_manage_page_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["attributeUpdate"]
+    assert not data["errors"]
+
+    page.refresh_from_db()
+    assert page.search_index_dirty is False
+
+
+def test_update_page_attribute_with_page_type_permission(
+    staff_api_client, size_page_attribute, permission_manage_page_types_and_attributes
+):
+    # given
+    attribute = size_page_attribute
+    name = "Updated page attribute name"
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {"id": node_id, "input": {"name": name}}
+
+    # when
+    response = staff_api_client.post_graphql(
+        UPDATE_ATTRIBUTE_MUTATION,
+        variables,
+        permissions=[permission_manage_page_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["attributeUpdate"]
+    assert not data["errors"]
+    attribute.refresh_from_db()
+    assert data["attribute"]["name"] == name
+    assert attribute.name == name
+
+
+def test_update_page_attribute_without_page_type_permission(
+    staff_api_client,
+    size_page_attribute,
+    permission_manage_product_types_and_attributes,
+):
+    # given
+    attribute = size_page_attribute
+    name = "Updated page attribute name"
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {"id": node_id, "input": {"name": name}}
+
+    # when
+    response = staff_api_client.post_graphql(
+        UPDATE_ATTRIBUTE_MUTATION,
+        variables,
+        permissions=[permission_manage_product_types_and_attributes],
+    )
+
+    # then
+    assert_no_permission(response)
+
+
+def test_update_product_attribute_without_product_type_permission(
+    staff_api_client, color_attribute, permission_manage_page_types_and_attributes
+):
+    # given
+    attribute = color_attribute
+    name = "Updated product attribute name"
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {"id": node_id, "input": {"name": name}}
+
+    # when
+    response = staff_api_client.post_graphql(
+        UPDATE_ATTRIBUTE_MUTATION,
+        variables,
+        permissions=[permission_manage_page_types_and_attributes],
+    )
+
+    # then
+    assert_no_permission(response)
+
+
+def test_update_customer_attribute_with_customer_type_permission(
+    staff_api_client,
+    loyalty_customer_attribute,
+    permission_manage_customer_types_and_attributes,
+):
+    # given
+    attribute = loyalty_customer_attribute
+    name = "Updated customer attribute name"
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {"id": node_id, "input": {"name": name}}
+
+    # when
+    response = staff_api_client.post_graphql(
+        UPDATE_ATTRIBUTE_MUTATION,
+        variables,
+        permissions=[permission_manage_customer_types_and_attributes],
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["attributeUpdate"]
+    assert not data["errors"]
+    attribute.refresh_from_db()
+    assert data["attribute"]["name"] == name
+    assert attribute.name == name
+
+
+def test_update_customer_attribute_without_customer_type_permission(
+    staff_api_client,
+    loyalty_customer_attribute,
+    permission_manage_product_types_and_attributes,
+):
+    # given
+    attribute = loyalty_customer_attribute
+    original_name = attribute.name
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {"id": node_id, "input": {"name": "Updated customer attribute name"}}
+
+    # when
+    response = staff_api_client.post_graphql(
+        UPDATE_ATTRIBUTE_MUTATION,
+        variables,
+        permissions=[permission_manage_product_types_and_attributes],
+    )
+
+    # then
+    assert_no_permission(response)
+    attribute.refresh_from_db()
+    assert attribute.name == original_name
+
+
+def test_update_product_attribute_with_only_customer_type_permission(
+    staff_api_client,
+    color_attribute,
+    permission_manage_customer_types_and_attributes,
+):
+    # given
+    attribute = color_attribute
+    original_name = attribute.name
+    node_id = graphene.Node.to_global_id("Attribute", attribute.id)
+    variables = {"id": node_id, "input": {"name": "Updated product attribute name"}}
+
+    # when
+    response = staff_api_client.post_graphql(
+        UPDATE_ATTRIBUTE_MUTATION,
+        variables,
+        permissions=[permission_manage_customer_types_and_attributes],
+    )
+
+    # then
+    assert_no_permission(response)
+    attribute.refresh_from_db()
+    assert attribute.name == original_name

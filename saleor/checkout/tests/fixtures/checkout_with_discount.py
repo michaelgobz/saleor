@@ -10,7 +10,8 @@ from ....plugins.manager import get_plugins_manager
 from ....product.models import ProductVariantChannelListing
 from ...fetch import fetch_checkout_info, fetch_checkout_lines
 from ...models import CheckoutLine
-from ...utils import add_variant_to_checkout, add_voucher_to_checkout
+from ...utils import add_voucher_to_checkout
+from ..utils import add_variant_to_checkout
 
 
 @pytest.fixture
@@ -21,8 +22,8 @@ def checkout_with_item_on_promotion(checkout_with_item):
 
     variant = line.variant
 
-    reward_value = Decimal("5")
-    reward_value_prior = Decimal("2")
+    reward_value = Decimal(5)
+    reward_value_prior = Decimal(2)
 
     rule = promotion.rules.create(
         catalogue_predicate={
@@ -71,7 +72,7 @@ def checkout_with_item_and_order_discount(
 ):
     channel = checkout_with_item.channel
 
-    reward_value = Decimal("5")
+    reward_value = Decimal(5)
 
     rule = catalogue_promotion_without_rules.rules.create(
         order_predicate={
@@ -178,10 +179,11 @@ def checkout_with_item_and_voucher_once_per_order(checkout_with_item, voucher):
 
 @pytest.fixture
 def checkout_with_item_and_voucher_and_shipping_method(
-    checkout_with_item_and_voucher, shipping_method
+    checkout_with_item_and_voucher, checkout_delivery, address
 ):
     checkout = checkout_with_item_and_voucher
-    checkout.shipping_method = shipping_method
+    checkout.assigned_delivery = checkout_delivery(checkout)
+    checkout.shipping_address = address
     checkout.save()
     return checkout
 

@@ -20,9 +20,9 @@ from ...attribute.types import (
     AttributeValueDescriptions,
     AttributeValueSelectableTypeInput,
 )
-from ...attribute.utils import AttributeAssignmentMixin
-from ...channel import ChannelContext
-from ...core.descriptions import DEPRECATED_IN_3X_INPUT
+from ...attribute.utils.attribute_assignment import AttributeAssignmentMixin
+from ...core.context import ChannelContext
+from ...core.descriptions import ADDED_IN_322, DEPRECATED_IN_3X_INPUT
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
 from ...core.enums import ErrorPolicyEnum
 from ...core.fields import JSONString
@@ -44,7 +44,10 @@ from ...core.validators import validate_price_precision
 from ...meta.inputs import MetadataInput
 from ...plugins.dataloaders import get_plugin_manager_promise
 from ...shop.utils import get_track_inventory_by_default
-from ..mutations.channels import ProductVariantChannelListingAddInput
+from ..mutations.channels import (
+    ProductVariantChannelListingAddInput,
+    get_new_listing_availability,
+)
 from ..mutations.product.product_create import StockInput
 from ..mutations.product_variant.product_variant_create import ProductVariantInput
 from ..types import ProductVariant
@@ -151,15 +154,21 @@ class BulkAttributeValueInput(BaseInputObjectType):
     )
     file = graphene.String(
         required=False,
-        description=("URL of the file attribute. Every time, a new value is created."),
+        description="URL of the file attribute. Every time, a new value is created.",
     )
     content_type = graphene.String(
         required=False,
         description="File content type.",
     )
+    reference = graphene.ID(
+        description=(
+            "ID of the referenced entity for single reference attribute." + ADDED_IN_322
+        ),
+        required=False,
+    )
     references = NonNullList(
         graphene.ID,
-        description=("List of entity IDs that will be used as references."),
+        description="List of entity IDs that will be used as references.",
         required=False,
     )
     rich_text = JSONString(
@@ -306,53 +315,28 @@ class ProductVariantBulkCreate(BaseMutation):
                         )
                     )
                 attributes_errors_count += 1
-
-            if product_type.has_variants:
-                try:
-                    cleaned_attributes = AttributeAssignmentMixin.clean_input(
-                        attributes_input, variant_attributes
-                    )
-                    cleaned_input["attributes"] = cleaned_attributes
-                except ValidationError as exc:
-                    for error in exc.error_list:
-                        attributes = (
-                            error.params.get("attributes") if error.params else None
-                        )
-                        index_error_map[variant_index].append(
-                            ProductVariantBulkError(
-                                field="attributes",
-                                path="attributes",
-                                message=error.message,
-                                code=error.code,
-                                attributes=attributes,
-                            )
-                        )
-                    if errors is not None:
-                        exc.params = {"index": variant_index}
-                        errors["attributes"].append(exc)
-                    attributes_errors_count += 1
-            else:
-                message = "Cannot assign attributes for product type without variants"
-                index_error_map[variant_index].append(
-                    ProductVariantBulkError(
-                        field="attributes",
-                        path="attributes",
-                        message=message,
-                        code=ProductVariantBulkErrorCode.INVALID.value,
-                        attributes=invalid_attributes,
-                    )
+            try:
+                cleaned_attributes = AttributeAssignmentMixin.clean_input(
+                    attributes_input, variant_attributes
                 )
-                if errors is not None:
-                    errors["attributes"].append(
-                        ValidationError(
-                            message,
-                            code=ProductVariantBulkErrorCode.INVALID.value,
-                            params={
-                                "attributes": invalid_attributes,
-                                "index": variant_index,
-                            },
+                cleaned_input["attributes"] = cleaned_attributes
+            except ValidationError as exc:
+                for error in exc.error_list:
+                    attributes = (
+                        error.params.get("attributes") if error.params else None
+                    )
+                    index_error_map[variant_index].append(
+                        ProductVariantBulkError(
+                            field="attributes",
+                            path="attributes",
+                            message=error.message,
+                            code=error.code,
+                            attributes=attributes,
                         )
                     )
+                if errors is not None:
+                    exc.params = {"index": variant_index}
+                    errors["attributes"].append(exc)
                 attributes_errors_count += 1
         return attributes_errors_count
 
@@ -413,7 +397,17 @@ class ProductVariantBulkCreate(BaseMutation):
         variant_index,
         index_error_map,
         path_prefix="channelListings",
+        existing_channel_ids=None,
     ):
+        """Validate channel listings to create for a variant.
+
+        ``existing_channel_ids`` holds the channel global IDs the variant is
+        already listed on (only relevant when updating). Listings targeting one
+        of them produce a ``DUPLICATED_INPUT_ITEM`` error and are dropped from
+        the result, so the unique ``(variant, channel)`` constraint never raises
+        an ``IntegrityError`` at insert time.
+        """
+        existing_channel_ids = existing_channel_ids or set()
         channel_ids = [
             channel_listing["channel_id"] for channel_listing in channel_listings
         ]
@@ -451,6 +445,22 @@ class ProductVariantBulkCreate(BaseMutation):
         for listing_index, channel_listing in enumerate(channel_listings):
             channel_id = channel_listing["channel_id"]
             errors_count_before_prices = len(index_error_map[variant_index])
+
+            if channel_id in existing_channel_ids:
+                index_error_map[variant_index].append(
+                    ProductVariantBulkError(
+                        field="channelId",
+                        path=f"{path_prefix}.{listing_index}.channelId",
+                        message=(
+                            "Channel listing already exists for this variant. "
+                            "Use the `update` field to modify an existing "
+                            "channel listing."
+                        ),
+                        code=ProductVariantBulkErrorCode.DUPLICATED_INPUT_ITEM.value,
+                        channels=[channel_id],
+                    )
+                )
+                continue
 
             if channel_id in channels_not_assigned_to_product:
                 code = ProductVariantBulkErrorCode.PRODUCT_NOT_ASSIGNED_TO_CHANNEL.value
@@ -723,14 +733,6 @@ class ProductVariantBulkCreate(BaseMutation):
         if sku is not None:
             cleaned_input["sku"] = clean_variant_sku(sku)
 
-        preorder_settings = cleaned_input.get("preorder")
-        if preorder_settings:
-            cleaned_input["is_preorder"] = True
-            cleaned_input["preorder_global_threshold"] = preorder_settings.get(
-                "global_threshold"
-            )
-            cleaned_input["preorder_end_date"] = preorder_settings.get("end_date")
-
         base_fields_errors_count = cls.validate_base_fields(
             cleaned_input, duplicated_sku, errors, index_error_map, index
         )
@@ -838,7 +840,7 @@ class ProductVariantBulkCreate(BaseMutation):
                 cost_price_amount=listing_data.get("cost_price"),
                 prior_price_amount=listing_data.get("prior_price"),
                 currency=listing_data["channel"].currency_code,
-                preorder_quantity_threshold=listing_data.get("preorder_threshold"),
+                is_available_for_purchase=get_new_listing_availability(listing_data),
             )
             for listing_data in listings_input
         ]

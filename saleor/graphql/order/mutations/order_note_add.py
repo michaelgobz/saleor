@@ -1,19 +1,24 @@
+from typing import Final
+
 import graphene
 from django.db import transaction
 
 from ....order import error_codes, events
+from ....order.search import update_order_search_vector
 from ....permission.enums import OrderPermissions
 from ...app.dataloaders import get_app_promise
 from ...core import ResolveInfo
 from ...core.context import SyncWebhookControlContext
 from ...core.doc_category import DOC_CATEGORY_ORDERS
-from ...core.types import BaseInputObjectType, Error, OrderError
+from ...core.types import Error
 from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import Order, OrderEvent
 from .order_note_common import OrderNoteCommon
 from .utils import call_event_by_order_status
 
-OrderNoteAddErrorCode = graphene.Enum.from_enum(error_codes.OrderNoteAddErrorCode)
+OrderNoteAddErrorCode: Final[graphene.Enum] = graphene.Enum.from_enum(
+    error_codes.OrderNoteAddErrorCode
+)
 OrderNoteAddErrorCode.doc_category = DOC_CATEGORY_ORDERS
 
 
@@ -58,32 +63,8 @@ class OrderNoteAdd(OrderNoteCommon):
                 message=cleaned_input["message"],
             )
             call_event_by_order_status(order, manager)
+            update_order_search_vector(order)
         return OrderNoteAdd(
             order=SyncWebhookControlContext(order),
             event=SyncWebhookControlContext(event),
         )
-
-
-class OrderAddNoteInput(BaseInputObjectType):
-    message = graphene.String(
-        description="Note message.",
-        name="message",
-        required=True,
-    )
-
-    class Meta:
-        doc_category = DOC_CATEGORY_ORDERS
-
-
-class OrderAddNote(OrderNoteAdd):
-    class Arguments(OrderNoteAdd.Arguments):
-        input = OrderAddNoteInput(
-            required=True, description="Fields required to create a note for the order."
-        )
-
-    class Meta:
-        description = "Adds note to the order."
-        doc_category = DOC_CATEGORY_ORDERS
-        permissions = (OrderPermissions.MANAGE_ORDERS,)
-        error_type_class = OrderError
-        error_type_field = "order_errors"

@@ -6,13 +6,15 @@ from django.test import override_settings
 from .....core.models import EventDelivery
 from .....core.notify import NotifyEventType
 from .....core.tests.utils import get_site_context_payload
-from .....order import OrderStatus
+from .....order import OrderOrigin, OrderStatus
 from .....order import events as order_events
-from .....order.actions import call_order_event, order_charged
+from .....order.actions import order_charged
 from .....order.notifications import get_default_order_payload
 from .....payment import ChargeStatus
 from .....payment.models import Payment
+from .....warehouse.models import Allocation
 from .....webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
+from .....webhook.transport.asynchronous.transport import generate_deferred_payloads
 from ....payment.types import PaymentChargeStatusEnum
 from ....tests.utils import assert_no_permission, get_graphql_content
 
@@ -172,9 +174,10 @@ def test_order_capture_by_app(
 
 
 @patch(
-    "saleor.order.actions.call_order_event",
-    wraps=call_order_event,
+    "saleor.webhook.transport.asynchronous.transport.generate_deferred_payloads.apply_async",
+    wraps=generate_deferred_payloads.apply_async,
 )
+@patch("saleor.webhook.transport.synchronous.transport.cache")
 @patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
 @patch(
     "saleor.webhook.transport.asynchronous.transport.send_webhook_request_async.apply_async"
@@ -182,22 +185,29 @@ def test_order_capture_by_app(
 @override_settings(
     PLUGINS=[
         "saleor.plugins.webhook.plugin.WebhookPlugin",
-        "saleor.payment.gateways.dummy.plugin.DummyGatewayPlugin",
+        "saleor.plugins.tests.gateways.dummy.DummyGatewayPlugin",
     ]
 )
+@override_settings(WEBHOOK_DEFERRED_PAYLOAD_QUEUE_NAME="deferred_queue")
 def test_order_capture_triggers_webhooks(
     mocked_send_webhook_request_async,
     mocked_send_webhook_request_sync,
-    wrapped_call_order_event,
+    mocked_cache,
+    wrapped_generate_deferred_payloads,
     setup_order_webhooks,
     staff_api_client,
     permission_group_manage_orders,
     payment_txn_preauth,
+    order_with_lines,
     staff_user,
     settings,
+    tax_data_response_factory,
+    setup_mock_for_cache,
 ):
     # given
+    setup_mock_for_cache({}, mocked_cache)
     mocked_send_webhook_request_sync.return_value = []
+
     (
         tax_webhook,
         shipping_filter_webhook,
@@ -209,6 +219,9 @@ def test_order_capture_triggers_webhooks(
             WebhookEventAsyncType.ORDER_FULLY_PAID,
         ]
     )
+    order = payment_txn_preauth.order
+    order.channel.automatically_confirm_all_new_orders = False
+    order.channel.save(update_fields=["automatically_confirm_all_new_orders"])
 
     permission_group_manage_orders.user_set.add(staff_api_client.user)
     order = payment_txn_preauth.order
@@ -246,14 +259,36 @@ def test_order_capture_triggers_webhooks(
         order_updated_delivery,
     ]
 
+    wrapped_generate_deferred_payloads.assert_has_calls(
+        [
+            call(
+                kwargs={
+                    "event_delivery_ids": [delivery.id],
+                    "deferred_payload_data": {
+                        "model_name": "order.order",
+                        "object_id": order.pk,
+                        "requestor_model_name": "account.user",
+                        "requestor_object_id": staff_api_client.user.pk,
+                        "request_time": None,
+                        "subscribable_object_data": None,
+                    },
+                    "send_webhook_queue": settings.ORDER_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
+                    "telemetry_context": ANY,
+                },
+                queue=settings.WEBHOOK_DEFERRED_PAYLOAD_QUEUE_NAME,
+                MessageGroupId="example.com",
+            )
+            for delivery in order_deliveries
+        ],
+        any_order=True,
+    )
+    assert wrapped_generate_deferred_payloads.call_count == len(order_deliveries)
     mocked_send_webhook_request_async.assert_has_calls(
         [
             call(
                 kwargs={"event_delivery_id": delivery.id, "telemetry_context": ANY},
                 queue=settings.ORDER_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
-                bind=True,
-                retry_backoff=10,
-                retry_kwargs={"max_retries": 5},
+                MessageGroupId="example.com:saleorappadditional",
             )
             for delivery in order_deliveries
         ],
@@ -266,8 +301,15 @@ def test_order_capture_triggers_webhooks(
         webhook_id=additional_order_webhook.id
     ).exists()
 
-    tax_delivery_call, filter_shipping_call = (
-        mocked_send_webhook_request_sync.mock_calls
+    filter_shipping_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == shipping_filter_webhook.id
+    )
+    tax_delivery_call = next(
+        call
+        for call in mocked_send_webhook_request_sync.mock_calls
+        if call.args[0].webhook_id == tax_webhook.id
     )
 
     tax_delivery = tax_delivery_call.args[0]
@@ -280,4 +322,67 @@ def test_order_capture_triggers_webhooks(
         == WebhookEventSyncType.ORDER_FILTER_SHIPPING_METHODS
     )
 
-    assert wrapped_call_order_event.called
+
+@patch("saleor.webhook.transport.synchronous.transport.send_webhook_request_sync")
+@patch(
+    "saleor.webhook.transport.asynchronous.transport.send_webhook_request_async.apply_async"
+)
+@override_settings(
+    PLUGINS=[
+        "saleor.plugins.webhook.plugin.WebhookPlugin",
+        "saleor.plugins.tests.gateways.dummy.DummyGatewayPlugin",
+    ]
+)
+def test_draft_order_capture_dont_triggers_fully_paid_webhook(
+    mocked_send_webhook_request_async,
+    mocked_send_webhook_request_sync,
+    setup_order_webhooks,
+    staff_api_client,
+    permission_group_manage_orders,
+    payment_txn_preauth,
+    staff_user,
+    settings,
+):
+    # given
+    mocked_send_webhook_request_sync.return_value = []
+    additional_order_webhook = setup_order_webhooks(
+        [
+            WebhookEventAsyncType.ORDER_PAID,
+            WebhookEventAsyncType.ORDER_UPDATED,
+            WebhookEventAsyncType.ORDER_FULLY_PAID,
+        ]
+    )[2]
+
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+    order = payment_txn_preauth.order
+
+    Allocation.objects.filter(order_line__order=order).delete()
+    order.status = OrderStatus.DRAFT
+    order.origin = OrderOrigin.DRAFT
+    order.should_refresh_prices = True
+    order.save(update_fields=["status", "origin", "should_refresh_prices"])
+
+    order_id = graphene.Node.to_global_id("Order", order.id)
+    amount = float(payment_txn_preauth.total)
+    variables = {"id": order_id, "amount": amount}
+
+    # when
+    response = staff_api_client.post_graphql(ORDER_CAPTURE_MUTATION, variables)
+
+    # then
+    content = get_graphql_content(response)
+    assert not content["data"]["orderCapture"]["errors"]
+
+    order.refresh_from_db()
+
+    # confirm that payment captured event has been created
+    assert order.events.count() == 1
+    event_captured = order.events.first()
+    assert event_captured.type == order_events.OrderEvents.PAYMENT_CAPTURED
+
+    # confirm that no event deliveries were generated for order async webhook.
+    assert not EventDelivery.objects.filter(
+        webhook_id=additional_order_webhook.id
+    ).exists()
+
+    assert not mocked_send_webhook_request_async.called

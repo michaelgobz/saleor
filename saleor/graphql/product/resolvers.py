@@ -1,14 +1,29 @@
 from django.db.models import Exists, OuterRef, Sum
 
+from ...attribute import models as attribute_models
 from ...channel.models import Channel
 from ...order import OrderStatus
 from ...order.models import Order
+from ...permission.enums import ProductPermissions
 from ...permission.utils import has_one_of_permissions
 from ...product import models
 from ...product.models import ALL_PRODUCTS_PERMISSIONS
-from ..channel import ChannelQsContext
+from ..attribute.dataloaders.assigned_attributes import (
+    AttributeByProductIdAndAttributeSlugLoader,
+    AttributeByProductVariantIdAndAttributeSlugLoader,
+    AttributesByProductIdAndLimitLoader,
+    AttributesByProductVariantIdAndSelectionAndLimitLoader,
+    AttributesVisibleToCustomerByProductIdAndLimitLoader,
+    AttributesVisibleToCustomerByProductVariantIdAndSelectionAndLimitLoader,
+)
+from ..attribute.utils.shared import AssignedAttributeData
 from ..core import ResolveInfo
-from ..core.context import get_database_connection_name
+from ..core.context import (
+    ChannelContext,
+    ChannelQsContext,
+    SaleorContext,
+    get_database_connection_name,
+)
 from ..core.tracing import traced_resolver
 from ..core.utils import from_global_id_or_error
 from ..utils import get_user_or_app_from_context
@@ -32,11 +47,30 @@ def resolve_category_by_translated_slug(info: ResolveInfo, slug, slug_language_c
     )
 
 
+def resolve_category_by_external_reference(info: ResolveInfo, external_reference):
+    return (
+        models.Category.objects.using(get_database_connection_name(info.context))
+        .filter(external_reference=external_reference)
+        .first()
+    )
+
+
 def resolve_collection_by_id(info: ResolveInfo, id, channel_slug, requestor):
     return (
         models.Collection.objects.using(get_database_connection_name(info.context))
         .visible_to_user(requestor, channel_slug=channel_slug)
         .filter(id=id)
+        .first()
+    )
+
+
+def resolve_collection_by_external_reference(
+    info: ResolveInfo, external_reference, channel_slug, requestor
+):
+    return (
+        models.Collection.objects.using(get_database_connection_name(info.context))
+        .visible_to_user(requestor, channel_slug=channel_slug)
+        .filter(external_reference=external_reference)
         .first()
     )
 
@@ -68,20 +102,6 @@ def resolve_collections(info: ResolveInfo, channel_slug):
     ).visible_to_user(requestor, channel_slug)
 
     return ChannelQsContext(qs=qs, channel_slug=channel_slug)
-
-
-def resolve_digital_content_by_id(info, id):
-    return (
-        models.DigitalContent.objects.using(get_database_connection_name(info.context))
-        .filter(pk=id)
-        .first()
-    )
-
-
-def resolve_digital_contents(info: ResolveInfo):
-    return models.DigitalContent.objects.using(
-        get_database_connection_name(info.context)
-    ).all()
 
 
 def resolve_product(
@@ -240,3 +260,120 @@ def resolve_report_product_sales(info, period, channel_slug) -> ChannelQsContext
     qs = qs.order_by("-quantity_ordered")
 
     return ChannelQsContext(qs=qs, channel_slug=channel_slug)
+
+
+def requestor_has_access_to_all_attributes(context: SaleorContext) -> bool:
+    requestor = get_user_or_app_from_context(context)
+    if (
+        requestor
+        and requestor.is_active
+        and requestor.has_perm(ProductPermissions.MANAGE_PRODUCTS)
+    ):
+        return True
+    return False
+
+
+def resolve_product_attribute(root: ChannelContext[models.Product], info, slug):
+    def with_assigned_attribute_data(attribute: attribute_models.Attribute | None):
+        if not attribute:
+            return None
+
+        if (
+            not requestor_has_access_to_all_attributes(info.context)
+            and not attribute.visible_in_storefront
+        ):
+            return None
+
+        return AssignedAttributeData(
+            attribute=attribute,
+            product_id=root.node.id,
+            channel_slug=root.channel_slug,
+        )
+
+    return (
+        AttributeByProductIdAndAttributeSlugLoader(info.context)
+        .load((root.node.id, slug))
+        .then(with_assigned_attribute_data)
+    )
+
+
+def resolve_product_attributes(
+    root: ChannelContext[models.Product], info, *, limit: int | None
+):
+    def get_assigned_attributes(
+        attributes: list[attribute_models.Attribute],
+    ) -> list[AssignedAttributeData]:
+        return [
+            AssignedAttributeData(
+                attribute=attribute,
+                product_id=root.node.id,
+                channel_slug=root.channel_slug,
+            )
+            for attribute in attributes
+        ]
+
+    if requestor_has_access_to_all_attributes(info.context):
+        dataloader = AttributesByProductIdAndLimitLoader
+    else:
+        dataloader = AttributesVisibleToCustomerByProductIdAndLimitLoader
+    return (
+        dataloader(info.context)
+        .load((root.node.id, limit))
+        .then(get_assigned_attributes)
+    )
+
+
+def resolve_variant_attributes(
+    root: ChannelContext[models.ProductVariant],
+    info,
+    *,
+    variant_selection: bool | None = None,
+    limit: int | None = None,
+):
+    def get_assigned_attributes(
+        attributes: list[attribute_models.Attribute],
+    ) -> list[AssignedAttributeData]:
+        return [
+            AssignedAttributeData(
+                attribute=attribute,
+                variant_id=root.node.id,
+                channel_slug=root.channel_slug,
+            )
+            for attribute in attributes
+        ]
+
+    if requestor_has_access_to_all_attributes(info.context):
+        dataloader = AttributesByProductVariantIdAndSelectionAndLimitLoader
+    else:
+        dataloader = (
+            AttributesVisibleToCustomerByProductVariantIdAndSelectionAndLimitLoader
+        )
+    return (
+        dataloader(info.context)
+        .load((root.node.id, limit, variant_selection))
+        .then(get_assigned_attributes)
+    )
+
+
+def resolve_variant_attribute(root: ChannelContext[models.ProductVariant], info, slug):
+    def with_assigned_attribute_data(attribute: attribute_models.Attribute | None):
+        if attribute is None:
+            return None
+
+        if (
+            not requestor_has_access_to_all_attributes(info.context)
+            and not attribute.visible_in_storefront
+        ):
+            return None
+
+        return AssignedAttributeData(
+            attribute=attribute,
+            channel_slug=root.channel_slug,
+            variant_id=root.node.id,
+        )
+
+    return (
+        AttributeByProductVariantIdAndAttributeSlugLoader(info.context)
+        .load((root.node.id, slug))
+        .then(with_assigned_attribute_data)
+    )

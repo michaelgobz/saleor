@@ -1,7 +1,9 @@
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from django.db.models import Q
 from django.utils import timezone
 
 from ..core.enums import ReportingPeriod
@@ -69,7 +71,14 @@ def filter_by_ids(object_type):
     return inner
 
 
-def filter_where_range_field(qs, field, value):
+def filter_where_range_field_with_conditions(qs: "QuerySet", field: str, value: dict):
+    """Filter a queryset based on a range field or eq and oneOf conditions.
+
+    Allows filtering a queryset on a specified field and a set of conditions.
+    It supports filtering by a range (`gte` and `lte`), equality (`eq`),
+    or a list of values (`one_of`).
+    If no valid conditions are provided, it returns an empty queryset.
+    """
     if value is None:
         return qs.none()
     range = value.get("range")
@@ -87,6 +96,12 @@ def filter_where_range_field(qs, field, value):
 
 
 def filter_where_by_range_field(qs: "QuerySet", field: str, value: dict):
+    """Filter a queryset based on a range field.
+
+    Allows filtering a queryset on a specified field using a range of values.
+    It supports filtering by a range defined by `gte` and `lte` (less than or equal to).
+    If no valid conditions are provided, it returns an empty queryset.
+    """
     if value is None:
         return qs.none()
     gte, lte = value.get("gte"), value.get("lte")
@@ -99,7 +114,7 @@ ValueT = str | UUID
 
 
 def filter_where_by_value_field(
-    qs: "QuerySet", field: str, value: dict[str, ValueT | list[ValueT]]
+    qs: "QuerySet", field: str, value: Mapping[str, ValueT | Sequence[ValueT]]
 ):
     if value is None:
         return qs.none()
@@ -108,11 +123,13 @@ def filter_where_by_value_field(
         return qs.filter(**{field: value["eq"]})
     if one_of := value.get("one_of"):
         return qs.filter(**{f"{field}__in": one_of})
+    if not_one_of := value.get("not_one_of"):
+        return qs.filter(~Q(**{f"{field}__in": not_one_of}))
     return qs.none()
 
 
 def filter_where_by_id_field(
-    qs: "QuerySet", field: str, value: dict[str, str | list[str]], type: str
+    qs: "QuerySet", field: str, value: Mapping[str, str | list[str]], type: str
 ):
     from . import resolve_global_ids_to_primary_keys
 
@@ -132,6 +149,9 @@ def filter_where_by_numeric_field(
     field: str,
     value: dict[str, Number | list[Number] | dict[str, Number]],
 ):
+    if not value:
+        return qs.none()
+
     one_of = value.get("one_of")
     range = value.get("range")
 
@@ -151,3 +171,15 @@ def filter_where_by_numeric_field(
             qs = qs.filter(**{f"{field}__gte": gte})
         return qs
     return qs.none()
+
+
+def filter_where_by_price_field(qs: "QuerySet", field: str, value: dict) -> "QuerySet":
+    if value is None:
+        return qs.none()
+    if currency := value.get("currency"):
+        qs = qs.filter(currency=currency)
+    return filter_where_range_field_with_conditions(qs, field, value.get("amount", {}))
+
+
+def filter_slug_list(qs, _, values):
+    return qs.filter(slug__in=values)

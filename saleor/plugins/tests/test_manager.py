@@ -13,8 +13,15 @@ from ...channel import TransactionFlowStrategy
 from ...checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from ...core.prices import quantize_price
 from ...core.taxes import TaxType, zero_money, zero_taxed_money
+from ...giftcard.const import (
+    GIFT_CARD_PAYMENT_GATEWAY_ID,
+    GIFT_CARD_PAYMENT_GATEWAY_NAME,
+)
 from ...graphql.discount.utils import convert_migrated_sale_predicate_to_catalogue_info
 from ...payment import TokenizedPaymentFlow
+from ...payment.gateway import (
+    get_payment_gateways,
+)
 from ...payment.interface import (
     ListStoredPaymentMethodsRequestData,
     PaymentGateway,
@@ -34,7 +41,6 @@ from ...payment.interface import (
     TransactionSessionResult,
 )
 from ...product.models import Product
-from ...shipping.interface import ShippingMethodData
 from ..base_plugin import ExternalAccessTokens
 from ..manager import PluginsManager, get_plugins_manager
 from ..models import PluginConfiguration
@@ -358,6 +364,7 @@ def test_manager_get_order_line_tax_rate_sample_plugin(order_with_lines):
     unit_price = TaxedMoney(Money(12, "USD"), Money(15, "USD"))
     tax_rate = PluginsManager(plugins=plugins).get_order_line_tax_rate(
         order,
+        line,
         product,
         line.variant,
         None,
@@ -381,6 +388,7 @@ def test_manager_get_order_line_tax_rate_no_plugins(
     product = Product.objects.get(name=line.product_name)
     tax_rate = PluginsManager(plugins=[]).get_order_line_tax_rate(
         order,
+        line,
         product,
         line.variant,
         None,
@@ -680,7 +688,7 @@ def test_manager_serve_list_of_payment_gateways(channel_USD):
         "saleor.plugins.tests.sample_plugins.InactivePaymentGateway",
     ]
     manager = PluginsManager(plugins=plugins)
-    assert manager.list_payment_gateways() == [expected_gateway]
+    assert get_payment_gateways(manager=manager) == [expected_gateway]
 
 
 def test_manager_serve_list_all_payment_gateways(channel_USD):
@@ -704,7 +712,7 @@ def test_manager_serve_list_all_payment_gateways(channel_USD):
         "saleor.plugins.tests.sample_plugins.InactivePaymentGateway",
     ]
     manager = PluginsManager(plugins=plugins)
-    assert manager.list_payment_gateways(active_only=False) == expected_gateways
+    assert get_payment_gateways(manager=manager, active_only=False) == expected_gateways
 
 
 def test_manager_serve_list_all_payment_gateways_specified_currency(channel_USD):
@@ -714,7 +722,13 @@ def test_manager_serve_list_all_payment_gateways_specified_currency(channel_USD)
             name=ActiveDummyPaymentGateway.PLUGIN_NAME,
             config=ActiveDummyPaymentGateway.CLIENT_CONFIG,
             currencies=ActiveDummyPaymentGateway.SUPPORTED_CURRENCIES,
-        )
+        ),
+        PaymentGateway(
+            id=GIFT_CARD_PAYMENT_GATEWAY_ID,
+            name=GIFT_CARD_PAYMENT_GATEWAY_NAME,
+            currencies=["EUR"],
+            config=[],
+        ),
     ]
 
     plugins = [
@@ -724,7 +738,7 @@ def test_manager_serve_list_all_payment_gateways_specified_currency(channel_USD)
     ]
     manager = PluginsManager(plugins=plugins)
     assert (
-        manager.list_payment_gateways(currency="EUR", active_only=False)
+        get_payment_gateways(manager=manager, currency="EUR", active_only=False)
         == expected_gateways
     )
 
@@ -745,6 +759,12 @@ def test_manager_serve_list_all_payment_gateways_specified_currency_two_gateways
             config=ActiveDummyPaymentGateway.CLIENT_CONFIG,
             currencies=ActiveDummyPaymentGateway.SUPPORTED_CURRENCIES,
         ),
+        PaymentGateway(
+            id=GIFT_CARD_PAYMENT_GATEWAY_ID,
+            name=GIFT_CARD_PAYMENT_GATEWAY_NAME,
+            currencies=["USD"],
+            config=[],
+        ),
     ]
 
     plugins = [
@@ -754,7 +774,7 @@ def test_manager_serve_list_all_payment_gateways_specified_currency_two_gateways
     ]
     manager = PluginsManager(plugins=plugins)
     assert (
-        manager.list_payment_gateways(currency="USD", active_only=False)
+        get_payment_gateways(manager=manager, currency="USD", active_only=False)
         == expected_gateways
     )
 
@@ -1196,7 +1216,7 @@ def test_manager_transaction_initialize_session(
         transaction=transaction,
         source_object=checkout,
         action=TransactionProcessActionData(
-            amount=Decimal("10"),
+            amount=Decimal(10),
             currency=transaction.currency,
             action_type=action_type,
         ),
@@ -1238,7 +1258,7 @@ def test_manager_transaction_process_session(
         transaction=transaction,
         source_object=checkout,
         action=TransactionProcessActionData(
-            amount=Decimal("10"),
+            amount=Decimal(10),
             currency=transaction.currency,
             action_type=action_type,
         ),
@@ -1269,6 +1289,26 @@ def test_checkout_fully_paid(mocked_sample_method, checkout, webhook):
 
     # when
     manager.checkout_fully_paid(checkout, webhooks=webhooks)
+
+    # then
+    mocked_sample_method.assert_called_once_with(
+        checkout, previous_value=None, webhooks=webhooks
+    )
+
+
+@patch("saleor.plugins.tests.sample_plugins.PluginSample.checkout_fully_authorized")
+def test_checkout_fully_authorized(mocked_sample_method, checkout, webhook):
+    # given
+    plugins = [
+        "saleor.plugins.tests.sample_plugins.PluginSample",
+        "saleor.plugins.tests.sample_plugins.PluginInactive",
+    ]
+
+    manager = PluginsManager(plugins=plugins)
+    webhooks = {webhook}
+
+    # when
+    manager.checkout_fully_authorized(checkout, webhooks=webhooks)
 
     # then
     mocked_sample_method.assert_called_once_with(
@@ -1584,136 +1624,3 @@ def test_run_plugin_method_until_first_success_for_active_plugins_only(
     # then
     assert result is None
     assert mock_run_method.call_count == calls
-
-
-def test_manager_skips_external_shipping_with_different_currency_than_checkout_currency(
-    checkout_with_item,
-):
-    # given
-    plugins = ["saleor.plugins.tests.sample_plugins.PluginSample"]
-
-    # when
-    shipping_methods = PluginsManager(
-        plugins=plugins
-    ).list_shipping_methods_for_checkout(
-        checkout=checkout_with_item,
-        channel_slug=checkout_with_item.channel.slug,
-    )
-
-    # then
-    assert len(shipping_methods) == 1
-    assert shipping_methods[0].price.currency == checkout_with_item.currency
-
-
-@mock.patch(
-    "saleor.plugins.manager.PluginsManager._PluginsManager__run_method_on_plugins"
-)
-def test_excluded_shipping_methods_for_checkout_run_webhook_on_existing_shipping_methods(
-    mock__run_method_on_plugins, channel_USD, checkout
-):
-    plugins = [
-        "saleor.plugins.tests.sample_plugins.PluginSample",
-    ]
-
-    manager = PluginsManager(plugins=plugins)
-
-    # given shipping methods contain at least 1 method
-
-    shipping_method = ShippingMethodData(
-        id="123",
-        price=Money(Decimal("10.59"), "USD"),
-    )
-
-    non_empty_shipping_methods = [shipping_method]
-
-    # when manager executes for shipping methods exclusion
-
-    manager.excluded_shipping_methods_for_checkout(
-        checkout, channel_USD, non_empty_shipping_methods
-    )
-
-    # then webhook should be emitted
-
-    mock__run_method_on_plugins.assert_called_once()
-
-
-@mock.patch(
-    "saleor.plugins.manager.PluginsManager._PluginsManager__run_method_on_plugins"
-)
-def test_excluded_shipping_methods_for_checkout_dont_run_webhook_on_missing_shipping_methods(
-    mock__run_method_on_plugins, channel_USD, checkout
-):
-    plugins = [
-        "saleor.plugins.tests.sample_plugins.PluginSample",
-    ]
-
-    manager = PluginsManager(plugins=plugins)
-
-    # given shipping methods are empty
-
-    empty_shipping_methods = []
-
-    # when manager executes for shipping methods exclusion
-
-    manager.excluded_shipping_methods_for_checkout(
-        checkout, channel_USD, empty_shipping_methods
-    )
-
-    # then webhook should not be emitted
-
-    mock__run_method_on_plugins.assert_not_called()
-
-
-@mock.patch(
-    "saleor.plugins.manager.PluginsManager._PluginsManager__run_method_on_plugins"
-)
-def test_excluded_shipping_methods_for_order_run_webhook_on_existing_shipping_methods(
-    mock__run_method_on_plugins, draft_order
-):
-    plugins = [
-        "saleor.plugins.tests.sample_plugins.PluginSample",
-    ]
-
-    manager = PluginsManager(plugins=plugins)
-
-    # given shipping methods contain at least 1 method
-
-    shipping_method = ShippingMethodData(
-        id="123",
-        price=Money(Decimal("10.59"), "USD"),
-    )
-
-    non_empty_shipping_methods = [shipping_method]
-
-    # when manager executes for shipping methods exclusion
-
-    manager.excluded_shipping_methods_for_order(draft_order, non_empty_shipping_methods)
-
-    # then webhook should be emitted
-
-    mock__run_method_on_plugins.assert_called_once()
-
-
-@mock.patch(
-    "saleor.plugins.manager.PluginsManager._PluginsManager__run_method_on_plugins"
-)
-def test_excluded_shipping_methods_for_order_dont_run_webhook_on_missing_shipping_methods(
-    mock__run_method_on_plugins, draft_order
-):
-    plugins = [
-        "saleor.plugins.tests.sample_plugins.PluginSample",
-    ]
-
-    manager = PluginsManager(plugins=plugins)
-
-    # given shipping methods are empty
-
-    empty_shipping_methods = []
-
-    # when manager executes for shipping methods exclusion
-
-    manager.excluded_shipping_methods_for_order(draft_order, empty_shipping_methods)
-
-    # then webhook should not be emitted
-
-    mock__run_method_on_plugins.assert_not_called()

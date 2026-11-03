@@ -1,4 +1,10 @@
-from ...app.types import AppExtensionMount, AppExtensionTarget, AppType
+from typing import Final
+
+import graphene
+
+from ...app import error_codes
+from ...app.types import AppType
+from ..core.descriptions import ADDED_IN_323
 from ..core.doc_category import DOC_CATEGORY_APPS
 from ..core.enums import to_enum
 
@@ -52,18 +58,36 @@ class CircuitBreakerState:
     ]
 
 
-CircuitBreakerStateEnum = to_enum(CircuitBreakerState, description=breaker_description)
+CircuitBreakerStateEnum: Final[graphene.Enum] = to_enum(
+    CircuitBreakerState, description=breaker_description
+)
 CircuitBreakerStateEnum.doc_category = DOC_CATEGORY_APPS
 
-AppTypeEnum = to_enum(AppType, description=description)
+AppTypeEnum: Final[graphene.Enum] = to_enum(AppType, description=description)
 AppTypeEnum.doc_category = DOC_CATEGORY_APPS
 
-AppExtensionMountEnum = to_enum(
-    AppExtensionMount, description=AppExtensionMount.__doc__
-)
-AppExtensionMountEnum.doc_category = DOC_CATEGORY_APPS
 
-AppExtensionTargetEnum = to_enum(
-    AppExtensionTarget, description=AppExtensionTarget.__doc__
+class AppProblemDismissedBy:
+    APP = "app"
+    USER = "user"
+
+    CHOICES = [
+        (APP, "app"),
+        (USER, "user"),
+    ]
+
+
+AppProblemDismissedByEnum: Final[graphene.Enum] = to_enum(AppProblemDismissedBy)
+AppProblemDismissedByEnum.doc_category = DOC_CATEGORY_APPS
+
+
+AppProblemCreateErrorCode: Final[graphene.Enum] = graphene.Enum.from_enum(
+    error_codes.AppProblemCreateErrorCode
 )
-AppExtensionTargetEnum.doc_category = DOC_CATEGORY_APPS
+AppProblemDismissErrorCode: Final[graphene.Enum] = graphene.Enum.from_enum(
+    error_codes.AppProblemDismissErrorCode
+)
+AppSelfUpdateErrorCode: Final[graphene.Enum] = graphene.Enum.from_enum(
+    error_codes.AppSelfUpdateErrorCode,
+    description="Error codes for the appSelfUpdate mutation." + ADDED_IN_323,
+)

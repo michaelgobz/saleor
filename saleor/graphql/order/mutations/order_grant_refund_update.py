@@ -7,10 +7,15 @@ from graphql import GraphQLError
 
 from ....order import OrderGrantedRefundStatus, models
 from ....order.utils import update_order_charge_data
+from ....page.models import Page
 from ....permission.enums import OrderPermissions
 from ...core import ResolveInfo
 from ...core.context import SyncWebhookControlContext
-from ...core.descriptions import ADDED_IN_320, PREVIEW_FEATURE
+from ...core.descriptions import (
+    ADDED_IN_322,
+    ADDED_IN_323,
+    PREVIEW_FEATURE,
+)
 from ...core.doc_category import DOC_CATEGORY_ORDERS
 from ...core.mutations import BaseMutation
 from ...core.scalars import Decimal
@@ -18,12 +23,14 @@ from ...core.types import BaseInputObjectType
 from ...core.types.common import Error, NonNullList
 from ...core.utils import from_global_id_or_error
 from ...payment.types import TransactionItem
+from ...payment.utils import validate_reason_reference_context
+from ...site.dataloaders import get_site_promise
 from ..enums import OrderGrantRefundUpdateErrorCode, OrderGrantRefundUpdateLineErrorCode
 from ..types import Order, OrderGrantedRefund
 from .order_grant_refund_utils import (
-    assign_order_lines,
-    get_input_lines_data,
-    handle_lines_with_quantity_already_refunded,
+    GrantRefundLineDict,
+    clean_grant_refund_lines,
+    resolve_reason_reference_page,
     shipping_costs_already_granted,
 )
 
@@ -61,6 +68,10 @@ class OrderGrantRefundUpdateLineAddInput(BaseInputObjectType):
         description="The quantity of line items to be marked to refund.", required=True
     )
     reason = graphene.String(description="Reason of the granted refund for the line.")
+    reason_reference = graphene.ID(
+        description="ID of a `Page` (Model) to reference in reason for the line."
+        + ADDED_IN_323,
+    )
 
     class Meta:
         doc_category = DOC_CATEGORY_ORDERS
@@ -75,6 +86,9 @@ class OrderGrantRefundUpdateInput(BaseInputObjectType):
         )
     )
     reason = graphene.String(description="Reason of the granted refund.")
+    reason_reference = graphene.ID(
+        description="ID of a `Page` (Model) to reference in reason." + ADDED_IN_322
+    )
     add_lines = NonNullList(
         OrderGrantRefundUpdateLineAddInput,
         description="Lines to assign to granted refund.",
@@ -97,9 +111,7 @@ class OrderGrantRefundUpdateInput(BaseInputObjectType):
             "If `amount` is not provided in the input and calculated automatically by "
             "Saleor, the `min(calculatedAmount, transaction.chargedAmount)` will be "
             "used."
-            "Field will be required starting from Saleor 3.21."
-            + ADDED_IN_320
-            + PREVIEW_FEATURE
+            "Field will be required starting from Saleor 3.21." + PREVIEW_FEATURE
         ),
         required=False,
     )
@@ -162,8 +174,7 @@ class OrderGrantRefundUpdate(BaseMutation):
             and not only_reason_provided
         ):
             fields_from_input = set(input.keys())
-            if "reason" in fields_from_input:
-                fields_from_input.remove("reason")
+            fields_from_input.discard("reason")
             error_msg = (
                 "Only reason can be updated when `OrderGrantedRefund.status` is PENDING"
                 " or SUCCESS."
@@ -221,28 +232,19 @@ class OrderGrantRefundUpdate(BaseMutation):
     def clean_add_lines(
         cls,
         order: models.Order,
-        lines: list[dict[str, str | int]],
+        lines: list[GrantRefundLineDict],
         errors: list[dict[str, Any]],
         line_ids_exclude: list[int],
+        refund_reason_reference_type_pk: int | None,
     ) -> list[models.OrderGrantedRefundLine]:
-        input_lines_data = get_input_lines_data(
-            lines, errors, OrderGrantRefundUpdateLineErrorCode.GRAPHQL_ERROR.value
-        )
-        assign_order_lines(
-            order,
-            input_lines_data,
-            errors,
-            OrderGrantRefundUpdateLineErrorCode.NOT_FOUND.value,
-        )
-        handle_lines_with_quantity_already_refunded(
-            order,
-            input_lines_data,
-            errors,
-            OrderGrantRefundUpdateLineErrorCode.QUANTITY_GREATER_THAN_AVAILABLE.value,
+        return clean_grant_refund_lines(
+            order=order,
+            lines=lines,
+            refund_reason_reference_type_pk=refund_reason_reference_type_pk,
+            errors=errors,
+            line_error_code_enum=OrderGrantRefundUpdateLineErrorCode,
             granted_refund_lines_to_exclude=line_ids_exclude,
         )
-
-        return list(input_lines_data.values())
 
     @classmethod
     def clean_input(
@@ -262,6 +264,29 @@ class OrderGrantRefundUpdate(BaseMutation):
         add_lines = input.get("add_lines", [])
         remove_lines = input.get("remove_lines", [])
         grant_refund_for_shipping = input.get("grant_refund_for_shipping", None)
+        reason_reference_id = input.get("reason_reference")
+
+        site = get_site_promise(info.context).get()
+
+        refund_reason_reference_type = site.settings.refund_reason_reference_type
+        should_apply = validate_reason_reference_context(
+            reason_reference_id=reason_reference_id,
+            requestor_is_user=bool(info.context.user),
+            reason_reference_field_name="reason_reference",
+            error_code_enum=OrderGrantRefundUpdateErrorCode,
+            reason_reference_type=refund_reason_reference_type,
+        )
+        refund_reason_reference_type_pk = (
+            refund_reason_reference_type.pk if refund_reason_reference_type else None
+        )
+
+        reason_reference_instance: Page | None = None
+        if should_apply and refund_reason_reference_type_pk:
+            reason_reference_instance = resolve_reason_reference_page(
+                str(reason_reference_id),
+                refund_reason_reference_type_pk,
+                OrderGrantRefundUpdateErrorCode,
+            )
 
         line_ids_to_remove = []
         if remove_lines:
@@ -276,10 +301,14 @@ class OrderGrantRefundUpdate(BaseMutation):
                 params={"remove_lines": remove_errors},
             )
 
-        lines_to_add = []
+        lines_to_add: list[models.OrderGrantedRefundLine] = []
         if add_lines:
             lines_to_add = cls.clean_add_lines(
-                order, add_lines, add_errors, line_ids_to_remove
+                order,
+                add_lines,
+                add_errors,
+                line_ids_to_remove,
+                refund_reason_reference_type_pk,
             )
             for line in lines_to_add:
                 line.granted_refund = granted_refund
@@ -347,10 +376,12 @@ class OrderGrantRefundUpdate(BaseMutation):
         cleaned_input = {
             "amount": amount,
             "reason": reason,
+            "reason_reference": reason_reference_id,
             "add_lines": lines_to_add,
             "remove_lines": line_ids_to_remove,
             "grant_refund_for_shipping": grant_refund_for_shipping,
             "transaction_item": transaction_item,
+            "reason_reference_instance": reason_reference_instance,
         }
         return cleaned_input
 
@@ -399,6 +430,11 @@ class OrderGrantRefundUpdate(BaseMutation):
             if reason is not None:
                 granted_refund.reason = reason
 
+            reason_reference_instance = cleaned_input["reason_reference_instance"]
+
+            if reason_reference_instance:
+                granted_refund.reason_reference = reason_reference_instance
+
             granted_refund.save(
                 update_fields=[
                     "amount_value",
@@ -406,6 +442,7 @@ class OrderGrantRefundUpdate(BaseMutation):
                     "shipping_costs_included",
                     "updated_at",
                     "transaction_item",
+                    "reason_reference",
                 ]
             )
 
@@ -422,6 +459,7 @@ class OrderGrantRefundUpdate(BaseMutation):
         order = granted_refund.order
 
         cleaned_input = cls.clean_input(info, granted_refund, input)
+
         cls.process_update_for_granted_refund(order, granted_refund, cleaned_input)
         update_order_charge_data(order)
         return cls(

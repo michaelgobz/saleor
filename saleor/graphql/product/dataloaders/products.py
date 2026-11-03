@@ -19,7 +19,7 @@ from ....product.models import (
     VariantChannelListingPromotionRule,
     VariantMedia,
 )
-from ...channel.dataloaders import ChannelBySlugLoader
+from ...channel.dataloaders.by_self import ChannelBySlugLoader
 from ...core.dataloaders import BaseThumbnailBySizeAndFormatLoader, DataLoader
 
 ProductIdAndChannelSlug = tuple[int, str]
@@ -262,8 +262,10 @@ class AvailableProductVariantsByProductIdAndChannel(
     context_key = "available_productvariant_by_product_and_channel"
 
     def get_variants_filter(self, channel_id: int):
-        variant_channel_listings = ProductVariantChannelListing.objects.filter(
-            channel_id=channel_id, price_amount__isnull=False
+        variant_channel_listings = (
+            ProductVariantChannelListing.objects.sellable().filter(
+                channel_id=channel_id
+            )
         )
         return Q(Exists(variant_channel_listings.filter(variant_id=OuterRef("id"))))
 
@@ -385,6 +387,27 @@ class VariantChannelListingByVariantIdAndChannelIdLoader(
         ]
 
 
+class VariantChannelListingsByProductIdLoader(
+    DataLoader[int, Iterable[ProductVariantChannelListing]]
+):
+    context_key = "variantchannelistings_by_product_id"
+
+    def batch_load(self, keys: Iterable[int]):
+        variants_channel_listings = (
+            ProductVariantChannelListing.objects.all()
+            .using(self.database_connection_name)
+            .sellable()
+            .filter(variant__product_id__in=keys)
+            .annotate(product_id=F("variant__product_id"))
+            .order_by("pk")
+        )
+        listing_map = defaultdict(list)
+        for listing in variants_channel_listings.iterator(chunk_size=1000):
+            listing_map[listing.product_id].append(listing)
+
+        return [listing_map[key] for key in keys]
+
+
 class VariantsChannelListingByProductIdAndChannelSlugLoader(
     DataLoader[ProductIdAndChannelSlug, Iterable[ProductVariantChannelListing]]
 ):
@@ -423,10 +446,10 @@ class VariantsChannelListingByProductIdAndChannelSlugLoader(
         variants_channel_listings = (
             ProductVariantChannelListing.objects.all()
             .using(self.database_connection_name)
+            .sellable()
             .filter(
                 channel__slug=channel_slug,
                 variant__product_id__in=products_ids,
-                price_amount__isnull=False,
             )
             .annotate(product_id=F("variant__product_id"))
             .order_by("pk")

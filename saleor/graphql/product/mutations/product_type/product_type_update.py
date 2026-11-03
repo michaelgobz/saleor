@@ -3,8 +3,12 @@ import graphene
 from .....permission.enums import ProductTypePermissions
 from .....product import models
 from .....product.tasks import update_variants_names
+from .....product.utils.search_helpers import (
+    mark_products_search_vector_as_dirty_in_batches,
+)
 from ....core import ResolveInfo
 from ....core.types import ProductError
+from ....plugins.dataloaders import get_plugin_manager_promise
 from ...types import ProductType
 from .product_type_create import ProductTypeCreate, ProductTypeInput
 
@@ -29,7 +33,7 @@ class ProductTypeUpdate(ProductTypeCreate):
         return data.get("kind", instance.kind)
 
     @classmethod
-    def save(cls, info: ResolveInfo, instance, cleaned_input):
+    def save(cls, info: ResolveInfo, instance, cleaned_input, instance_tracker=None):
         variant_attr = cleaned_input.get("variant_attributes")
         if variant_attr:
             variant_attr = set(variant_attr)
@@ -38,11 +42,17 @@ class ProductTypeUpdate(ProductTypeCreate):
         super().save(info, instance, cleaned_input)
 
     @classmethod
-    def post_save_action(cls, _info: ResolveInfo, instance, cleaned_input):
+    def post_save_action(cls, info: ResolveInfo, instance, cleaned_input):
         if (
             "product_attributes" in cleaned_input
             or "variant_attributes" in cleaned_input
         ):
-            models.Product.objects.filter(product_type=instance).update(
-                search_index_dirty=True
+            product_ids = list(
+                models.Product.objects.filter(product_type=instance).values_list(
+                    "id", flat=True
+                )
             )
+            mark_products_search_vector_as_dirty_in_batches(product_ids)
+
+        manager = get_plugin_manager_promise(info.context).get()
+        cls.call_event(manager.product_type_updated, instance)

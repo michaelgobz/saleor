@@ -19,6 +19,15 @@
 <br>
 
 <div align="center">
+ Get to know Saleor: <br>
+  <a href="https://saleor.io/cloud/talk-to-us?utm_source=github&utm_medium=readme&utm_campaign=repo_saleor">Talk to a human</a>
+  <span> | </span>
+  <a href="https://cloud.saleor.io/signup?utm_source=github&utm_medium=readme&utm_campaign=repo_saleor">Talk to the API</a>
+</div>
+
+<br>
+
+<div align="center">
   Join our community: <br>
   <a href="https://saleor.io/">Website</a>
   <span> | </span>
@@ -36,12 +45,6 @@
 <br>
 
 <div align="center">
-
-[![Discord Badge](https://dcbadge.vercel.app/api/server/unUfh24R6d)](https://saleor.io/discord)
-
-</div>
-
-<div align="center">
   <a href="https://codecov.io/gh/saleor/saleor" >
     <img src="https://codecov.io/gh/saleor/saleor/graph/badge.svg?token=qkNcTJ4TmI" alt="Coverage"/>
   </a>
@@ -51,6 +54,9 @@
   <a href="https://github.com/astral-sh/ruff">
     <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Linted by Ruff">
   </a>
+ <a href="https://saleor.io/discord">
+   <img src="https://img.shields.io/discord/864066819866624010"  alt="Discord" >
+ </a>
 </div>
 
 ## Table of Contents
@@ -183,7 +189,7 @@ Get more details (e.g., how to run Saleor on your local machine) in our [Contrib
 
 ## License
 
-Disclaimer: Everything you see here is open and free to use as long as you comply with the [license](https://github.com/saleor/saleor/blob/master/LICENSE). There are no hidden charges. We promise to do our best to fix bugs and improve the code.
+Disclaimer: Everything you see here is open and free to use as long as you comply with the [license](https://github.com/saleor/saleor/blob/main/LICENSE). There are no hidden charges. We promise to do our best to fix bugs and improve the code.
 
 #### Crafted with ❤️ by [Saleor Commerce](https://saleor.io)
 

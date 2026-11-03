@@ -9,7 +9,7 @@ from django.contrib.postgres.indexes import BTreeIndex, GinIndex
 from django.contrib.postgres.search import SearchVectorField
 from django.core.validators import MinValueValidator
 from django.db import connection, models
-from django.db.models import F, JSONField, Max
+from django.db.models import F, JSONField, Max, Q
 from django.db.models.expressions import Exists, OuterRef
 from django.utils.timezone import now
 from django_measurement.models import MeasurementField
@@ -255,6 +255,12 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
     shipping_tax_class_metadata = JSONField(
         blank=True, db_default={}, default=dict, encoder=CustomJsonEncoder
     )
+    shipping_method_private_metadata = JSONField(
+        blank=True, null=True, default=dict, encoder=CustomJsonEncoder
+    )
+    shipping_method_metadata = JSONField(
+        blank=True, null=True, default=dict, encoder=CustomJsonEncoder
+    )
 
     # Token of a checkout instance that this order was created from
     checkout_token = models.CharField(max_length=36, blank=True)
@@ -336,6 +342,31 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         net_amount_field="subtotal_net_amount",
         gross_amount_field="subtotal_gross_amount",
     )
+    # base prices contain only catalogue discounts (do not contain voucher discount).
+    # They are kept apart from `subtotal`/`total` so that the pre-tax values needed to
+    # qualify order promotions never overwrite the prices that carry the taxes.
+    #
+    # These are internal to the price recalculation: `_set_order_base_prices` writes
+    # them right before the order promotion predicates read them, in the same pass,
+    # and nothing else reads them. That is why existing orders were not backfilled -
+    # orders that never recalculate keep the default 0. Exposing these fields anywhere
+    # else (API, webhook payloads, filters) requires backfilling them first.
+    base_subtotal_amount = models.DecimalField(
+        max_digits=settings.DEFAULT_MAX_DIGITS,
+        decimal_places=settings.DEFAULT_DECIMAL_PLACES,
+        default=Decimal(0),
+        db_default=Decimal(0),
+    )
+    base_subtotal = MoneyField(
+        amount_field="base_subtotal_amount", currency_field="currency"
+    )
+    base_total_amount = models.DecimalField(
+        max_digits=settings.DEFAULT_MAX_DIGITS,
+        decimal_places=settings.DEFAULT_DECIMAL_PLACES,
+        default=Decimal(0),
+        db_default=Decimal(0),
+    )
+    base_total = MoneyField(amount_field="base_total_amount", currency_field="currency")
 
     voucher = models.ForeignKey(
         Voucher, blank=True, null=True, related_name="+", on_delete=models.SET_NULL
@@ -395,6 +426,16 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
                 name="order_user_email_user_id_idx",
             ),
             BTreeIndex(fields=["checkout_token"], name="checkout_token_btree_idx"),
+            BTreeIndex(fields=["lines_count"], name="lines_count_idx"),
+            BTreeIndex(
+                fields=["total_gross_amount"],
+                name="order_totalgrossamount_idx",
+            ),
+            BTreeIndex(
+                fields=["total_net_amount"],
+                name="order_totalnetamount_idx",
+            ),
+            BTreeIndex(fields=["status"], name="order_status_idx"),
         ]
 
     def is_fully_paid(self):
@@ -417,12 +458,7 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         return f"#{self.id}"
 
     def get_last_payment(self) -> Payment | None:
-        # Skipping a partial payment is a temporary workaround for storing a basic data
-        # about partial payment from Adyen plugin. This is something that will removed
-        # in 3.1 by introducing a partial payments feature.
-        payments: list[Payment] = [
-            payment for payment in self.payments.all() if not payment.partial
-        ]
+        payments: list[Payment] = list(self.payments.all())
         return max(payments, default=None, key=attrgetter("pk"))
 
     def is_pre_authorized(self):
@@ -528,23 +564,6 @@ class Order(ModelWithMetadata, ModelWithExternalReference):
         return self.total_charged - self.total.gross
 
 
-class OrderLineQueryset(models.QuerySet["OrderLine"]):
-    def digital(self):
-        """Return lines with digital products."""
-        for line in self.all():
-            if line.is_digital:
-                yield line
-
-    def physical(self):
-        """Return lines with physical products."""
-        for line in self.all():
-            if not line.is_digital:
-                yield line
-
-
-OrderLineManager = models.Manager.from_queryset(OrderLineQueryset)
-
-
 class OrderLine(ModelWithMetadata):
     id = models.UUIDField(primary_key=True, editable=False, unique=True, default=uuid4)
     old_id = models.PositiveIntegerField(unique=True, null=True, blank=True)
@@ -570,6 +589,10 @@ class OrderLine(ModelWithMetadata):
     product_sku = models.CharField(max_length=255, null=True, blank=True)
     # str with GraphQL ID used as fallback when product SKU is not available
     product_variant_id = models.CharField(max_length=255, null=True, blank=True)
+
+    # denormalized product type id
+    product_type_id = models.IntegerField(null=True, blank=True)
+
     is_shipping_required = models.BooleanField()
     is_gift_card = models.BooleanField()
     quantity = models.IntegerField(validators=[MinValueValidator(1)])
@@ -718,6 +741,7 @@ class OrderLine(ModelWithMetadata):
     )
 
     is_price_overridden = models.BooleanField(null=True, blank=True)
+    price_override_reason = models.CharField(max_length=255, null=True, blank=True)
 
     # Fulfilled when voucher code was used for product in the line
     voucher_code = models.CharField(max_length=255, null=True, blank=True)
@@ -729,10 +753,13 @@ class OrderLine(ModelWithMetadata):
     # It depends on channel.draft_order_line_price_freeze_period setting.
     draft_base_price_expire_at = models.DateTimeField(blank=True, null=True)
 
-    objects = OrderLineManager()
-
     class Meta(ModelWithMetadata.Meta):
         ordering = ("created_at", "id")
+
+        indexes = [
+            *ModelWithMetadata.Meta.indexes,
+            BTreeIndex(fields=["product_type_id"], name="product_type_id_btree_idx"),
+        ]
 
     def __str__(self):
         return (
@@ -744,15 +771,6 @@ class OrderLine(ModelWithMetadata):
     @property
     def quantity_unfulfilled(self):
         return self.quantity - self.quantity_fulfilled
-
-    @property
-    def is_digital(self) -> bool:
-        """Check if a variant is digital and contains digital content."""
-        if not self.variant:
-            return False
-        is_digital = self.variant.is_digital()
-        has_digital = hasattr(self.variant, "digital_content")
-        return is_digital and has_digital
 
 
 class Fulfillment(ModelWithMetadata):
@@ -770,6 +788,15 @@ class Fulfillment(ModelWithMetadata):
     )
     tracking_number = models.CharField(max_length=255, default="", blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    reason = models.TextField(blank=True, default="")
+    reason_reference = models.ForeignKey(
+        "page.Page",
+        related_name="+",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_index=False,
+    )
 
     shipping_refund_amount = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
@@ -786,6 +813,15 @@ class Fulfillment(ModelWithMetadata):
 
     class Meta(ModelWithMetadata.Meta):
         ordering = ("pk",)
+        indexes = [
+            *ModelWithMetadata.Meta.indexes,
+            BTreeIndex(fields=["status"], name="fulfillment_status_idx"),
+            BTreeIndex(
+                fields=["reason_reference"],
+                name="fulfillment_reason_ref_idx",
+                condition=Q(reason_reference__isnull=False),
+            ),
+        ]
 
     def __str__(self):
         return f"Fulfillment #{self.composed_id}"
@@ -834,6 +870,24 @@ class FulfillmentLine(models.Model):
         blank=True,
         null=True,
     )
+    reason = models.TextField(blank=True, default="")
+    reason_reference = models.ForeignKey(
+        "page.Page",
+        related_name="+",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_index=False,
+    )
+
+    class Meta:
+        indexes = [
+            BTreeIndex(
+                fields=["reason_reference"],
+                name="fulfillmentline_reason_ref_idx",
+                condition=Q(reason_reference__isnull=False),
+            ),
+        ]
 
 
 class OrderEvent(models.Model):
@@ -876,6 +930,7 @@ class OrderEvent(models.Model):
         indexes = [
             BTreeIndex(fields=["related"], name="order_orderevent_related_id_idx"),
             models.Index(fields=["type"]),
+            BTreeIndex(fields=["date"], name="order_orderevent_date_idx"),
         ]
 
     def __repr__(self):
@@ -891,13 +946,16 @@ class OrderGrantedRefund(models.Model):
     amount_value = models.DecimalField(
         max_digits=settings.DEFAULT_MAX_DIGITS,
         decimal_places=settings.DEFAULT_DECIMAL_PLACES,
-        default=Decimal("0"),
+        default=Decimal(0),
     )
     amount = MoneyField(amount_field="amount_value", currency_field="currency")
     currency = models.CharField(
         max_length=settings.DEFAULT_CURRENCY_CODE_LENGTH,
     )
     reason = models.TextField(blank=True, default="")
+    reason_reference = models.ForeignKey(
+        "page.Page", related_name="+", on_delete=models.SET_NULL, null=True, blank=True
+    )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         blank=True,
@@ -944,3 +1002,20 @@ class OrderGrantedRefundLine(models.Model):
     )
 
     reason = models.TextField(blank=True, null=True, default="")
+    reason_reference = models.ForeignKey(
+        "page.Page",
+        related_name="+",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_index=False,
+    )
+
+    class Meta:
+        indexes = [
+            BTreeIndex(
+                fields=["reason_reference"],
+                name="grantedrefundline_reason_ref_idx",
+                condition=Q(reason_reference__isnull=False),
+            ),
+        ]

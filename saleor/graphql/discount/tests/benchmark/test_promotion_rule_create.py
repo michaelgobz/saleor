@@ -44,7 +44,7 @@ def test_promotion_rule_create(
         graphene.Node.to_global_id("Channel", channel.pk)
         for channel in [channel_USD, channel_PLN]
     ]
-    reward_value = Decimal("10")
+    reward_value = Decimal(10)
 
     catalogue_predicate = {
         "OR": [
@@ -134,7 +134,7 @@ def test_promotion_rule_create_gift(
 
     # when
     staff_api_client.ensure_access_token()
-    with django_assert_num_queries(16):
+    with django_assert_num_queries(18):
         content = get_graphql_content(
             staff_api_client.post_graphql(PROMOTION_RULE_CREATE_MUTATION, variables)
         )

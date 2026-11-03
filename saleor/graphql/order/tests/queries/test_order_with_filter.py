@@ -541,52 +541,6 @@ def test_order_query_with_filter_is_click_and_collect_false(
     }
 
 
-@freeze_time("2021-11-01 12:00:01")
-def test_order_query_with_filter_is_preorder_true(
-    staff_api_client,
-    permission_group_manage_orders,
-    preorders,
-):
-    # given
-    permission_group_manage_orders.user_set.add(staff_api_client.user)
-    variables = {"filter": {"isPreorder": True}}
-
-    # when
-    response = staff_api_client.post_graphql(ORDERS_QUERY_WITH_FILTERS, variables)
-
-    # then
-    content = get_graphql_content(response)
-    returned_orders = content["data"]["orders"]["edges"]
-    assert len(returned_orders) == len(preorders)
-    assert {order["node"]["id"] for order in returned_orders} == {
-        graphene.Node.to_global_id("Order", order.pk) for order in preorders
-    }
-
-
-@freeze_time("2021-11-01 12:00:01")
-def test_order_query_with_filter_is_preorder_false(
-    staff_api_client,
-    permission_group_manage_orders,
-    preorders,
-):
-    # given
-    permission_group_manage_orders.user_set.add(staff_api_client.user)
-    variables = {"filter": {"isPreorder": False}}
-
-    # when
-    response = staff_api_client.post_graphql(ORDERS_QUERY_WITH_FILTERS, variables)
-
-    # then
-    content = get_graphql_content(response)
-    returned_orders = content["data"]["orders"]["edges"]
-    preorders_ids = {
-        graphene.Node.to_global_id("Order", order.pk) for order in preorders
-    }
-    preorder_ids = {order["node"]["id"] for order in returned_orders}
-    for order_id in preorders_ids:
-        assert order_id not in preorder_ids
-
-
 @pytest.mark.parametrize(
     ("orders_filter", "count"),
     [
@@ -637,15 +591,15 @@ def test_orders_query_with_filter_search(
             OrderDiscount(
                 order=orders[0],
                 name="Some discount name",
-                value=Decimal("1"),
-                amount_value=Decimal("1"),
+                value=Decimal(1),
+                amount_value=Decimal(1),
                 translated_name="translated",
             ),
             OrderDiscount(
                 order=orders[2],
                 name="Some other discount name",
-                value=Decimal("10"),
-                amount_value=Decimal("10"),
+                value=Decimal(10),
+                amount_value=Decimal(10),
                 translated_name="PL_name",
             ),
         ]
@@ -716,8 +670,8 @@ def test_orders_query_with_filter_search_by_global_payment_id(
         OrderDiscount.objects.create(
             order=orders[0],
             name="test_discount1",
-            value=Decimal("1"),
-            amount_value=Decimal("1"),
+            value=Decimal(1),
+            amount_value=Decimal(1),
             translated_name="translated_discount1_name",
         ),
     )
@@ -1022,32 +976,32 @@ def test_order_query_with_filter_search_by_product_sku_multi_order_lines(
     ("transaction_data", "statuses", "expected_count"),
     [
         (
-            {"authorized_value": Decimal("10")},
+            {"authorized_value": Decimal(10)},
             [OrderAuthorizeStatusEnum.PARTIAL.name],
             1,
         ),
         (
-            {"authorized_value": Decimal("0")},
+            {"authorized_value": Decimal(0)},
             [OrderAuthorizeStatusEnum.NONE.name],
             1,
         ),
         (
-            {"authorized_value": Decimal("100")},
+            {"authorized_value": Decimal(100)},
             [OrderAuthorizeStatusEnum.FULL.name],
             2,
         ),
         (
-            {"authorized_value": Decimal("10")},
+            {"authorized_value": Decimal(10)},
             [OrderAuthorizeStatusEnum.FULL.name, OrderAuthorizeStatusEnum.PARTIAL.name],
             2,
         ),
         (
-            {"authorized_value": Decimal("0")},
+            {"authorized_value": Decimal(0)},
             [OrderAuthorizeStatusEnum.FULL.name, OrderAuthorizeStatusEnum.NONE.name],
             2,
         ),
         (
-            {"authorized_value": Decimal("10"), "charged_value": Decimal("80")},
+            {"authorized_value": Decimal(10), "charged_value": Decimal(80)},
             [OrderAuthorizeStatusEnum.PARTIAL.name],
             1,
         ),
@@ -1077,7 +1031,7 @@ def test_orders_query_with_filter_authorize_status(
         lines_count=0,
     )
     order.payment_transactions.create(
-        currency=order.currency, authorized_value=Decimal("10")
+        currency=order.currency, authorized_value=Decimal(10)
     )
     update_order_charge_data(order)
     update_order_authorize_data(order)
@@ -1103,12 +1057,12 @@ def test_orders_query_with_filter_authorize_status(
     ("transaction_data", "statuses", "expected_count"),
     [
         (
-            {"charged_value": Decimal("10")},
+            {"charged_value": Decimal(10)},
             [OrderChargeStatusEnum.PARTIAL.name],
             1,
         ),
         (
-            {"charged_value": Decimal("00")},
+            {"charged_value": Decimal(0)},
             [OrderChargeStatusEnum.PARTIAL.name],
             0,
         ),
@@ -1118,12 +1072,12 @@ def test_orders_query_with_filter_authorize_status(
             1,
         ),
         (
-            {"charged_value": Decimal("10")},
+            {"charged_value": Decimal(10)},
             [OrderChargeStatusEnum.FULL.name, OrderChargeStatusEnum.PARTIAL.name],
             1,
         ),
         (
-            {"charged_value": Decimal("0")},
+            {"charged_value": Decimal(0)},
             [OrderChargeStatusEnum.FULL.name, OrderChargeStatusEnum.NONE.name],
             1,
         ),
@@ -1158,7 +1112,7 @@ def test_orders_query_with_filter_charge_status(
         lines_count=0,
     )
     order.payment_transactions.create(
-        currency=order.currency, charged_value=Decimal("10")
+        currency=order.currency, charged_value=Decimal(10)
     )
     update_order_charge_data(order)
 

@@ -1,13 +1,15 @@
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import graphene
 from promise import Promise
 
 from ...account.models import User
-from ...checkout import calculations, models, problems
-from ...checkout.calculations import fetch_checkout_data
-from ...checkout.utils import get_valid_collection_points_for_checkout
+from ...checkout import models, problems
+from ...checkout.calculations import recalculate_discounts
+from ...checkout.delivery_context import (
+    get_valid_collection_points_for_checkout,
+)
 from ...core.db.connection import allow_writer_in_context
 from ...core.prices import quantize_price
 from ...core.taxes import zero_money, zero_taxed_money
@@ -15,6 +17,7 @@ from ...graphql.core.context import (
     SyncWebhookControlContext,
     get_database_connection_name,
 )
+from ...payment.gateway import get_payment_gateways
 from ...payment.interface import ListStoredPaymentMethodsRequestData
 from ...permission.auth_filters import AuthorizationFilters
 from ...permission.enums import (
@@ -24,26 +27,26 @@ from ...permission.enums import (
     PaymentPermissions,
 )
 from ...shipping.interface import ShippingMethodData
+from ...shipping.utils import convert_checkout_delivery_to_shipping_method_data
 from ...tax.utils import get_display_gross_prices
 from ...warehouse import models as warehouse_models
 from ...warehouse.reservations import is_reservation_enabled
 from ...webhook.event_types import WebhookEventSyncType
 from ..account.dataloaders import AddressByIdLoader, UserByUserIdLoader
 from ..account.utils import check_is_owner_or_has_one_of_perms
-from ..channel import ChannelContext
-from ..channel.dataloaders import ChannelByIdLoader
+from ..channel.dataloaders.by_checkout import ChannelByCheckoutIDLoader
+from ..channel.dataloaders.by_self import ChannelByIdLoader
 from ..channel.types import Channel
 from ..checkout.dataloaders import (
-    ChannelByCheckoutIDLoader,
     CheckoutLinesProblemsByCheckoutIdLoader,
     CheckoutProblemsByCheckoutIdDataloader,
 )
 from ..core import ResolveInfo
 from ..core.connection import CountableConnection
+from ..core.context import ChannelContext
 from ..core.descriptions import (
-    ADDED_IN_318,
-    ADDED_IN_319,
-    ADDED_IN_321,
+    ADDED_IN_323,
+    DEPRECATED_LEGACY_PAYMENTS,
     PREVIEW_FEATURE,
 )
 from ..core.doc_category import DOC_CATEGORY_CHECKOUT
@@ -80,66 +83,42 @@ from ..tax.dataloaders import (
     TaxConfigurationPerCountryByTaxConfigurationIDLoader,
 )
 from ..utils import get_user_or_app_from_context
-from ..warehouse.dataloaders import StocksReservationsByCheckoutTokenLoader
+from ..warehouse.dataloaders import (
+    StocksReservationsByCheckoutTokenLoader,
+    WarehouseByIdLoader,
+)
 from ..warehouse.types import Warehouse
-from ..webhook.dataloaders.pregenerated_payload_for_checkout_tax import (
-    PregeneratedCheckoutTaxPayloadsByCheckoutTokenLoader,
-)
-from ..webhook.dataloaders.pregenerated_payloads_for_checkout_filter_shipping_methods import (
-    PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader,
-)
 from .dataloaders import (
-    CheckoutByTokenLoader,
     CheckoutInfoByCheckoutTokenLoader,
-    CheckoutLinesByCheckoutTokenLoader,
     CheckoutLinesInfoByCheckoutTokenLoader,
     CheckoutMetadataByCheckoutIdLoader,
     TransactionItemsByCheckoutIDLoader,
+)
+from .dataloaders.calculations import (
+    CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader,
+)
+from .dataloaders.checkout_delivery import (
+    CheckoutDeliveriesOnlyValidByCheckoutIdAndWebhookSyncLoader,
+    CheckoutDeliveryByIdLoader,
 )
 from .enums import CheckoutAuthorizeStatusEnum, CheckoutChargeStatusEnum
 from .utils import prevent_sync_event_circular_query
 
 if TYPE_CHECKING:
-    from ...account.models import Address
     from ...checkout.fetch import CheckoutInfo, CheckoutLineInfo
     from ...plugins.manager import PluginsManager
 
 
-def get_dataloaders_for_fetching_checkout_data(
+def get_dataloaders_for_recalculate_discounts(
     root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
 ) -> tuple[
-    Promise["Address"] | None,
     Promise[list["CheckoutLineInfo"]],
     Promise["CheckoutInfo"],
-    Promise["PluginsManager"],
-    Promise[dict[str, Any]] | None,
-    Promise[dict[str, Any]] | None,
 ]:
     checkout = root.node
-    address_id = checkout.shipping_address_id or checkout.billing_address_id
-    address = AddressByIdLoader(info.context).load(address_id) if address_id else None
     lines = CheckoutLinesInfoByCheckoutTokenLoader(info.context).load(checkout.token)
     checkout_info = CheckoutInfoByCheckoutTokenLoader(info.context).load(checkout.token)
-    manager = get_plugin_manager_promise(info.context)
-    tax_payloads = None
-    excluded_shipping_methods_payloads = None
-    if root.allow_sync_webhooks:
-        tax_payloads = PregeneratedCheckoutTaxPayloadsByCheckoutTokenLoader(
-            info.context
-        ).load(checkout.token)
-        excluded_shipping_methods_payloads = (
-            PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader(
-                info.context
-            ).load(checkout.token)
-        )
-    return (
-        address,
-        lines,
-        checkout_info,
-        manager,
-        tax_payloads,
-        excluded_shipping_methods_payloads,
-    )
+    return lines, checkout_info
 
 
 class CheckoutLineProblemInsufficientStock(
@@ -219,6 +198,30 @@ def _resolve_line_problem_type(
     return None
 
 
+class CheckoutProblemDeliveryMethodStale(
+    SyncWebhookControlContextObjectType[problems.CheckoutProblemDeliveryMethodStale]
+):
+    delivery = graphene.Field("saleor.graphql.checkout.types.Delivery", required=True)
+
+    class Meta:
+        default_resolver = SyncWebhookControlContextObjectType.resolver_with_context
+        description = "Indicates that the delivery methods are stale." + ADDED_IN_323
+        doc_category = DOC_CATEGORY_CHECKOUT
+
+
+class CheckoutProblemDeliveryMethodInvalid(
+    SyncWebhookControlContextObjectType[problems.CheckoutProblemDeliveryMethodInvalid]
+):
+    delivery = graphene.Field("saleor.graphql.checkout.types.Delivery", required=True)
+
+    class Meta:
+        default_resolver = SyncWebhookControlContextObjectType.resolver_with_context
+        description = (
+            "Indicates that the selected delivery method is invalid." + ADDED_IN_323
+        )
+        doc_category = DOC_CATEGORY_CHECKOUT
+
+
 class CheckoutLineProblem(graphene.Union):
     class Meta:
         types = (
@@ -242,7 +245,10 @@ class CheckoutLineProblem(graphene.Union):
 
 class CheckoutProblem(graphene.Union):
     class Meta:
-        types = [] + list(CheckoutLineProblem._meta.types)
+        types = [
+            CheckoutProblemDeliveryMethodStale,
+            CheckoutProblemDeliveryMethodInvalid,
+        ] + list(CheckoutLineProblem._meta.types)
         description = "Represents an problem in the checkout."
         doc_category = DOC_CATEGORY_CHECKOUT
 
@@ -255,6 +261,13 @@ class CheckoutProblem(graphene.Union):
         line_problem_type = _resolve_line_problem_type(instance)
         if line_problem_type:
             return line_problem_type
+
+        problem_instance = instance.node
+        if isinstance(problem_instance, problems.CheckoutProblemDeliveryMethodStale):
+            return CheckoutProblemDeliveryMethodStale
+        if isinstance(problem_instance, problems.CheckoutProblemDeliveryMethodInvalid):
+            return CheckoutProblemDeliveryMethodInvalid
+
         return super().resolve_type(instance.node, info)
 
 
@@ -287,8 +300,7 @@ class CheckoutLine(SyncWebhookControlContextModelObjectType[models.CheckoutLine]
     )
     prior_unit_price = graphene.Field(
         Money,
-        description="The unit price of the checkout line prior to promotion."
-        + ADDED_IN_321,
+        description="The unit price of the checkout line prior to promotion.",
     )
     total_price = BaseField(
         TaxedMoney,
@@ -308,8 +320,7 @@ class CheckoutLine(SyncWebhookControlContextModelObjectType[models.CheckoutLine]
     )
     prior_total_price = graphene.Field(
         Money,
-        description="The sum of the checkout line price prior to promotion."
-        + ADDED_IN_321,
+        description="The sum of the checkout line price prior to promotion.",
     )
     requires_shipping = graphene.Boolean(
         description="Indicates whether the item need to be delivered.",
@@ -319,7 +330,18 @@ class CheckoutLine(SyncWebhookControlContextModelObjectType[models.CheckoutLine]
         CheckoutLineProblem, description="List of problems with the checkout line."
     )
     is_gift = graphene.Boolean(
-        description="Determine if the line is a gift." + ADDED_IN_319 + PREVIEW_FEATURE,
+        description="Determine if the line is a gift." + PREVIEW_FEATURE,
+    )
+    price_override_reason = PermissionsField(
+        graphene.String,
+        description=(
+            "Reason explaining why a custom price was set on the line, provided by "
+            "the app that set the price override." + ADDED_IN_323
+        ),
+        permissions=[
+            CheckoutPermissions.MANAGE_CHECKOUTS,
+            CheckoutPermissions.HANDLE_CHECKOUTS,
+        ],
     )
 
     class Meta:
@@ -346,94 +368,49 @@ class CheckoutLine(SyncWebhookControlContextModelObjectType[models.CheckoutLine]
     def resolve_unit_price(
         root: SyncWebhookControlContext[models.CheckoutLine], info: ResolveInfo
     ):
-        def with_checkout(data):
-            checkout, manager = data
-            checkout_info = CheckoutInfoByCheckoutTokenLoader(info.context).load(
-                checkout.token
-            )
-            lines = CheckoutLinesInfoByCheckoutTokenLoader(info.context).load(
-                checkout.token
-            )
-            tax_payloads = None
-            excluded_shipping_methods_payloads = None
-            if root.allow_sync_webhooks:
-                tax_payloads = PregeneratedCheckoutTaxPayloadsByCheckoutTokenLoader(
-                    info.context
-                ).load(checkout.token)
-                excluded_shipping_methods_payloads = PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader(
-                    info.context
-                ).load(checkout.token)
+        checkout_line = root.node
 
-            @allow_writer_in_context(info.context)
-            def calculate_line_unit_price(data):
-                checkout_info, lines, tax_payloads, excluded_payloads = data
-                checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-                checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                    excluded_shipping_methods_payloads
-                )
-                database_connection_name = get_database_connection_name(info.context)
-                for line_info in lines:
-                    if line_info.line.pk == root.node.pk:
-                        return calculations.checkout_line_unit_price(
-                            manager=manager,
-                            checkout_info=checkout_info,
-                            lines=lines,
-                            checkout_line_info=line_info,
-                            database_connection_name=database_connection_name,
-                            pregenerated_subscription_payloads=tax_payloads,
-                            allow_sync_webhooks=root.allow_sync_webhooks,
-                        )
+        def _get_unit_price(data):
+            checkout_info, lines = data
+            line_info = next(
+                (li for li in lines if li.line.pk == checkout_line.pk), None
+            )
+            if line_info is None:
                 return None
+            currency = checkout_info.checkout.currency
+            unit_price = line_info.line.total_price / line_info.line.quantity
+            return quantize_price(unit_price, currency)
 
-            return Promise.all(
-                [checkout_info, lines, tax_payloads, excluded_shipping_methods_payloads]
-            ).then(calculate_line_unit_price)
-
-        return Promise.all(
-            [
-                CheckoutByTokenLoader(info.context).load(root.node.checkout_id),
-                get_plugin_manager_promise(info.context),
-            ]
-        ).then(with_checkout)
+        return (
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
+            )
+            .load((checkout_line.checkout_id, root.allow_sync_webhooks, False))
+            .then(_get_unit_price)
+        )
 
     @staticmethod
     def resolve_undiscounted_unit_price(
         root: SyncWebhookControlContext[models.CheckoutLine], info: ResolveInfo
     ):
-        def with_checkout(checkout):
-            checkout_info = CheckoutInfoByCheckoutTokenLoader(info.context).load(
-                checkout.token
+        checkout_line = root.node
+
+        def _get_undiscounted_unit_price(data):
+            checkout_info, lines = data
+            line_info = next(
+                (li for li in lines if li.line.pk == checkout_line.pk), None
             )
-
-            lines = CheckoutLinesInfoByCheckoutTokenLoader(info.context).load(
-                checkout.token
-            )
-
-            def calculate_undiscounted_unit_price(data):
-                (
-                    checkout_info,
-                    lines,
-                ) = data
-                for line_info in lines:
-                    if line_info.line.pk == root.node.pk:
-                        return calculations.checkout_line_undiscounted_unit_price(
-                            checkout_info=checkout_info,
-                            checkout_line_info=line_info,
-                        )
-
+            if line_info is None:
                 return None
-
-            return Promise.all(
-                [
-                    checkout_info,
-                    lines,
-                ]
-            ).then(calculate_undiscounted_unit_price)
+            currency = checkout_info.checkout.currency
+            return quantize_price(line_info.line.undiscounted_unit_price, currency)
 
         return (
-            CheckoutByTokenLoader(info.context)
-            .load(root.node.checkout_id)
-            .then(with_checkout)
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
+            )
+            .load((checkout_line.checkout_id, root.allow_sync_webhooks, False))
+            .then(_get_undiscounted_unit_price)
         )
 
     @staticmethod
@@ -442,93 +419,49 @@ class CheckoutLine(SyncWebhookControlContextModelObjectType[models.CheckoutLine]
     def resolve_total_price(
         root: SyncWebhookControlContext[models.CheckoutLine], info: ResolveInfo
     ):
-        def with_checkout(data):
-            checkout, manager = data
-            checkout_info = CheckoutInfoByCheckoutTokenLoader(info.context).load(
-                checkout.token
-            )
+        checkout_line = root.node
 
-            lines = CheckoutLinesInfoByCheckoutTokenLoader(info.context).load(
-                checkout.token
+        def _get_total_price(data):
+            checkout_info, lines = data
+            line_info = next(
+                (li for li in lines if li.line.pk == checkout_line.pk), None
             )
-            tax_payloads = None
-            excluded_shipping_methods_payloads = None
-            if root.allow_sync_webhooks:
-                tax_payloads = PregeneratedCheckoutTaxPayloadsByCheckoutTokenLoader(
-                    info.context
-                ).load(checkout.token)
-                excluded_shipping_methods_payloads = PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader(
-                    info.context
-                ).load(checkout.token)
-
-            @allow_writer_in_context(info.context)
-            def calculate_line_total_price(data):
-                checkout_info, lines, tax_payloads, excluded_payloads = data
-                checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                    excluded_payloads
-                )
-                checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-                database_connection_name = get_database_connection_name(info.context)
-                for line_info in lines:
-                    if line_info.line.pk == root.node.pk:
-                        return calculations.checkout_line_total(
-                            manager=manager,
-                            checkout_info=checkout_info,
-                            lines=lines,
-                            checkout_line_info=line_info,
-                            database_connection_name=database_connection_name,
-                            pregenerated_subscription_payloads=tax_payloads,
-                            allow_sync_webhooks=root.allow_sync_webhooks,
-                        )
+            if line_info is None:
                 return None
+            currency = checkout_info.checkout.currency
+            return quantize_price(line_info.line.total_price, currency)
 
-            return Promise.all(
-                [checkout_info, lines, tax_payloads, excluded_shipping_methods_payloads]
-            ).then(calculate_line_total_price)
-
-        return Promise.all(
-            [
-                CheckoutByTokenLoader(info.context).load(root.node.checkout_id),
-                get_plugin_manager_promise(info.context),
-            ]
-        ).then(with_checkout)
+        return (
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
+            )
+            .load((checkout_line.checkout_id, root.allow_sync_webhooks, False))
+            .then(_get_total_price)
+        )
 
     @staticmethod
     def resolve_undiscounted_total_price(
         root: SyncWebhookControlContext[models.CheckoutLine], info: ResolveInfo
     ):
-        def with_checkout(checkout):
-            checkout_info = CheckoutInfoByCheckoutTokenLoader(info.context).load(
-                checkout.token
-            )
-            lines = CheckoutLinesInfoByCheckoutTokenLoader(info.context).load(
-                checkout.token
-            )
+        checkout_line = root.node
 
-            def calculate_undiscounted_total_price(data):
-                (
-                    checkout_info,
-                    lines,
-                ) = data
-                for line_info in lines:
-                    if line_info.line.pk == root.node.pk:
-                        return calculations.checkout_line_undiscounted_total_price(
-                            checkout_info=checkout_info,
-                            checkout_line_info=line_info,
-                        )
+        def _get_undiscounted_total_price(data):
+            checkout_info, lines = data
+            line_info = next(
+                (li for li in lines if li.line.pk == checkout_line.pk), None
+            )
+            if line_info is None:
                 return None
-
-            return Promise.all(
-                [
-                    checkout_info,
-                    lines,
-                ]
-            ).then(calculate_undiscounted_total_price)
+            currency = checkout_info.checkout.currency
+            total = line_info.line.undiscounted_unit_price * line_info.line.quantity
+            return quantize_price(total, currency)
 
         return (
-            CheckoutByTokenLoader(info.context)
-            .load(root.node.checkout_id)
-            .then(with_checkout)
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
+            )
+            .load((checkout_line.checkout_id, root.allow_sync_webhooks, False))
+            .then(_get_undiscounted_total_price)
         )
 
     @staticmethod
@@ -604,6 +537,48 @@ class DeliveryMethod(graphene.Union):
         return super().resolve_type(instance, info)
 
 
+class Delivery(graphene.ObjectType):
+    id = graphene.ID(required=True, description="The ID of the delivery.")
+    shipping_method = graphene.Field(
+        ShippingMethod,
+        description="Shipping method represented by the delivery.",
+    )
+
+    class Meta:
+        description = "Represents a delivery option for the checkout." + ADDED_IN_323
+        doc_category = DOC_CATEGORY_CHECKOUT
+
+    def resolve_id(root: models.CheckoutDelivery, info: ResolveInfo) -> str:
+        return graphene.Node.to_global_id("CheckoutDelivery", root.pk)
+
+    def resolve_shipping_method(
+        root: models.CheckoutDelivery, _info: ResolveInfo
+    ) -> ShippingMethodData | None:
+        return convert_checkout_delivery_to_shipping_method_data(root)
+
+
+def _resolve_checkout_delivery(
+    root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
+) -> Promise[ShippingMethodData | None]:
+    checkout = root.node
+
+    assigned_delivery_id = checkout.assigned_delivery_id
+    if not assigned_delivery_id:
+        return Promise.resolve(None)
+
+    def get_shipping_method(deliveries: list[models.CheckoutDelivery]):
+        for delivery in deliveries:
+            if delivery.id == assigned_delivery_id:
+                return convert_checkout_delivery_to_shipping_method_data(delivery)
+        return None
+
+    return (
+        CheckoutDeliveriesOnlyValidByCheckoutIdAndWebhookSyncLoader(info.context)
+        .load((checkout.pk, root.allow_sync_webhooks))
+        .then(get_shipping_method)
+    )
+
+
 class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     id = graphene.ID(required=True, description="The ID of the checkout.")
     created = DateTime(
@@ -611,7 +586,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     )
     updated_at = DateTime(
         required=True,
-        description=("Time of last modification of the given checkout."),
+        description="Time of last modification of the given checkout.",
     )
     last_change = DateTime(
         required=True,
@@ -641,12 +616,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
         description="The shipping address of the checkout.",
     )
     customer_note = graphene.String(
-        required=True, description=f"The customer note for the checkout. {ADDED_IN_321}"
-    )
-    note = graphene.String(
-        required=True,
-        description="The note for the checkout.",
-        deprecation_reason="Use `customerNote` instead.",
+        required=True, description="The customer note for the checkout. "
     )
     discount = graphene.Field(
         Money,
@@ -668,7 +638,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     )
     voucher = PermissionsField(
         "saleor.graphql.discount.types.vouchers.Voucher",
-        description="The voucher assigned to the checkout." + ADDED_IN_318,
+        description="The voucher assigned to the checkout.",
         permissions=[DiscountPermissions.MANAGE_DISCOUNTS],
     )
     voucher_code = graphene.String(
@@ -720,7 +690,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     available_collection_points = NonNullList(
         Warehouse,
         required=True,
-        description=("Collection points that can be used for this order."),
+        description="Collection points that can be used for this order.",
     )
     available_payment_gateways = BaseField(
         NonNullList(PaymentGateway),
@@ -732,6 +702,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
                 description="Fetch payment gateways available for checkout.",
             ),
         ],
+        deprecation_reason=DEPRECATED_LEGACY_PAYMENTS,
     )
     email = graphene.String(description="Email of a customer.", required=False)
     gift_cards = NonNullList(
@@ -771,10 +742,15 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
             ),
         ],
     )
+    delivery = BaseField(
+        Delivery,
+        description="The delivery method selected for this checkout." + ADDED_IN_323,
+    )
+
     shipping_method = BaseField(
         ShippingMethod,
         description="The shipping method related with checkout.",
-        deprecation_reason="Use `deliveryMethod` instead.",
+        deprecation_reason="Use `delivery` instead.",
         webhook_events_info=[
             WebhookEventInfo(
                 type=WebhookEventSyncType.SHIPPING_LIST_METHODS_FOR_CHECKOUT,
@@ -794,7 +770,8 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     )
     delivery_method = BaseField(
         DeliveryMethod,
-        description=("The delivery method selected for this checkout."),
+        description="The delivery method selected for this checkout.",
+        deprecation_reason="Use `delivery` instead.",
         webhook_events_info=[
             WebhookEventInfo(
                 type=WebhookEventSyncType.SHIPPING_LIST_METHODS_FOR_CHECKOUT,
@@ -824,7 +801,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
         ],
     )
     tax_exemption = graphene.Boolean(
-        description=("Returns True if checkout has to be exempt from taxes."),
+        description="Returns True if checkout has to be exempt from taxes.",
         required=True,
     )
     token = graphene.Field(UUID, description="The checkout's token.", required=True)
@@ -845,7 +822,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
 
     total_balance = BaseField(
         Money,
-        description=("The difference between the paid and the checkout total amount."),
+        description="The difference between the paid and the checkout total amount.",
         required=True,
         webhook_events_info=[
             WebhookEventInfo(
@@ -866,12 +843,12 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
         ),
     )
     display_gross_prices = graphene.Boolean(
-        description=("Determines whether displayed prices should include taxes."),
+        description="Determines whether displayed prices should include taxes.",
         required=True,
     )
     authorize_status = BaseField(
         CheckoutAuthorizeStatusEnum,
-        description=("The authorize status of the checkout."),
+        description="The authorize status of the checkout.",
         required=True,
         webhook_events_info=[
             WebhookEventInfo(
@@ -882,7 +859,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     )
     charge_status = BaseField(
         CheckoutChargeStatusEnum,
-        description=("The charge status of the checkout."),
+        description="The charge status of the checkout.",
         required=True,
         webhook_events_info=[
             WebhookEventInfo(
@@ -906,7 +883,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
 
     problems = NonNullList(
         CheckoutProblem,
-        description=("List of problems with the checkout."),
+        description="List of problems with the checkout.",
     )
 
     class Meta:
@@ -968,6 +945,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
             user,
             AccountPermissions.MANAGE_USERS,
             PaymentPermissions.HANDLE_PAYMENTS,
+            CheckoutPermissions.HANDLE_TAXES,
         )
         return user
 
@@ -979,32 +957,7 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
 
     @staticmethod
     def resolve_shipping_method(root: SyncWebhookControlContext[models.Checkout], info):
-        def with_checkout_info(data):
-            checkout_info, excluded_payloads = data
-            checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-            checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                excluded_payloads
-            )
-            delivery_method = checkout_info.get_delivery_method_info().delivery_method
-            if not delivery_method or not isinstance(
-                delivery_method, ShippingMethodData
-            ):
-                return None
-            return delivery_method
-
-        excluded_shipping_methods_payloads_dataloader = None
-        if root.allow_sync_webhooks:
-            excluded_shipping_methods_payloads_dataloader = (
-                PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader(
-                    info.context
-                ).load(root.node.token)
-            )
-        checkout_info_dataloader = CheckoutInfoByCheckoutTokenLoader(info.context).load(
-            root.node.token
-        )
-        return Promise.all(
-            [checkout_info_dataloader, excluded_shipping_methods_payloads_dataloader]
-        ).then(with_checkout_info)
+        return _resolve_checkout_delivery(root, info)
 
     @staticmethod
     @traced_resolver
@@ -1012,57 +965,37 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     def resolve_shipping_methods(
         root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
     ):
-        @allow_writer_in_context(info.context)
-        def with_checkout_info(data):
-            checkout_info, excluded_payloads = data
-            checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                excluded_payloads
+        return (
+            CheckoutDeliveriesOnlyValidByCheckoutIdAndWebhookSyncLoader(info.context)
+            .load((root.node.pk, root.allow_sync_webhooks))
+            .then(
+                lambda deliveries: [
+                    convert_checkout_delivery_to_shipping_method_data(delivery)
+                    for delivery in deliveries
+                ]
             )
-            checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-            return checkout_info.get_all_shipping_methods()
-
-        excluded_shipping_methods_payloads_dataloader = None
-        if root.allow_sync_webhooks:
-            excluded_shipping_methods_payloads_dataloader = (
-                PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader(
-                    info.context
-                ).load(root.node.token)
-            )
-
-        checkout_info_dataloader = CheckoutInfoByCheckoutTokenLoader(info.context).load(
-            root.node.token
         )
-        return Promise.all(
-            [checkout_info_dataloader, excluded_shipping_methods_payloads_dataloader]
-        ).then(with_checkout_info)
 
     @staticmethod
     def resolve_delivery_method(
         root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
     ):
-        @allow_writer_in_context(info.context)
-        def with_checkout_info(data):
-            checkout_info, excluded_payloads = data
-            checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                excluded_payloads
-            )
-            checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-            return checkout_info.get_delivery_method_info().delivery_method
+        checkout = root.node
+        if checkout.collection_point_id:
+            return WarehouseByIdLoader(info.context).load(checkout.collection_point_id)
 
-        excluded_shipping_methods_payloads_dataloader = None
-        if root.allow_sync_webhooks:
-            excluded_shipping_methods_payloads_dataloader = (
-                PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader(
-                    info.context
-                ).load(root.node.token)
-            )
+        return _resolve_checkout_delivery(root, info)
 
-        checkout_info_dataloader = CheckoutInfoByCheckoutTokenLoader(info.context).load(
-            root.node.token
+    @staticmethod
+    def resolve_delivery(
+        root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
+    ):
+        if not root.node.assigned_delivery_id:
+            return None
+
+        return CheckoutDeliveryByIdLoader(info.context).load(
+            root.node.assigned_delivery_id
         )
-        return Promise.all(
-            [checkout_info_dataloader, excluded_shipping_methods_payloads_dataloader]
-        ).then(with_checkout_info)
 
     @staticmethod
     def resolve_quantity(
@@ -1083,30 +1016,31 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     def resolve_total_price(
         root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
     ):
-        @allow_writer_in_context(info.context)
-        def calculate_total_price(data):
-            address, lines, checkout_info, manager, tax_payloads, excluded_payloads = (
-                data
-            )
+        checkout = root.node
+
+        def _get_total_price(data):
+            checkout_info, _ = data
             database_connection_name = get_database_connection_name(info.context)
-            checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-            checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                excluded_payloads
-            )
+            currency = checkout_info.checkout.currency
+            total = quantize_price(checkout_info.checkout.total, currency)
+            if total == zero_taxed_money(currency):
+                return max(total, zero_taxed_money(currency))
+            gross_percentage = total.gross / total.net
+            with allow_writer_in_context(info.context):
+                total.gross -= checkout_info.checkout.get_total_gift_cards_balance(
+                    database_connection_name
+                )
+            total.gross = max(total.gross, zero_money(currency))
+            total.net = quantize_price(total.gross / gross_percentage, currency)
+            return max(total, zero_taxed_money(currency))
 
-            taxed_total = calculations.calculate_checkout_total_with_gift_cards(
-                manager=manager,
-                checkout_info=checkout_info,
-                lines=lines,
-                address=address,
-                database_connection_name=database_connection_name,
-                pregenerated_subscription_payloads=tax_payloads,
-                allow_sync_webhooks=root.allow_sync_webhooks,
+        return (
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
             )
-            return max(taxed_total, zero_taxed_money(root.node.currency))
-
-        dataloaders = list(get_dataloaders_for_fetching_checkout_data(root, info))
-        return Promise.all(dataloaders).then(calculate_total_price)
+            .load((checkout.token, root.allow_sync_webhooks, False))
+            .then(_get_total_price)
+        )
 
     @staticmethod
     @traced_resolver
@@ -1114,29 +1048,20 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     def resolve_subtotal_price(
         root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
     ):
-        @allow_writer_in_context(info.context)
-        def calculate_subtotal_price(data):
-            address, lines, checkout_info, manager, tax_payloads, excluded_payloads = (
-                data
-            )
-            database_connection_name = get_database_connection_name(info.context)
-            checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-            checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                excluded_payloads
-            )
+        checkout = root.node
 
-            return calculations.checkout_subtotal(
-                manager=manager,
-                checkout_info=checkout_info,
-                lines=lines,
-                address=address,
-                database_connection_name=database_connection_name,
-                pregenerated_subscription_payloads=tax_payloads,
-                allow_sync_webhooks=root.allow_sync_webhooks,
-            )
+        def _get_subtotal(data):
+            checkout_info, _ = data
+            currency = checkout_info.checkout.currency
+            return quantize_price(checkout_info.checkout.subtotal, currency)
 
-        dataloaders = list(get_dataloaders_for_fetching_checkout_data(root, info))
-        return Promise.all(dataloaders).then(calculate_subtotal_price)
+        return (
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
+            )
+            .load((checkout.token, root.allow_sync_webhooks, False))
+            .then(_get_subtotal)
+        )
 
     @staticmethod
     @traced_resolver
@@ -1144,44 +1069,40 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     def resolve_shipping_price(
         root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
     ):
-        @allow_writer_in_context(info.context)
-        def calculate_shipping_price(data):
-            address, lines, checkout_info, manager, tax_payloads, excluded_payloads = (
-                data
-            )
-            database_connection_name = get_database_connection_name(info.context)
-            checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
+        checkout = root.node
 
-            return calculations.checkout_shipping_price(
-                manager=manager,
-                checkout_info=checkout_info,
-                lines=lines,
-                address=address,
-                database_connection_name=database_connection_name,
-                pregenerated_subscription_payloads=tax_payloads,
-                allow_sync_webhooks=root.allow_sync_webhooks,
-            )
+        def _get_shipping_price(data):
+            checkout_info, _ = data
+            currency = checkout_info.checkout.currency
+            return quantize_price(checkout_info.checkout.shipping_price, currency)
 
-        dataloaders = list(get_dataloaders_for_fetching_checkout_data(root, info))
-        return Promise.all(dataloaders).then(calculate_shipping_price)
+        return (
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
+            )
+            .load((checkout.token, root.allow_sync_webhooks, False))
+            .then(_get_shipping_price)
+        )
 
     @staticmethod
     def resolve_lines(
         root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
     ):
-        def _wrap_with_sync_webhook_control_context(lines):
-            return [
+        @allow_writer_in_context(info.context)
+        def get_lines(data):
+            lines_info, checkout_info = data
+            database_connection_name = get_database_connection_name(info.context)
+            # we need to recalculate discount as the gift line might be added / changed
+            recalculate_discounts(checkout_info, lines_info, database_connection_name)
+            return (
                 SyncWebhookControlContext(
-                    node=line, allow_sync_webhooks=root.allow_sync_webhooks
+                    line_info.line, allow_sync_webhooks=root.allow_sync_webhooks
                 )
-                for line in lines
-            ]
+                for line_info in lines_info
+            )
 
-        return (
-            CheckoutLinesByCheckoutTokenLoader(info.context)
-            .load(root.node.token)
-            .then(_wrap_with_sync_webhook_control_context)
-        )
+        dataloaders = list(get_dataloaders_for_recalculate_discounts(root, info))
+        return Promise.all(dataloaders).then(get_lines)
 
     @staticmethod
     @traced_resolver
@@ -1189,30 +1110,17 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     def resolve_available_shipping_methods(
         root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
     ):
-        @allow_writer_in_context(info.context)
-        def with_checkout_info(data):
-            checkout_info, excluded_payloads = data
-            checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                excluded_payloads
+        return (
+            CheckoutDeliveriesOnlyValidByCheckoutIdAndWebhookSyncLoader(info.context)
+            .load((root.node.pk, root.allow_sync_webhooks))
+            .then(
+                lambda deliveries: [
+                    convert_checkout_delivery_to_shipping_method_data(delivery)
+                    for delivery in deliveries
+                    if delivery.active
+                ]
             )
-            checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-
-            return checkout_info.valid_shipping_methods
-
-        excluded_shipping_methods_payloads_dataloader = None
-        if root.allow_sync_webhooks:
-            excluded_shipping_methods_payloads_dataloader = (
-                PregeneratedCheckoutFilterShippingMethodPayloadsByCheckoutTokenLoader(
-                    info.context
-                ).load(root.node.token)
-            )
-
-        checkout_info_dataloader = CheckoutInfoByCheckoutTokenLoader(info.context).load(
-            root.node.token
         )
-        return Promise.all(
-            [checkout_info_dataloader, excluded_shipping_methods_payloads_dataloader]
-        ).then(with_checkout_info)
 
     @staticmethod
     @traced_resolver
@@ -1250,7 +1158,8 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
         @allow_writer_in_context(info.context)
         def get_available_payment_gateways(results):
             checkout_info, lines_info = results
-            return manager.list_payment_gateways(
+            return get_payment_gateways(
+                manager=manager,
                 currency=root.node.currency,
                 checkout_info=checkout_info,
                 checkout_lines=lines_info,
@@ -1463,119 +1372,72 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
     def resolve_authorize_status(
         root: SyncWebhookControlContext[models.Checkout], info
     ):
-        @allow_writer_in_context(info.context)
-        def _resolve_authorize_status(data):
-            (
-                address,
-                lines,
-                checkout_info,
-                manager,
-                tax_payloads,
-                excluded_payloads,
-                transactions,
-            ) = data
-            checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                excluded_payloads
-            )
-            database_connection_name = get_database_connection_name(info.context)
-            fetch_checkout_data(
-                checkout_info=checkout_info,
-                manager=manager,
-                lines=lines,
-                address=address,
-                checkout_transactions=transactions,
-                force_status_update=True,
-                database_connection_name=database_connection_name,
-                pregenerated_subscription_payloads=tax_payloads,
-                allow_sync_webhooks=root.allow_sync_webhooks,
-            )
+        checkout = root.node
+
+        def _resolve_authorize_status(
+            data: tuple["CheckoutInfo", list["CheckoutLineInfo"]],
+        ):
+            checkout_info, _ = data
             return checkout_info.checkout.authorize_status
 
-        dataloaders = list(get_dataloaders_for_fetching_checkout_data(root, info))
-        dataloaders.append(
-            TransactionItemsByCheckoutIDLoader(info.context).load(root.node.pk)
+        return (
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
+            )
+            .load((checkout.token, root.allow_sync_webhooks, True))
+            .then(_resolve_authorize_status)
         )
-        return Promise.all(dataloaders).then(_resolve_authorize_status)
 
     @staticmethod
     def resolve_charge_status(root: SyncWebhookControlContext[models.Checkout], info):
-        @allow_writer_in_context(info.context)
-        def _resolve_charge_status(data):
-            (
-                address,
-                lines,
-                checkout_info,
-                manager,
-                tax_payloads,
-                excluded_payloads,
-                transactions,
-            ) = data
-            database_connection_name = get_database_connection_name(info.context)
-            checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-            checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                excluded_payloads
-            )
+        checkout = root.node
 
-            fetch_checkout_data(
-                checkout_info=checkout_info,
-                manager=manager,
-                lines=lines,
-                address=address,
-                checkout_transactions=transactions,
-                force_status_update=True,
-                database_connection_name=database_connection_name,
-                pregenerated_subscription_payloads=tax_payloads,
-                allow_sync_webhooks=root.allow_sync_webhooks,
-            )
+        def _resolve_charge_status(
+            data: tuple["CheckoutInfo", list["CheckoutLineInfo"]],
+        ):
+            checkout_info, _ = data
             return checkout_info.checkout.charge_status
 
-        dataloaders = list(get_dataloaders_for_fetching_checkout_data(root, info))
-        dataloaders.append(
-            TransactionItemsByCheckoutIDLoader(info.context).load(root.node.pk)
+        return (
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
+            )
+            .load((checkout.token, root.allow_sync_webhooks, True))
+            .then(_resolve_charge_status)
         )
-        return Promise.all(dataloaders).then(_resolve_charge_status)
 
     @staticmethod
     def resolve_total_balance(root: SyncWebhookControlContext[models.Checkout], info):
+        checkout = root.node
         database_connection_name = get_database_connection_name(info.context)
 
-        def _calculate_total_balance_for_transactions(data):
-            (
-                address,
-                lines,
-                checkout_info,
-                manager,
-                tax_payloads,
-                excluded_payloads,
-                transactions,
-            ) = data
-            checkout_info.allow_sync_webhooks = root.allow_sync_webhooks
-            checkout_info.pregenerated_payloads_for_excluded_shipping_method = (
-                excluded_payloads
-            )
-
-            taxed_total = calculations.calculate_checkout_total_with_gift_cards(
-                manager=manager,
-                checkout_info=checkout_info,
-                lines=lines,
-                address=address,
-                database_connection_name=database_connection_name,
-                pregenerated_subscription_payloads=tax_payloads,
-                allow_sync_webhooks=root.allow_sync_webhooks,
-            )
-            currency = root.node.currency
-            checkout_total = max(taxed_total, zero_taxed_money(currency))
+        def _calculate_total_balance(data):
+            (checkout_info, _), transactions = data
+            currency = checkout_info.checkout.currency
+            total = quantize_price(checkout_info.checkout.total, currency)
+            if total != zero_taxed_money(currency):
+                gross_percentage = total.gross / total.net
+                total.gross -= checkout_info.checkout.get_total_gift_cards_balance(
+                    database_connection_name
+                )
+                total.gross = max(total.gross, zero_money(currency))
+                total.net = quantize_price(total.gross / gross_percentage, currency)
+            checkout_total = max(total, zero_taxed_money(currency))
             total_charged = zero_money(currency)
             for transaction in transactions:
                 total_charged += transaction.amount_charged
                 total_charged += transaction.amount_charge_pending
             return total_charged - checkout_total.gross
 
-        dataloaders = list(get_dataloaders_for_fetching_checkout_data(root, info))
-        dataloaders.append(
-            TransactionItemsByCheckoutIDLoader(info.context).load(root.node.pk)
+        price_calculation = CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+            info.context
+        ).load((checkout.token, root.allow_sync_webhooks, False))
+        transactions = TransactionItemsByCheckoutIDLoader(info.context).load(
+            checkout.pk
         )
-        return Promise.all(dataloaders).then(_calculate_total_balance_for_transactions)
+        return Promise.all([price_calculation, transactions]).then(
+            _calculate_total_balance
+        )
 
     @staticmethod
     @traced_resolver

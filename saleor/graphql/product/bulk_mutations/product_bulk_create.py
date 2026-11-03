@@ -3,30 +3,28 @@ from collections import defaultdict
 
 import graphene
 from django.core.exceptions import ValidationError
-from django.core.files import File
+from django.db import transaction
 from django.db.models import F
 from django.utils.text import slugify
 from graphene.utils.str_converters import to_camel_case
 from text_unidecode import unidecode
 
-from ....core.http_client import HTTPClient
+from ....core.editorjs import editorjs_to_text
 from ....core.tracing import traced_atomic_transaction
 from ....core.utils import prepare_unique_slug
-from ....core.utils.editorjs import clean_editor_js
-from ....core.utils.validators import get_oembed_data
 from ....discount.utils.promotion import mark_active_catalogue_promotion_rules_as_dirty
 from ....permission.enums import ProductPermissions
 from ....product import ProductMediaTypes, models
 from ....product.error_codes import ProductBulkCreateErrorCode
 from ....product.models import CollectionProduct
-from ....thumbnail.utils import get_filename_from_url
+from ....product.tasks import fetch_product_media_image_task
 from ....warehouse.models import Warehouse
 from ....webhook.event_types import WebhookEventAsyncType
 from ....webhook.utils import get_webhooks_for_event
 from ...attribute.types import AttributeValueInput
-from ...attribute.utils import ProductAttributeAssignmentMixin
-from ...channel import ChannelContext
-from ...core.descriptions import RICH_CONTENT
+from ...attribute.utils.attribute_assignment import AttributeAssignmentMixin
+from ...core.context import ChannelContext
+from ...core.descriptions import DEPRECATED_PRODUCT_RATING_INPUT, RICH_CONTENT
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
 from ...core.enums import ErrorPolicyEnum
 from ...core.fields import JSONString
@@ -42,12 +40,12 @@ from ...core.types import (
 )
 from ...core.utils import get_duplicated_values
 from ...core.validators import clean_seo_fields
-from ...core.validators.file import clean_image_file, is_image_url, validate_image_url
+from ...core.validators.file import clean_image_file
 from ...meta.inputs import MetadataInput, MetadataInputDescription
 from ...plugins.dataloaders import get_plugin_manager_promise
 from ..mutations.product.product_create import ProductCreateInput
 from ..types import Product
-from ..utils import ALT_CHAR_LIMIT
+from ..utils import probe_media_url, validate_media_input
 from .product_variant_bulk_create import (
     ProductVariantBulkCreate,
     ProductVariantBulkCreateInput,
@@ -61,12 +59,14 @@ def get_results(instances_data_with_errors_list, reject_everything=False):
             for data in instances_data_with_errors_list
         ]
     return [
-        ProductBulkResult(
-            product=ChannelContext(node=data.get("instance"), channel_slug=None),
-            errors=data.get("errors"),
+        (
+            ProductBulkResult(
+                product=ChannelContext(node=data.get("instance"), channel_slug=None),
+                errors=data.get("errors"),
+            )
+            if data.get("instance")
+            else ProductBulkResult(product=None, errors=data.get("errors"))
         )
-        if data.get("instance")
-        else ProductBulkResult(product=None, errors=data.get("errors"))
         for data in instances_data_with_errors_list
     ]
 
@@ -134,7 +134,11 @@ class ProductBulkCreateInput(ProductCreateInput):
     )
     seo = SeoInput(description="Search engine optimization fields.")
     weight = WeightScalar(description="Weight of the Product.", required=False)
-    rating = graphene.Float(description="Defines the product rating value.")
+    rating = graphene.Float(
+        description=(
+            f"Defines the product rating value.{DEPRECATED_PRODUCT_RATING_INPUT}"
+        )
+    )
     metadata = NonNullList(
         MetadataInput,
         description="Fields required to update the product metadata. "
@@ -249,7 +253,7 @@ class ProductBulkCreate(BaseMutation):
 
         description = cleaned_input.get("description")
         cleaned_input["description_plaintext"] = (
-            clean_editor_js(description, to_string=True) if description else ""
+            editorjs_to_text(description) if description else ""
         )
 
         slug = cleaned_input.get("slug")
@@ -289,7 +293,7 @@ class ProductBulkCreate(BaseMutation):
         if attributes := cleaned_input.get("attributes"):
             try:
                 attributes_qs = cleaned_input["product_type"].product_attributes.all()
-                attributes = ProductAttributeAssignmentMixin.clean_input(
+                attributes = AttributeAssignmentMixin.clean_input(
                     attributes, attributes_qs
                 )
                 cleaned_input["attributes"] = attributes
@@ -426,45 +430,62 @@ class ProductBulkCreate(BaseMutation):
         return listings_to_create
 
     @classmethod
-    def clean_media(cls, media_inputs, product_index, index_error_map):
+    def clean_media(cls, info, media_inputs, product_index, index_error_map):
         media_to_create = []
 
         for index, media_input in enumerate(media_inputs):
             image = media_input.get("image")
             media_url = media_input.get("media_url")
-            alt = media_input.get("alt")
+            alt = media_input.get("alt") or ""
 
-            if not image and not media_url:
+            if error := validate_media_input(
+                image, media_url, alt, ProductBulkCreateErrorCode
+            ):
+                error_message, error_code, field = error
+                path = f"media.{index}.{field}" if field else f"media.{index}"
                 index_error_map[product_index].append(
                     ProductBulkCreateError(
-                        path=f"media.{index}",
-                        message="Image or external URL is required.",
-                        code=ProductBulkCreateErrorCode.REQUIRED.value,
+                        path=path,
+                        message=error_message,
+                        code=error_code,
                     )
                 )
                 continue
 
-            if image and media_url:
-                index_error_map[product_index].append(
-                    ProductBulkCreateError(
-                        path=f"media.{index}",
-                        message="Either image or external URL is required.",
-                        code=ProductBulkCreateErrorCode.DUPLICATED_INPUT_ITEM.value,
-                    )
-                )
-                continue
+            media_input["alt"] = alt
 
-            if alt and len(alt) > ALT_CHAR_LIMIT:
-                index_error_map[product_index].append(
-                    ProductBulkCreateError(
-                        path=f"media.{index}",
-                        message=f"Alt field exceeds the character "
-                        f"limit of {ALT_CHAR_LIMIT}.",
-                        code=ProductBulkCreateErrorCode.INVALID.value,
+            if image:
+                media_input["image"] = info.context.FILES.get(image)
+                try:
+                    media_input["image"] = clean_image_file(
+                        media_input, "image", ProductBulkCreateErrorCode
                     )
-                )
-                continue
-            media_to_create.append(media_input)
+                    media_to_create.append(media_input)
+                except ValidationError as exc:
+                    cls.add_indexes_to_errors(
+                        product_index, exc, index_error_map, f"media.{index}"
+                    )
+                    continue
+            elif media_url:
+                try:
+                    probe_result = probe_media_url(
+                        media_url, ProductBulkCreateErrorCode
+                    )
+                except ValidationError as exc:
+                    cls.add_indexes_to_errors(
+                        product_index,
+                        exc,
+                        index_error_map,
+                        f"media.{index}",
+                    )
+                    continue
+                if probe_result.is_image:
+                    media_input["external_url"] = media_url
+                else:
+                    oembed_data = probe_result.oembed_data
+                    oembed_data["supported_media_type"] = probe_result.media_type
+                    media_input["oembed_data"] = oembed_data
+                media_to_create.append(media_input)
 
         return media_to_create
 
@@ -518,9 +539,11 @@ class ProductBulkCreate(BaseMutation):
             for error in errors:
                 index_error_map[product_index].append(
                     ProductBulkCreateError(
-                        path=f"variants.{index}.{error.path}"
-                        if error.path
-                        else f"variants.{index}",
+                        path=(
+                            f"variants.{index}.{error.path}"
+                            if error.path
+                            else f"variants.{index}"
+                        ),
                         message=error.message,
                         code=error.code,
                         attributes=error.attributes,
@@ -567,7 +590,7 @@ class ProductBulkCreate(BaseMutation):
 
         if media_inputs := cleaned_input.get("media"):
             cleaned_input["media"] = cls.clean_media(
-                media_inputs, product_index, index_error_map
+                info, media_inputs, product_index, index_error_map
             )
 
         if listings_inputs := cleaned_input.get("channel_listings"):
@@ -746,6 +769,7 @@ class ProductBulkCreate(BaseMutation):
                             "attributes": variant_data.get("attributes"),
                             "channel_listings": variant_data.get("channel_listings"),
                             "stocks": variant_data.get("stocks"),
+                            "track_inventory": variant_data.get("track_inventory"),
                         },
                     }
                     variants_instances_data.append(variant_data)
@@ -793,15 +817,32 @@ class ProductBulkCreate(BaseMutation):
 
         models.Product.objects.bulk_create(products_to_create)
         models.ProductMedia.objects.bulk_create(media_to_create)
+        transaction.on_commit(
+            lambda: cls.schedule_fetch_product_media_image_tasks(media_to_create)
+        )
         models.ProductChannelListing.objects.bulk_create(listings_to_create)
 
         for product, attributes in attributes_to_save:
-            ProductAttributeAssignmentMixin.save(product, attributes)
+            AttributeAssignmentMixin.save(product, attributes)
 
         if variants_input_data:
             variants = cls.save_variants(info, variants_input_data)
 
         return variants, updated_channels
+
+    @classmethod
+    def schedule_fetch_product_media_image_tasks(cls, media_to_create):
+        """Schedule a task for each ProductMedia object that was created, has external URL set but has no image set yet."""
+        media_to_fetch = (
+            product_media
+            for product_media in media_to_create
+            if product_media.type == ProductMediaTypes.IMAGE
+            and not product_media.image
+            and product_media.external_url
+        )
+
+        for product_media in media_to_fetch:
+            fetch_product_media_image_task.delay(product_media.pk)
 
     @classmethod
     def _save_m2m(cls, _info, instances_data):
@@ -848,49 +889,37 @@ class ProductBulkCreate(BaseMutation):
     def prepare_media(cls, info, product, media_inputs, media_to_create):
         for media_input in media_inputs:
             alt = media_input.get("alt", "")
-            media_url = media_input.get("media_url")
+
             if img_data := media_input.get("image"):
-                media_input["image"] = info.context.FILES.get(img_data)
-                image_data = clean_image_file(
-                    media_input, "image", ProductBulkCreateErrorCode
-                )
                 media_to_create.append(
                     models.ProductMedia(
-                        image=image_data,
+                        image=img_data,
                         alt=alt,
                         product=product,
                         type=ProductMediaTypes.IMAGE,
                     )
                 )
-            if media_url:
-                if is_image_url(media_url):
-                    validate_image_url(
-                        media_url, "media_url", ProductBulkCreateErrorCode.INVALID.value
+            elif not media_input.get("image") and media_input.get("external_url"):
+                media_to_create.append(
+                    models.ProductMedia(
+                        external_url=media_input["external_url"],
+                        image=None,
+                        alt=alt,
+                        product=product,
+                        type=ProductMediaTypes.IMAGE,
                     )
-                    filename = get_filename_from_url(media_url)
-                    image_data = HTTPClient.send_request(
-                        "GET", media_url, stream=True, timeout=30, allow_redirects=False
+                )
+
+            if oembed_data := media_input.get("oembed_data"):
+                media_to_create.append(
+                    models.ProductMedia(
+                        external_url=oembed_data["url"],
+                        alt=oembed_data.get("title", alt),
+                        product=product,
+                        type=oembed_data["supported_media_type"],
+                        oembed_data=oembed_data,
                     )
-                    image_data = File(image_data.raw, filename)
-                    media_to_create.append(
-                        models.ProductMedia(
-                            image=image_data,
-                            alt=alt,
-                            product=product,
-                            type=ProductMediaTypes.IMAGE,
-                        )
-                    )
-                else:
-                    oembed_data, media_type = get_oembed_data(media_url, "media_url")
-                    media_to_create.append(
-                        models.ProductMedia(
-                            external_url=oembed_data["url"],
-                            alt=oembed_data.get("title", alt),
-                            product=product,
-                            type=media_type,
-                            oembed_data=oembed_data,
-                        )
-                    )
+                )
 
     @classmethod
     def post_save_actions(cls, info, products, variants, channels):

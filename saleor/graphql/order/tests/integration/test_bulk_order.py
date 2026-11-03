@@ -168,11 +168,11 @@ def test_return_and_refund_imported_order(
     order["lines"][0]["isShippingRequired"] = False
     order["fulfillments"][0]["lines"][0]["variantId"] = variant_id
     order["transactions"][0]["amountAuthorized"] = {
-        "amount": Decimal("0"),
+        "amount": Decimal(0),
         "currency": "USD",
     }
     order["transactions"][0]["amountCharged"] = {
-        "amount": Decimal("120"),
+        "amount": Decimal(120),
         "currency": "USD",
     }
     order["transactions"][0]["availableActions"] = [TransactionActionEnum.REFUND.name]
@@ -211,7 +211,7 @@ def test_return_and_refund_imported_order(
     variables = {
         "id": graphene.Node.to_global_id("TransactionItem", transaction.token),
         "action_type": TransactionActionEnum.REFUND.name,
-        "amount": Decimal("120"),
+        "amount": Decimal(120),
     }
     staff_api_client.post_graphql(MUTATION_TRANSACTION_REQUEST_ACTION, variables)
 
@@ -392,8 +392,11 @@ def test_refresh_order_prices_from_imported_draft_order_with_unit_discount(
     # refetch order prices
     order = Order.objects.get()
     order, lines = fetch_order_prices_if_expired(
-        order, get_plugins_manager(allow_replica=True), force_update=True
-    )
+        order,
+        get_plugins_manager(allow_replica=True),
+        requestor=None,
+        force_update=True,
+    ).get()
 
     # then - ensure the order prices are updated, the discount is applied
     line = lines[0]

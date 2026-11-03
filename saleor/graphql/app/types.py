@@ -2,16 +2,20 @@ import base64
 import datetime
 
 import graphene
+from graphql import GraphQLError
 
 from ...app import models
-from ...app.types import AppExtensionTarget
+from ...app.types import (
+    DEFAULT_APP_TARGET,
+    DeprecatedAppExtensionHttpMethod,
+)
 from ...core.exceptions import PermissionDenied
 from ...core.jwt import JWT_THIRDPARTY_ACCESS_TYPE
 from ...core.utils import build_absolute_uri
-from ...permission.auth_filters import AuthorizationFilters
-from ...permission.enums import AppPermission
+from ...permission.auth_filters import AuthorizationFilters, is_staff_user
+from ...permission.enums import AccountPermissions, AppPermission
 from ...permission.utils import message_one_of_permissions_required
-from ...thumbnail import PIL_IDENTIFIER_TO_MIME_TYPE
+from ...thumbnail import PIL_IDENTIFIER_TO_MIME_TYPE, ThumbnailSizeRounding
 from ...thumbnail.utils import (
     ProcessedIconImage,
     get_icon_thumbnail_format,
@@ -22,16 +26,19 @@ from ...thumbnail.utils import (
 from ...webhook.circuit_breaker.breaker_board import (
     initialize_breaker_board,
 )
+from ..account.dataloaders import UserByUserIdLoader
 from ..account.utils import is_owner_or_has_one_of_perms
 from ..core import ResolveInfo, SaleorContext
 from ..core.connection import CountableConnection
 from ..core.context import get_database_connection_name
 from ..core.dataloaders import DataLoader
-from ..core.descriptions import ADDED_IN_319, ADDED_IN_321
+from ..core.descriptions import ADDED_IN_322, ADDED_IN_323
 from ..core.doc_category import DOC_CATEGORY_APPS
 from ..core.federation import federated_entity, resolve_federation_references
-from ..core.scalars import DateTime
+from ..core.fields import PermissionsField
+from ..core.scalars import JSON, DateTime, PositiveInt
 from ..core.types import (
+    BaseEnum,
     BaseObjectType,
     IconThumbnailField,
     Job,
@@ -48,14 +55,15 @@ from ..webhook.types import Webhook
 from .dataloaders import (
     AppByIdLoader,
     AppExtensionByAppIdLoader,
+    AppProblemsByAppIdLoader,
     AppTokensByAppIdLoader,
     ThumbnailByAppIdSizeAndFormatLoader,
     ThumbnailByAppInstallationIdSizeAndFormatLoader,
     app_promise_callback,
 )
 from .enums import (
-    AppExtensionMountEnum,
-    AppExtensionTargetEnum,
+    AppProblemDismissedBy,
+    AppProblemDismissedByEnum,
     AppTypeEnum,
     CircuitBreakerState,
     CircuitBreakerStateEnum,
@@ -116,25 +124,56 @@ class AppManifestExtension(BaseObjectType):
     url = graphene.String(
         description="URL of a view where extension's iframe is placed.", required=True
     )
-    mount = AppExtensionMountEnum(
-        description="Place where given extension will be mounted.",
+
+    mount_name = graphene.String(
+        description="Name of the extension mount point in the dashboard. Value returned in UPPERCASE."
+        + ADDED_IN_322,
         required=True,
     )
-    target = AppExtensionTargetEnum(
-        description="Type of way how app extension will be opened.", required=True
+
+    target_name = graphene.String(
+        description="Name of the extension target in the dashboard. Value returned in UPPERCASE."
+        + ADDED_IN_322,
+        required=True,
+    )
+
+    settings = graphene.Field(
+        JSON,
+        description="App extension settings." + ADDED_IN_322,
+        required=True,
+    )
+
+    identifier = graphene.String(
+        description=(
+            "Extension identifier, unique per app. Null when the app does not "
+            "declare one." + ADDED_IN_323
+        )
     )
 
     class Meta:
         doc_category = DOC_CATEGORY_APPS
 
     @staticmethod
-    def resolve_target(root, _info: ResolveInfo):
-        return root.get("target") or AppExtensionTarget.POPUP
-
-    @staticmethod
     def resolve_url(root, _info: ResolveInfo):
         """Return an extension URL."""
         return resolve_app_extension_url(root)
+
+    @staticmethod
+    def resolve_target_name(root, _info: ResolveInfo):
+        return (root.get("target") or DEFAULT_APP_TARGET).upper()
+
+    @staticmethod
+    def resolve_mount_name(root, _info: ResolveInfo):
+        return root["mount"].upper()
+
+    @staticmethod
+    def resolve_settings(root, _info: ResolveInfo):
+        return root.get("options") or {}
+
+
+class HttpMethod(BaseEnum):
+    POST = DeprecatedAppExtensionHttpMethod.POST
+    GET = DeprecatedAppExtensionHttpMethod.GET
 
 
 class AppExtension(AppManifestExtension, ModelObjectType[models.AppExtension]):
@@ -167,25 +206,36 @@ class AppExtension(AppManifestExtension, ModelObjectType[models.AppExtension]):
         )
 
     @staticmethod
-    def resolve_target(root, _info: ResolveInfo):
-        return root.target
+    def resolve_mount_name(root: models.AppExtension, _info: ResolveInfo):
+        return root.mount.upper()
+
+    @staticmethod
+    def resolve_target_name(root: models.AppExtension, _info: ResolveInfo):
+        return root.target.upper()
 
     @staticmethod
     @app_promise_callback
-    def resolve_app(root, info: ResolveInfo, app):
-        app_id = None
-        if app and app.id == root.app_id:
-            app_id = root.app_id
-        else:
-            requestor = get_user_or_app_from_context(info.context)
-            if requestor and requestor.has_perm(AppPermission.MANAGE_APPS):
-                app_id = root.app_id
+    def resolve_app(root, info: ResolveInfo, app_requestor):
+        # Resolve if app from context is the same as requested app
+        if app_requestor and app_requestor.id == root.app_id:
+            return AppByIdLoader(info.context).load(root.app_id)
 
-        if not app_id:
-            raise PermissionDenied(
-                permissions=[AppPermission.MANAGE_APPS, AuthorizationFilters.OWNER]
-            )
-        return AppByIdLoader(info.context).load(app_id)
+        # Reject if app from context is different from requested app
+        if app_requestor and app_requestor.id != root.app_id:
+            raise PermissionDenied(permissions=[AuthorizationFilters.OWNER])
+
+        # Resolve app if a user from the context is authenticated
+        # At this point, it's always user, because we exit for app in checks above
+        maybe_user = get_user_or_app_from_context(info.context)
+
+        # Allow staff users to access app data, no MANAGE_APPS needed
+        if maybe_user and is_staff_user(info.context):
+            return AppByIdLoader(info.context).load(root.app_id)
+
+        # If none of the conditions are met, reject with permission denied
+        raise PermissionDenied(
+            permissions=[AppPermission.MANAGE_APPS, AuthorizationFilters.OWNER]
+        )
 
     @staticmethod
     def resolve_permissions(root: models.AppExtension, _info: ResolveInfo):
@@ -200,6 +250,34 @@ class AppExtension(AppManifestExtension, ModelObjectType[models.AppExtension]):
             return resolve_access_token_for_app_extension(info, root, app)
 
         return AppByIdLoader(info.context).load(root.app_id).then(_resolve_access_token)
+
+    @staticmethod
+    def resolve_settings(root: models.AppExtension, _info: ResolveInfo):
+        """Return app extension settings as plain JSON with same structure as options."""
+        http_method = root.http_target_method
+
+        # New data model contains settings, migration will fill the old ones
+        if root.settings:
+            return root.settings
+
+        # Fallback if settings not propagated in DB yet
+        # Make it case-insensitive due to migration logic - enum will become uppercased in DB
+        # TODO Remove after 3.23 when migrations are complete
+        if root.target.upper() == "WIDGET":
+            return {
+                "widgetTarget": {
+                    "method": http_method,
+                }
+            }
+
+        if root.target.upper() == "NEW_TAB":
+            return {
+                "newTabTarget": {
+                    "method": http_method,
+                }
+            }
+
+        return {}
 
 
 class AppExtensionCountableConnection(CountableConnection):
@@ -247,7 +325,7 @@ class AppManifestRequiredSaleorVersion(BaseObjectType):
         required=True,
     )
     satisfied = graphene.Boolean(
-        description=("Informs if the Saleor version matches the required one."),
+        description="Informs if the Saleor version matches the required one.",
         required=True,
     )
 
@@ -272,6 +350,7 @@ class AppManifestBrandLogo(BaseObjectType):
         _info: ResolveInfo,
         *,
         size: int | None = None,
+        size_rounding: ThumbnailSizeRounding | None = None,
         format: str | None = None,
     ):
         format = get_icon_thumbnail_format(format)
@@ -279,7 +358,7 @@ class AppManifestBrandLogo(BaseObjectType):
         # as text and used for preview purposes only
         if size == 0:
             size = MANIFEST_THUMBNAIL_MAX_SIZE
-        size = min(get_thumbnail_size(size), MANIFEST_THUMBNAIL_MAX_SIZE)
+        size = min(get_thumbnail_size(size, size_rounding), MANIFEST_THUMBNAIL_MAX_SIZE)
 
         logo_img = root["default"]
         # prepare thumbnail on the fly
@@ -308,6 +387,7 @@ class AppBrandLogo(BaseObjectType):
         info: ResolveInfo,
         *,
         size: int | None = None,
+        size_rounding: ThumbnailSizeRounding | None = None,
         format: str | None = None,
     ):
         if not root.brand_logo_default:
@@ -316,7 +396,7 @@ class AppBrandLogo(BaseObjectType):
             return build_absolute_uri(root.brand_logo_default.url)
 
         format = get_thumbnail_format(format)
-        selected_size = get_thumbnail_size(size)
+        selected_size = get_thumbnail_size(size, size_rounding)
 
         if isinstance(root, models.App):
             object_type = "App"
@@ -400,6 +480,15 @@ class Manifest(BaseObjectType):
         deprecation_reason="Use `dataPrivacyUrl` instead.",
     )
     data_privacy_url = graphene.String(description="URL to the full privacy policy.")
+    deprecation_reason = graphene.String(
+        description=(
+            "Reason why the app is deprecated, declared in the manifest. "
+            "Null when the app is not deprecated. A deprecated app can still "
+            "be installed and works as usual, but usually means it should not "
+            "be used anymore." + ADDED_IN_323
+        ),
+        required=False,
+    )
     homepage_url = graphene.String(description="External URL to the app homepage.")
     support_url = graphene.String(
         description="External URL to the page where app users can find support."
@@ -469,11 +558,112 @@ class AppToken(BaseObjectType):
         return root.token_last_4
 
 
+class AppProblemDismissed(graphene.ObjectType):
+    by = AppProblemDismissedByEnum(
+        required=True,
+        description=(
+            "Whether the problem was dismissed by an App or a User." + ADDED_IN_322
+        ),
+    )
+    user = PermissionsField(
+        "saleor.graphql.account.types.User",
+        description=(
+            "The user who dismissed this problem. "
+            "Null if dismissed by an app or the user was deleted." + ADDED_IN_322
+        ),
+        permissions=[AccountPermissions.MANAGE_STAFF],
+    )
+    user_email = PermissionsField(
+        graphene.String,
+        description=(
+            "Email of the user who dismissed this problem. "
+            "Preserved even if the user is deleted." + ADDED_IN_322
+        ),
+        permissions=[AuthorizationFilters.AUTHENTICATED_STAFF_USER],
+    )
+
+    class Meta:
+        description = "Dismissal information for an app problem." + ADDED_IN_322
+        doc_category = DOC_CATEGORY_APPS
+
+    @staticmethod
+    def resolve_by(root: models.AppProblem, _info: ResolveInfo):
+        if root.is_dismissed_by_user():
+            return AppProblemDismissedBy.USER
+        return AppProblemDismissedBy.APP
+
+    @staticmethod
+    def resolve_user(root: models.AppProblem, info: ResolveInfo):
+        # Even if use did dismiss, user can be removed, so solely rely on it's reference
+        if not root.dismissed_by_user_id:
+            return None
+
+        return UserByUserIdLoader(info.context).load(root.dismissed_by_user_id)
+
+    @staticmethod
+    def resolve_user_email(root: models.AppProblem, _info: ResolveInfo):
+        return root.dismissed_by_user_email
+
+
+class AppProblem(ModelObjectType[models.AppProblem]):
+    id = graphene.GlobalID(
+        required=True,
+        description="The ID of the app problem." + ADDED_IN_322,
+    )
+    created_at = DateTime(
+        required=True,
+        description="The date and time when the problem was created." + ADDED_IN_322,
+    )
+    updated_at = DateTime(
+        required=True,
+        description="The date and time when the problem was last updated."
+        + ADDED_IN_322,
+    )
+    count = graphene.Int(
+        required=True, description="Number of occurrences." + ADDED_IN_322
+    )
+    is_critical = graphene.Boolean(
+        required=True,
+        description="Whether the problem has reached critical threshold."
+        + ADDED_IN_322,
+    )
+    dismissed = PermissionsField(
+        AppProblemDismissed,
+        description=(
+            "Dismissal information. Null if the problem has not been dismissed."
+            + ADDED_IN_322
+        ),
+        permissions=[
+            AuthorizationFilters.AUTHENTICATED_APP,
+            AppPermission.MANAGE_APPS,
+        ],
+    )
+    message = graphene.String(
+        required=True, description="The problem message." + ADDED_IN_322
+    )
+    key = graphene.String(
+        required=True,
+        description="Key identifying the type of problem." + ADDED_IN_322,
+    )
+
+    class Meta:
+        description = "Represents a problem associated with an app." + ADDED_IN_322
+        doc_category = DOC_CATEGORY_APPS
+        interfaces = [graphene.relay.Node]
+        model = models.AppProblem
+
+    @staticmethod
+    def resolve_dismissed(root: models.AppProblem, _info: ResolveInfo):
+        if not root.dismissed:
+            return None
+        return root
+
+
 @federated_entity("id")
 class App(ModelObjectType[models.App]):
     id = graphene.GlobalID(required=True, description="The ID of the app.")
     identifier = graphene.String(
-        required=False, description="Canonical app ID from the manifest" + ADDED_IN_319
+        required=False, description="Canonical app ID from the manifest"
     )
     permissions = NonNullList(Permission, description="List of the app's permissions.")
     created = DateTime(description="The date and time when the app was created.")
@@ -525,19 +715,39 @@ class App(ModelObjectType[models.App]):
         description="JWT token used to authenticate by third-party app."
     )
     author = graphene.String(description="The App's author name.")
+    deprecation_reason = graphene.String(
+        description=(
+            "Reason why the app is deprecated, set by the app itself. "
+            "Null when the app is not deprecated. A deprecated app keeps "
+            "working as usual, but usually means it should not be used "
+            "anymore." + ADDED_IN_323
+        ),
+        required=False,
+    )
     extensions = NonNullList(
         AppExtension,
         description="App's dashboard extensions.",
         required=True,
     )
+    problems = PermissionsField(
+        NonNullList(AppProblem),
+        description="List of problems associated with this app." + ADDED_IN_322,
+        permissions=[
+            AuthorizationFilters.AUTHENTICATED_APP,
+            AppPermission.MANAGE_APPS,
+        ],
+        limit=PositiveInt(
+            description="Limit number of returned problems. Must be between 1 and 100.",
+            required=False,
+        ),
+    )
     brand = graphene.Field(AppBrand, description="App's brand data.")
     breaker_state = CircuitBreakerStateEnum(
-        description="Circuit breaker state, if open, sync webhooks operation is disrupted."
-        + ADDED_IN_321,
+        description="Circuit breaker state, if open, sync webhooks operation is disrupted.",
         required=True,
     )
     breaker_last_state_change = DateTime(
-        description="Circuit breaker last state change date." + ADDED_IN_321,
+        description="Circuit breaker last state change date.",
         required=False,
     )
 
@@ -576,6 +786,18 @@ class App(ModelObjectType[models.App]):
     @staticmethod
     def resolve_extensions(root: models.App, info: ResolveInfo):
         return AppExtensionByAppIdLoader(info.context).load(root.id)
+
+    @staticmethod
+    def resolve_problems(root: models.App, info: ResolveInfo, limit: int | None = None):
+        if limit is not None and limit > 100:
+            raise GraphQLError("Limit must be between 1 and 100.")
+
+        promise = AppProblemsByAppIdLoader(info.context).load(root.id)
+
+        if limit is not None:
+            return promise.then(lambda problems: problems[:limit])
+
+        return promise
 
     @staticmethod
     def __resolve_references(roots: list["App"], info: ResolveInfo):

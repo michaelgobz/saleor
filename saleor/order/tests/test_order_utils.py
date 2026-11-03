@@ -1,10 +1,13 @@
+import datetime
 from decimal import Decimal
 
 import graphene
 import pytest
+from django.utils import timezone
 from prices import Money, TaxedMoney
 
 from ...checkout.fetch import fetch_checkout_info, fetch_checkout_lines
+from ...checkout.models import Checkout
 from ...discount import DiscountType, DiscountValueType
 from ...giftcard import GiftCardEvents
 from ...giftcard.models import GiftCardEvent
@@ -22,7 +25,6 @@ from ..utils import (
     change_order_line_quantity,
     get_order_country,
     get_total_order_discount_excluding_shipping,
-    get_valid_shipping_methods_for_order,
     match_orders_with_new_user,
     order_info_for_logs,
     store_user_addresses_from_draft_order,
@@ -47,6 +49,7 @@ def test_change_quantity_generates_proper_event(
     removed_count,
     order_with_lines,
     staff_user,
+    site_settings,
 ):
     assert not OrderEvent.objects.exists()
     order_with_lines.status = status
@@ -74,6 +77,7 @@ def test_change_quantity_generates_proper_event(
         new_quantity,
         order_with_lines,
         get_plugins_manager(allow_replica=False),
+        site_settings,
         allocate_stock=order_with_lines.is_unconfirmed(),
     )
 
@@ -104,8 +108,7 @@ def test_change_quantity_generates_proper_event(
 
 
 def test_change_quantity_update_line_fields(
-    order_with_lines,
-    staff_user,
+    order_with_lines, staff_user, site_settings
 ):
     # given
     line = order_with_lines.lines.last()
@@ -127,6 +130,7 @@ def test_change_quantity_update_line_fields(
         new_quantity,
         order_with_lines,
         get_plugins_manager(allow_replica=False),
+        site_settings,
     )
 
     # then
@@ -176,100 +180,12 @@ def test_match_draft_order_with_new_user(customer_user, channel_USD):
     assert order.user is None
 
 
-def test_get_valid_shipping_methods_for_order(order_line_with_one_allocation, address):
-    # given
-    order = order_line_with_one_allocation.order
-    order_line_with_one_allocation.is_shipping_required = True
-    order_line_with_one_allocation.save(update_fields=["is_shipping_required"])
-
-    order.currency = "USD"
-    order.shipping_address = address
-    order.save(update_fields=["shipping_address"])
-
-    # when
-    valid_shipping_methods = get_valid_shipping_methods_for_order(
-        order,
-        order.channel.shipping_method_listings.all(),
-        get_plugins_manager(allow_replica=False),
-    )
-
-    # then
-    assert len(valid_shipping_methods) == 1
-
-
-def test_get_valid_shipping_methods_for_order_no_channel_shipping_zones(
-    order_line_with_one_allocation, address
-):
-    # given
-    order = order_line_with_one_allocation.order
-    order.channel.shipping_zones.clear()
-    order_line_with_one_allocation.is_shipping_required = True
-    order_line_with_one_allocation.save(update_fields=["is_shipping_required"])
-
-    order.currency = "USD"
-    order.shipping_address = address
-    order.save(update_fields=["shipping_address"])
-
-    # when
-    valid_shipping_methods = get_valid_shipping_methods_for_order(
-        order,
-        order.channel.shipping_method_listings.all(),
-        get_plugins_manager(allow_replica=False),
-    )
-
-    # then
-    assert len(valid_shipping_methods) == 0
-
-
-def test_get_valid_shipping_methods_for_order_no_shipping_address(
-    order_line_with_one_allocation, address
-):
-    # given
-    order = order_line_with_one_allocation.order
-    order_line_with_one_allocation.is_shipping_required = True
-    order_line_with_one_allocation.save(update_fields=["is_shipping_required"])
-
-    order.currency = "USD"
-
-    # when
-    valid_shipping_methods = get_valid_shipping_methods_for_order(
-        order,
-        order.channel.shipping_method_listings.all(),
-        get_plugins_manager(allow_replica=False),
-    )
-
-    # then
-    assert valid_shipping_methods == []
-
-
-def test_get_valid_shipping_methods_for_order_shipping_not_required(
-    order_line_with_one_allocation, address
-):
-    # given
-    order = order_line_with_one_allocation.order
-    order_line_with_one_allocation.is_shipping_required = False
-    order_line_with_one_allocation.save(update_fields=["is_shipping_required"])
-
-    order.currency = "USD"
-    order.shipping_address = address
-    order.save(update_fields=["shipping_address"])
-
-    # when
-    valid_shipping_methods = get_valid_shipping_methods_for_order(
-        order,
-        order.channel.shipping_method_listings.all(),
-        get_plugins_manager(allow_replica=False),
-    )
-
-    # then
-    assert valid_shipping_methods == []
-
-
 def test_add_variant_to_order(
     order,
     customer_user,
     variant,
     catalogue_promotion_with_single_rule,
+    site_settings,
 ):
     # given
     manager = get_plugins_manager(allow_replica=False)
@@ -303,6 +219,7 @@ def test_add_variant_to_order(
         customer_user,
         None,
         manager,
+        site_settings,
     )
 
     # then
@@ -452,6 +369,38 @@ def test_add_gift_cards_to_order_no_checkout_user(
             "old_current_balance": "20.000",
         },
     }
+
+
+def test_add_gift_cards_to_order_invalidates_prices_for_other_checkout_attached_to_the_same_gift_card(
+    checkout_with_gift_card,
+    gift_card,
+    order,
+    staff_user,
+    channel_USD,
+):
+    # given
+    checkout = checkout_with_gift_card
+    assert gift_card in checkout.gift_cards.all()
+    manager = get_plugins_manager(allow_replica=False)
+    lines, _ = fetch_checkout_lines(checkout)
+    checkout_info = fetch_checkout_info(checkout, lines, manager)
+
+    other_checkout = Checkout.objects.create(
+        currency=channel_USD.currency_code, channel=channel_USD
+    )
+    other_checkout.gift_cards.add(gift_card)
+    initial_price_expiration = timezone.now() + datetime.timedelta(minutes=30)
+    other_checkout.price_expiration = initial_price_expiration
+    other_checkout.save(update_fields=["price_expiration"])
+
+    # when
+    add_gift_cards_to_order(
+        checkout_info, order, Money(30, gift_card.currency), staff_user, None
+    )
+
+    # then
+    other_checkout.refresh_from_db()
+    assert other_checkout.price_expiration != initial_price_expiration
 
 
 def test_get_total_order_discount_excluding_shipping(order, voucher_shipping_type):

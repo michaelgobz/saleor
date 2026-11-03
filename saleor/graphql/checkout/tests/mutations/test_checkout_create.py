@@ -18,8 +18,12 @@ from .....checkout.utils import calculate_checkout_quantity
 from .....core.models import EventDelivery
 from .....product.models import ProductChannelListing, ProductVariantChannelListing
 from .....warehouse.models import Reservation, Stock
-from .....webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
-from ....tests.utils import assert_no_permission, get_graphql_content
+from .....webhook.event_types import WebhookEventAsyncType
+from ....tests.utils import (
+    assert_no_permission,
+    get_graphql_content,
+    get_graphql_content_from_response,
+)
 
 MUTATION_CHECKOUT_CREATE = """
     mutation createCheckout($checkoutInput: CheckoutCreateInput!) {
@@ -622,6 +626,40 @@ def test_checkout_create(api_client, stock, graphql_address_data, channel_USD):
     assert new_checkout.shipping_address.validation_skipped is False
 
 
+@pytest.mark.parametrize(
+    ("_case", "lines_input"),
+    [
+        ("omitted", {}),
+        ("empty_list", {"lines": []}),
+        ("explicit_null", {"lines": None}),
+    ],
+)
+def test_checkout_create_without_lines(_case, lines_input, api_client, channel_USD):
+    """Create checkout when lines are omitted, empty, or null - no lines are created."""
+    # given
+    variables = {
+        "checkoutInput": {
+            "channel": channel_USD.slug,
+            **lines_input,
+        }
+    }
+    assert not Checkout.objects.exists()
+
+    # when
+    response = api_client.post_graphql(MUTATION_CHECKOUT_CREATE, variables)
+
+    # then
+    content = get_graphql_content(response)["data"]["checkoutCreate"]
+    assert content["errors"] == []
+
+    new_checkout = Checkout.objects.get()
+    assert new_checkout.lines.exists() is False
+    checkout_data = content["checkout"]
+    assert checkout_data["token"] == str(new_checkout.token)
+    assert checkout_data["lines"] == []
+    assert checkout_data["quantity"] == 0
+
+
 def test_checkout_create_with_custom_price(
     app_api_client,
     stock,
@@ -888,6 +926,7 @@ def test_checkout_create_with_custom_price_by_app_no_perm(
     app_api_client, stock, graphql_address_data, channel_USD
 ):
     """Ensure that app without handle checkouts permission cannot set custom price."""
+    # given
     variant = stock.product_variant
     variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
     test_email = "test@example.com"
@@ -902,8 +941,17 @@ def test_checkout_create_with_custom_price_by_app_no_perm(
         }
     }
     assert not Checkout.objects.exists()
+
+    # when
     response = app_api_client.post_graphql(MUTATION_CHECKOUT_CREATE, variables)
+
+    # then
     assert_no_permission(response)
+    content = get_graphql_content_from_response(response)
+    assert (
+        "Setting the custom price is allowed only for apps with `MANAGE_CHECKOUTS` permission."
+        == content["errors"][0]["message"]
+    )
 
 
 def test_checkout_create_with_custom_price_by_staff_with_handle_checkouts(
@@ -914,6 +962,7 @@ def test_checkout_create_with_custom_price_by_staff_with_handle_checkouts(
     permission_handle_checkouts,
 ):
     """Ensure that staff with handle checkouts permission cannot set custom price."""
+    # given
     staff_api_client.user.user_permissions.add(permission_handle_checkouts)
     variant = stock.product_variant
     variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
@@ -929,8 +978,17 @@ def test_checkout_create_with_custom_price_by_staff_with_handle_checkouts(
         }
     }
     assert not Checkout.objects.exists()
+
+    # when
     response = staff_api_client.post_graphql(MUTATION_CHECKOUT_CREATE, variables)
+
+    # then
     assert_no_permission(response)
+    content = get_graphql_content_from_response(response)
+    assert (
+        "Setting the custom price is allowed only for apps with `MANAGE_CHECKOUTS` permission."
+        == content["errors"][0]["message"]
+    )
 
 
 def test_checkout_create_no_email(api_client, stock, graphql_address_data, channel_USD):
@@ -1081,6 +1139,37 @@ def test_checkout_create_no_channel_shipping_zones(
     assert len(errors) == 1
     assert errors[0]["code"] == CheckoutErrorCode.INSUFFICIENT_STOCK.name
     assert errors[0]["field"] == "quantity"
+
+
+def test_checkout_create_no_channel_shipping_zones_excluded_from_stock_calculations(
+    api_client, stock, graphql_address_data, channel_USD, site_settings
+):
+    # given
+    site_settings.use_legacy_shipping_zone_stock_availability = False
+    site_settings.save(update_fields=["use_legacy_shipping_zone_stock_availability"])
+
+    channel_USD.shipping_zones.clear()
+    variant = stock.product_variant
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
+    test_email = "test@example.com"
+    shipping_address = graphql_address_data
+    variables = {
+        "checkoutInput": {
+            "channel": channel_USD.slug,
+            "lines": [{"quantity": 1, "variantId": variant_id}],
+            "email": test_email,
+            "shippingAddress": shipping_address,
+        }
+    }
+
+    # when
+    response = api_client.post_graphql(MUTATION_CHECKOUT_CREATE, variables)
+    content = get_graphql_content(response)["data"]["checkoutCreate"]
+
+    # then - no INSUFFICIENT_STOCK error when flag is disabled
+    errors = content["errors"]
+    assert not errors
+    assert content["checkout"]
 
 
 def test_checkout_create_multiple_warehouse(
@@ -2700,6 +2789,24 @@ def test_checkout_create_skip_validation_billing_address_by_app(
     assert new_checkout.billing_address.validation_skipped is True
 
 
+MUTATION_CHECKOUT_CREATE_WITH_ONLY_ID = """
+    mutation createCheckout($checkoutInput: CheckoutCreateInput!) {
+      checkoutCreate(input: $checkoutInput) {
+        checkout {
+          id
+        }
+        errors {
+          field
+          message
+          code
+          variants
+          addressType
+        }
+      }
+    }
+"""
+
+
 @patch(
     "saleor.graphql.checkout.mutations.checkout_create.call_checkout_event",
     wraps=call_checkout_event,
@@ -2708,8 +2815,13 @@ def test_checkout_create_skip_validation_billing_address_by_app(
 @patch(
     "saleor.webhook.transport.asynchronous.transport.send_webhook_request_async.apply_async"
 )
+@patch(
+    "saleor.webhook.transport.asynchronous.transport.generate_deferred_payloads.apply_async"
+)
 @override_settings(PLUGINS=["saleor.plugins.webhook.plugin.WebhookPlugin"])
+@override_settings(WEBHOOK_DEFERRED_PAYLOAD_QUEUE_NAME="deferred_queue")
 def test_checkout_create_triggers_webhooks(
+    mocked_generate_deferred_payloads,
     mocked_send_webhook_request_async,
     mocked_send_webhook_request_sync,
     wrapped_call_checkout_event,
@@ -2750,55 +2862,39 @@ def test_checkout_create_triggers_webhooks(
     }
 
     # when
-    response = api_client.post_graphql(MUTATION_CHECKOUT_CREATE, variables)
+    response = api_client.post_graphql(MUTATION_CHECKOUT_CREATE_WITH_ONLY_ID, variables)
 
     # then
+    checkout = Checkout.objects.first()
     content = get_graphql_content(response)
     assert not content["data"]["checkoutCreate"]["errors"]
-
-    assert wrapped_call_checkout_event.called
 
     # confirm that event delivery was generated for each async webhook.
     checkout_create_delivery = EventDelivery.objects.get(
         webhook_id=checkout_created_webhook.id
     )
-    mocked_send_webhook_request_async.assert_called_once_with(
+
+    mocked_generate_deferred_payloads.assert_called_once_with(
         kwargs={
-            "event_delivery_id": checkout_create_delivery.id,
+            "event_delivery_ids": [checkout_create_delivery.id],
+            "deferred_payload_data": {
+                "model_name": "checkout.checkout",
+                "object_id": checkout.pk,
+                "requestor_model_name": None,
+                "requestor_object_id": None,
+                "request_time": None,
+                "subscribable_object_data": None,
+            },
+            "send_webhook_queue": settings.CHECKOUT_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
             "telemetry_context": ANY,
         },
-        queue=settings.CHECKOUT_WEBHOOK_EVENTS_CELERY_QUEUE_NAME,
-        bind=True,
-        retry_backoff=10,
-        retry_kwargs={"max_retries": 5},
+        queue=settings.WEBHOOK_DEFERRED_PAYLOAD_QUEUE_NAME,
+        MessageGroupId="example.com",
     )
 
-    # confirm each sync webhook was called without saving event delivery
-    assert mocked_send_webhook_request_sync.call_count == 3
-    assert not EventDelivery.objects.exclude(
-        webhook_id=checkout_created_webhook.id
-    ).exists()
-
-    sync_deliveries = {
-        call.args[0].event_type: call.args[0]
-        for call in mocked_send_webhook_request_sync.mock_calls
-    }
-
-    assert WebhookEventSyncType.SHIPPING_LIST_METHODS_FOR_CHECKOUT in sync_deliveries
-    shipping_methods_delivery = sync_deliveries[
-        WebhookEventSyncType.SHIPPING_LIST_METHODS_FOR_CHECKOUT
-    ]
-    assert shipping_methods_delivery.webhook_id == shipping_webhook.id
-
-    assert WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS in sync_deliveries
-    filter_shipping_delivery = sync_deliveries[
-        WebhookEventSyncType.CHECKOUT_FILTER_SHIPPING_METHODS
-    ]
-    assert filter_shipping_delivery.webhook_id == shipping_filter_webhook.id
-
-    assert WebhookEventSyncType.CHECKOUT_CALCULATE_TAXES in sync_deliveries
-    tax_delivery = sync_deliveries[WebhookEventSyncType.CHECKOUT_CALCULATE_TAXES]
-    assert tax_delivery.webhook_id == tax_webhook.id
+    # Deferred payload covers the sync and async actions
+    assert not mocked_send_webhook_request_async.called
+    assert not mocked_send_webhook_request_sync.called
 
 
 @pytest.mark.parametrize(

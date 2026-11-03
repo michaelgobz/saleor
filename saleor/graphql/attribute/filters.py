@@ -1,19 +1,23 @@
 import django_filters
 import graphene
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 
 from ...attribute import AttributeInputType
 from ...attribute.models import Attribute, AttributeValue
+from ...attribute.models.product import AttributeProduct
+from ...attribute.models.product_variant import AttributeVariant
 from ...channel.models import Channel
 from ...permission.utils import has_one_of_permissions
-from ...product import models
+from ...product import models as product_models
 from ...product.models import ALL_PRODUCTS_PERMISSIONS
 from ..channel.filters import get_channel_slug_from_filter_data
 from ..core.doc_category import DOC_CATEGORY_ATTRIBUTES
 from ..core.enums import MeasurementUnitsEnum
 from ..core.filters import (
     BooleanWhereFilter,
+    ChannelFilterInputObjectType,
     EnumFilter,
+    FilterInputObjectType,
     GlobalIDFilter,
     GlobalIDMultipleChoiceFilter,
     GlobalIDMultipleChoiceWhereFilter,
@@ -22,19 +26,18 @@ from ..core.filters import (
     MetadataFilterBase,
     MetadataWhereFilterBase,
     OperationObjectTypeWhereFilter,
-    filter_slug_list,
+    WhereFilterSet,
 )
-from ..core.types import (
-    BaseInputObjectType,
-    ChannelFilterInputObjectType,
-    FilterInputObjectType,
-    NonNullList,
+from ..core.filters.where_input import (
+    FilterInputDescriptions,
     StringFilterInput,
+    WhereInputObjectType,
 )
-from ..core.types.filter_input import FilterInputDescriptions, WhereInputObjectType
+from ..core.types.base import BaseInputObjectType
+from ..core.types.common import NonNullList
 from ..core.utils import from_global_id_or_error
 from ..utils import get_user_or_app_from_context
-from ..utils.filters import filter_by_ids, filter_where_by_value_field
+from ..utils.filters import filter_by_ids, filter_slug_list, filter_where_by_value_field
 from .enums import AttributeEntityTypeEnum, AttributeInputTypeEnum, AttributeTypeEnum
 
 
@@ -46,13 +49,15 @@ def filter_attributes_by_product_types(qs, field, value, requestor, channel_slug
     if channel_slug is not None:
         channel = Channel.objects.using(qs.db).filter(slug=str(channel_slug)).first()
     limited_channel_access = False if channel_slug is None else True
-    product_qs = models.Product.objects.using(qs.db).visible_to_user(
+    product_qs = product_models.Product.objects.using(qs.db).visible_to_user(
         requestor, channel, limited_channel_access
     )
 
     if field == "in_category":
         _type, category_id = from_global_id_or_error(value, "Category")
-        category = models.Category.objects.using(qs.db).filter(pk=category_id).first()
+        category = (
+            product_models.Category.objects.using(qs.db).filter(pk=category_id).first()
+        )
 
         if category is None:
             return qs.none()
@@ -72,9 +77,20 @@ def filter_attributes_by_product_types(qs, field, value, requestor, channel_slug
     else:
         raise NotImplementedError(f"Filtering by {field} is unsupported")
 
-    product_types = set(product_qs.values_list("product_type_id", flat=True))
+    product_type_ids = set(product_qs.values_list("product_type_id", flat=True))
     return qs.filter(
-        Q(product_types__in=product_types) | Q(product_variant_types__in=product_types)
+        Exists(
+            AttributeProduct.objects.filter(
+                attribute_id=OuterRef("pk"),
+                product_type_id__in=product_type_ids,
+            )
+        )
+        | Exists(
+            AttributeVariant.objects.filter(
+                attribute_id=OuterRef("pk"),
+                product_type_id__in=product_type_ids,
+            )
+        )
     )
 
 
@@ -90,6 +106,11 @@ def filter_by_attribute_type(qs, _, value):
     return qs.filter(type=value)
 
 
+def search_attribute_values(qs, value):
+    name_slug_qs = Q(name__ilike=value) | Q(slug__ilike=value)
+    return qs.filter(name_slug_qs)
+
+
 class AttributeValueFilter(django_filters.FilterSet):
     search = django_filters.CharFilter(method="filter_search")
     ids = GlobalIDMultipleChoiceFilter(field_name="id")
@@ -101,11 +122,10 @@ class AttributeValueFilter(django_filters.FilterSet):
 
     @classmethod
     def filter_search(cls, queryset, _name, value):
+        """Filter attribute values by name or slug."""
         if not value:
             return queryset
-        name_slug_qs = Q(name__ilike=value) | Q(slug__ilike=value)
-
-        return queryset.filter(name_slug_qs)
+        return search_attribute_values(queryset, value)
 
 
 class AttributeFilter(MetadataFilterBase):
@@ -123,9 +143,6 @@ class AttributeFilter(MetadataFilterBase):
             "value_required",
             "is_variant_only",
             "visible_in_storefront",
-            "filterable_in_storefront",
-            "filterable_in_dashboard",
-            "available_in_grid",
         ]
 
     def filter_in_collection(self, qs, name, value):
@@ -268,7 +285,6 @@ class AttributeWhere(MetadataWhereFilterBase):
     in_category = GlobalIDWhereFilter(method="filter_in_category")
     value_required = BooleanWhereFilter()
     visible_in_storefront = BooleanWhereFilter()
-    filterable_in_dashboard = BooleanWhereFilter()
 
     class Meta:
         model = Attribute
@@ -293,4 +309,33 @@ class AttributeWhereInput(WhereInputObjectType):
     class Meta:
         filterset_class = AttributeWhere
         description = "Where filtering options."
+        doc_category = DOC_CATEGORY_ATTRIBUTES
+
+
+class AttributeValueWhere(WhereFilterSet):
+    ids = GlobalIDMultipleChoiceWhereFilter(method=filter_by_ids("AttributeValue"))
+    name = OperationObjectTypeWhereFilter(
+        input_class=StringFilterInput, method="filter_by_name"
+    )
+    slug = OperationObjectTypeWhereFilter(
+        input_class=StringFilterInput, method="filter_by_slug"
+    )
+
+    class Meta:
+        model = AttributeValue
+        fields = []
+
+    @staticmethod
+    def filter_by_name(qs, name, value):
+        return filter_where_by_value_field(qs, "name", value)
+
+    @staticmethod
+    def filter_by_slug(qs, name, value):
+        return filter_where_by_value_field(qs, "slug", value)
+
+
+class AttributeValueWhereInput(WhereInputObjectType):
+    class Meta:
+        filterset_class = AttributeValueWhere
+        description = "Where filtering options for attribute values."
         doc_category = DOC_CATEGORY_ATTRIBUTES

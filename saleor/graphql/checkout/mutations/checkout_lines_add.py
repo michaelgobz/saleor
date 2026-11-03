@@ -6,9 +6,9 @@ from ....checkout.error_codes import CheckoutErrorCode
 from ....checkout.fetch import (
     fetch_checkout_info,
     fetch_checkout_lines,
-    update_delivery_method_lists_for_checkout_info,
 )
 from ....checkout.utils import add_variants_to_checkout, invalidate_checkout
+from ....core.exceptions import NonExistingCheckout
 from ....core.utils import metadata_manager
 from ....warehouse.reservations import get_reservation_length, is_reservation_enabled
 from ....webhook.event_types import WebhookEventAsyncType
@@ -18,7 +18,7 @@ from ...core.context import SyncWebhookControlContext
 from ...core.descriptions import DEPRECATED_IN_3X_INPUT
 from ...core.doc_category import DOC_CATEGORY_CHECKOUT
 from ...core.enums import MetadataErrorCode
-from ...core.mutations import BaseMutation
+from ...core.mutations import MISSING_NODE_ERROR_MESSAGE_PREFIX, BaseMutation
 from ...core.scalars import UUID
 from ...core.types import CheckoutError, NonNullList
 from ...core.utils import WebhookEventInfo
@@ -34,8 +34,8 @@ from .utils import (
     get_checkout,
     get_variants_and_total_quantities,
     group_lines_input_on_add,
-    update_checkout_external_shipping_method_if_invalid,
-    update_checkout_shipping_method_if_invalid,
+    mark_checkout_deliveries_as_stale_if_needed,
+    validate_price_override_reason,
     validate_variants_are_published,
     validate_variants_available_for_purchase,
 )
@@ -107,6 +107,7 @@ class CheckoutLinesAdd(BaseMutation):
             delivery_method_info=delivery_method_info,
             existing_lines=lines,
             check_reservations=is_reservation_enabled(site.settings),
+            calculate_stocks_with_shipping_zones=site.settings.use_legacy_shipping_zone_stock_availability,
         )
 
     @classmethod
@@ -122,29 +123,33 @@ class CheckoutLinesAdd(BaseMutation):
     ):
         if variants and checkout_lines_data:
             site = get_site_promise(info.context).get()
-            checkout = add_variants_to_checkout(
-                checkout,
-                variants,
-                checkout_lines_data,
-                checkout_info.channel,
-                replace=replace,
-                replace_reservations=True,
-                reservation_length=get_reservation_length(
-                    site=site, user=info.context.user
-                ),
-                raise_error_for_missing_lines=raise_error_for_missing_lines,
-            )
+            try:
+                checkout = add_variants_to_checkout(
+                    checkout,
+                    variants,
+                    checkout_lines_data,
+                    checkout_info.channel,
+                    replace=replace,
+                    replace_reservations=True,
+                    reservation_length=get_reservation_length(
+                        site=site, user=info.context.user
+                    ),
+                    raise_error_for_missing_lines=raise_error_for_missing_lines,
+                    calculate_stocks_with_shipping_zones=site.settings.use_legacy_shipping_zone_stock_availability,
+                )
+            except NonExistingCheckout as e:
+                graphql_id = graphene.Node.to_global_id("Checkout", e.checkout_token)
+                raise ValidationError(
+                    {
+                        "id": ValidationError(
+                            f"{MISSING_NODE_ERROR_MESSAGE_PREFIX} {graphql_id}",
+                            code=CheckoutErrorCode.NOT_FOUND.value,
+                        )
+                    }
+                ) from e
 
         lines, _ = fetch_checkout_lines(checkout)
-        shipping_channel_listings = checkout.channel.shipping_method_listings.all()
-        update_delivery_method_lists_for_checkout_info(
-            checkout_info=checkout_info,
-            shipping_method=checkout_info.checkout.shipping_method,
-            collection_point=checkout_info.checkout.collection_point,
-            shipping_address=checkout_info.shipping_address,
-            lines=lines,
-            shipping_channel_listings=shipping_channel_listings,
-        )
+        checkout_info.lines = lines
         return lines
 
     @classmethod
@@ -168,6 +173,8 @@ class CheckoutLinesAdd(BaseMutation):
             checkout_info.get_delivery_method_info(),
             lines=lines,
         )
+
+        validate_price_override_reason(checkout_lines_data, lines)
 
         variants_ids_to_validate = {
             variant.id
@@ -226,10 +233,7 @@ class CheckoutLinesAdd(BaseMutation):
         checkout = get_checkout(cls, info, checkout_id=checkout_id, token=token, id=id)
         manager = get_plugin_manager_promise(info.context).get()
         variants = cls._get_variants_from_lines_input(lines)
-        shipping_channel_listings = checkout.channel.shipping_method_listings.all()
-        checkout_info = fetch_checkout_info(
-            checkout, [], manager, shipping_channel_listings
-        )
+        checkout_info = fetch_checkout_info(checkout, [], manager)
         existing_lines_info, _ = fetch_checkout_lines(
             checkout, skip_lines_with_unavailable_variants=False
         )
@@ -250,14 +254,15 @@ class CheckoutLinesAdd(BaseMutation):
             checkout_info,
         )
 
-        update_checkout_external_shipping_method_if_invalid(checkout_info, lines)
-        shipping_update_fields = update_checkout_shipping_method_if_invalid(
-            checkout_info, lines
+        shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
+            checkout_info.checkout, lines
         )
         invalidate_update_fields = invalidate_checkout(
             checkout_info, lines, manager, save=False
         )
-        checkout.save(update_fields=shipping_update_fields + invalidate_update_fields)
+        update_fields = shipping_update_fields + invalidate_update_fields
+        cls.mark_search_vectors_as_dirty(checkout, update_fields)
+        checkout.save(update_fields=update_fields)
         call_checkout_info_event(
             manager,
             event_name=WebhookEventAsyncType.CHECKOUT_UPDATED,
@@ -266,6 +271,11 @@ class CheckoutLinesAdd(BaseMutation):
         )
 
         return CheckoutLinesAdd(checkout=SyncWebhookControlContext(node=checkout))
+
+    @classmethod
+    def mark_search_vectors_as_dirty(cls, checkout, update_fields):
+        checkout.search_index_dirty = True
+        update_fields.append("search_index_dirty")
 
     @classmethod
     def _get_variants_from_lines_input(cls, lines: list[dict]) -> list[ProductVariant]:

@@ -18,7 +18,7 @@ from ....product.models import (
     VariantChannelListingPromotionRule,
 )
 from ....tests import race_condition
-from ... import DiscountType, RewardType, RewardValueType
+from ... import DiscountType, DiscountValueType, RewardType, RewardValueType
 from ...models import CheckoutDiscount, CheckoutLineDiscount, PromotionRule
 from ...utils.checkout import (
     create_checkout_discount_objects_for_order_promotions,
@@ -55,7 +55,7 @@ def test_create_fixed_discount(
     line_info1 = checkout_lines_info[0]
     product_line1 = line_info1.product
 
-    reward_value = Decimal("2")
+    reward_value = Decimal(2)
     rule = catalogue_promotion_without_rules.rules.create(
         name="Percentage promotion rule",
         catalogue_predicate={
@@ -153,7 +153,7 @@ def test_update_catalogue_discount(
     line_info1 = checkout_lines_info[0]
     product_line1 = line_info1.product
 
-    actual_reward_value = Decimal("5")
+    actual_reward_value = Decimal(5)
     discount_to_update = line_info1.line.discounts.create(
         type=DiscountType.PROMOTION,
         value_type=RewardValueType.FIXED,
@@ -164,7 +164,7 @@ def test_update_catalogue_discount(
     )
     checkout_lines_info[0].discounts.append(discount_to_update)
 
-    reward_value = Decimal("7")
+    reward_value = Decimal(7)
     assert reward_value > actual_reward_value
     rule = catalogue_promotion_without_rules.rules.create(
         name="Percentage promotion rule",
@@ -226,7 +226,7 @@ def test_create_fixed_discount_multiple_quantity_in_lines(
     line_info1 = checkout_lines_with_multiple_quantity_info[0]
     product_line1 = line_info1.product
 
-    reward_value = Decimal("2")
+    reward_value = Decimal(2)
     rule = catalogue_promotion_without_rules.rules.create(
         catalogue_predicate={
             "productPredicate": {
@@ -329,7 +329,7 @@ def test_create_fixed_discount_multiple_quantity_in_lines_discount_bigger_than_t
     rule.channels.add(line_info1.channel)
 
     listing = line_info1.channel_listing
-    discounted_price = Decimal("0")
+    discounted_price = Decimal(0)
     listing.discounted_price_amount = discounted_price
     listing.save(update_fields=["discounted_price_amount"])
 
@@ -387,7 +387,7 @@ def test_create_percentage_discount(
     line_info1 = checkout_lines_info[0]
     product_line1 = line_info1.product
 
-    reward_value = Decimal("10")
+    reward_value = Decimal(10)
     rule = catalogue_promotion_without_rules.rules.create(
         name="Percentage promotion rule",
         catalogue_predicate={
@@ -478,7 +478,7 @@ def test_create_percentage_discount_multiple_quantity_in_lines(
     line_info1 = checkout_lines_with_multiple_quantity_info[0]
     product_line1 = line_info1.product
 
-    reward_value = Decimal("10")
+    reward_value = Decimal(10)
     rule = catalogue_promotion_without_rules.rules.create(
         name="Percentage promotion rule",
         catalogue_predicate={
@@ -568,8 +568,8 @@ def test_two_promotions_applied_to_two_different_lines(
     line_info2 = checkout_lines_info[1]
     product_line2 = line_info2.product
 
-    reward_value_1 = Decimal("2")
-    reward_value_2 = Decimal("1")
+    reward_value_1 = Decimal(2)
+    reward_value_2 = Decimal(1)
     rule_1, rule_2 = PromotionRule.objects.bulk_create(
         [
             PromotionRule(
@@ -744,7 +744,7 @@ def test_create_percentage_discount_1_cent_variant_on_10_percentage_discount(
 
     product_line1 = line_info1.product
 
-    reward_value = Decimal("10")
+    reward_value = Decimal(10)
     rule = catalogue_promotion_without_rules.rules.create(
         name="Percentage promotion rule",
         catalogue_predicate={
@@ -839,7 +839,7 @@ def test_promotion_not_valid_anymore(
     line_info1 = checkout_lines_info[0]
     product_line1 = line_info1.product
 
-    reward_value = Decimal("2")
+    reward_value = Decimal(2)
     rule = catalogue_promotion_without_rules.rules.create(
         name="Percentage promotion rule",
         catalogue_predicate={
@@ -885,8 +885,8 @@ def test_one_of_promotion_rule_not_valid_anymore_one_updated(
     line_info1 = checkout_lines_info[0]
     product_line1 = line_info1.product
 
-    reward_value_1 = Decimal("2")
-    reward_value_2 = Decimal("10")
+    reward_value_1 = Decimal(2)
+    reward_value_2 = Decimal(10)
     rule_1, rule_2 = PromotionRule.objects.bulk_create(
         [
             PromotionRule(
@@ -938,7 +938,7 @@ def test_one_of_promotion_rule_not_valid_anymore_one_updated(
             CheckoutLineDiscount(
                 line=line_info1.line,
                 value_type=RewardValueType.PERCENTAGE,
-                value=Decimal("10"),
+                value=Decimal(10),
                 currency=line_info1.channel.currency_code,
                 type=DiscountType.PROMOTION,
                 promotion_rule=rule_1,
@@ -1043,7 +1043,7 @@ def test_create_discount_with_promotion_translation(
     line_info1 = checkout_lines_info[0]
     product_line1 = line_info1.product
 
-    reward_value = Decimal("2")
+    reward_value = Decimal(2)
     rule = catalogue_promotion_without_rules.rules.create(
         name="Percentage promotion rule",
         catalogue_predicate={
@@ -1107,7 +1107,7 @@ def test_create_discount_with_rule_translation(
     line_info1 = checkout_lines_info[0]
     product_line1 = line_info1.product
 
-    reward_value = Decimal("2")
+    reward_value = Decimal(2)
     rule = catalogue_promotion_without_rules.rules.create(
         name="Percentage promotion rule",
         catalogue_predicate={
@@ -1172,7 +1172,7 @@ def test_create_discount_with_promotion_and_rule_translation(
     line_info1 = checkout_lines_info[0]
     product_line1 = line_info1.product
 
-    reward_value = Decimal("2")
+    reward_value = Decimal(2)
     rule = catalogue_promotion_without_rules.rules.create(
         name="Percentage promotion rule",
         catalogue_predicate={
@@ -1239,7 +1239,7 @@ def test_create_or_update_discount_for_gift_promotion_line(
     gift_line_discount = gift_line_info.line.discounts.first()
     gift_product = gift_line_info.line.variant.product
 
-    reward_value = Decimal("2")
+    reward_value = Decimal(2)
     rule = catalogue_promotion_without_rules.rules.create(
         catalogue_predicate={
             "productPredicate": {
@@ -1366,7 +1366,7 @@ def test_create_or_update_discount_objects_from_promotion(
                     }
                 },
                 reward_value_type=RewardValueType.PERCENTAGE,
-                reward_value=Decimal("25"),
+                reward_value=Decimal(25),
                 reward_type=RewardType.SUBTOTAL_DISCOUNT,
             ),
             PromotionRule(
@@ -1382,7 +1382,7 @@ def test_create_or_update_discount_objects_from_promotion(
                     }
                 },
                 reward_value_type=RewardValueType.PERCENTAGE,
-                reward_value=Decimal("50"),
+                reward_value=Decimal(50),
                 reward_type=RewardType.SUBTOTAL_DISCOUNT,
             ),
         ]
@@ -1445,7 +1445,7 @@ def test_create_or_update_discount_objects_from_promotion_best_rule_applies(
                     }
                 },
                 reward_value_type=RewardValueType.FIXED,
-                reward_value=Decimal("12"),
+                reward_value=Decimal(12),
                 reward_type=RewardType.SUBTOTAL_DISCOUNT,
             ),
             PromotionRule(
@@ -1461,7 +1461,7 @@ def test_create_or_update_discount_objects_from_promotion_best_rule_applies(
                     }
                 },
                 reward_value_type=RewardValueType.PERCENTAGE,
-                reward_value=Decimal("25"),
+                reward_value=Decimal(25),
                 reward_type=RewardType.SUBTOTAL_DISCOUNT,
             ),
             PromotionRule(
@@ -1477,7 +1477,7 @@ def test_create_or_update_discount_objects_from_promotion_best_rule_applies(
                     }
                 },
                 reward_value_type=RewardValueType.PERCENTAGE,
-                reward_value=Decimal("50"),
+                reward_value=Decimal(50),
                 reward_type=RewardType.SUBTOTAL_DISCOUNT,
             ),
         ]
@@ -1550,7 +1550,7 @@ def test_create_or_update_discount_objects_from_promotion_subtotal_price_discoun
                     }
                 },
                 reward_value_type=RewardValueType.PERCENTAGE,
-                reward_value=Decimal("50"),
+                reward_value=Decimal(50),
                 reward_type=RewardType.SUBTOTAL_DISCOUNT,
             ),
         ]
@@ -1627,7 +1627,7 @@ def test_update_gift_discount(
     gift_line.save(update_fields=["variant"])
 
     gift_discount = gift_line.discounts.first()
-    gift_discount.value = Decimal("2")
+    gift_discount.value = Decimal(2)
     gift_discount.save(update_fields=["value"])
 
     lines_info, _ = fetch_checkout_lines(checkout)
@@ -1717,7 +1717,7 @@ def test_create_or_update_discount_objects_from_promotion_gift_rule_applies(
                     }
                 },
                 reward_value_type=RewardValueType.FIXED,
-                reward_value=top_price - Decimal("1"),
+                reward_value=top_price - Decimal(1),
                 reward_type=RewardType.SUBTOTAL_DISCOUNT,
             ),
             PromotionRule(
@@ -1731,7 +1731,7 @@ def test_create_or_update_discount_objects_from_promotion_gift_rule_applies(
                     }
                 },
                 reward_value_type=RewardValueType.PERCENTAGE,
-                reward_value=top_price - Decimal("2"),
+                reward_value=top_price - Decimal(2),
                 reward_type=RewardType.SUBTOTAL_DISCOUNT,
             ),
             PromotionRule(
@@ -1745,7 +1745,7 @@ def test_create_or_update_discount_objects_from_promotion_gift_rule_applies(
                     }
                 },
                 reward_value_type=RewardValueType.PERCENTAGE,
-                reward_value=top_price + Decimal("10"),
+                reward_value=top_price + Decimal(10),
                 reward_type=RewardType.SUBTOTAL_DISCOUNT,
             ),
         ]
@@ -1811,8 +1811,8 @@ def test_create_or_update_discount_objects_from_promotion_gift_line_removed(
     subtotal_mock.return_value = price
     delivery_price_mock.return_value = delivery_price
 
-    reward_value_1 = top_price + Decimal("2")
-    reward_value_2 = top_price + Decimal("10")
+    reward_value_1 = top_price + Decimal(2)
+    reward_value_2 = top_price + Decimal(10)
     rules = PromotionRule.objects.bulk_create(
         [
             PromotionRule(
@@ -1914,7 +1914,7 @@ def test_create_or_update_discount_from_promotion_voucher_code_set_checkout_disc
             }
         },
         reward_value_type=RewardValueType.PERCENTAGE,
-        reward_value=Decimal("25"),
+        reward_value=Decimal(25),
         reward_type=RewardType.SUBTOTAL_DISCOUNT,
     )
     rule.channels.add(checkout_info.channel)
@@ -1972,7 +1972,7 @@ def test_create_or_update_discount_from_promotion_checkout_discount_updated(
             }
         },
         reward_value_type=RewardValueType.PERCENTAGE,
-        reward_value=Decimal("25"),
+        reward_value=Decimal(25),
         reward_type=RewardType.SUBTOTAL_DISCOUNT,
     )
     rule.channels.add(checkout_info.channel)
@@ -2037,7 +2037,7 @@ def test_create_or_update_discount_from_promotion_rule_not_applies_anymore(
             }
         },
         reward_value_type=RewardValueType.PERCENTAGE,
-        reward_value=Decimal("25"),
+        reward_value=Decimal(25),
         reward_type=RewardType.SUBTOTAL_DISCOUNT,
     )
     rule.channels.add(checkout_info.channel)
@@ -2070,7 +2070,7 @@ def test_create_discount_objects_for_order_promotions_race_condition(
     checkout = checkout_info.checkout
     channel = checkout_info.channel
 
-    reward_value = Decimal("2")
+    reward_value = Decimal(2)
     rule = promotion.rules.create(
         order_predicate={
             "total_price": {
@@ -2094,7 +2094,7 @@ def test_create_discount_objects_for_order_promotions_race_condition(
             }
         },
         reward_value_type=RewardValueType.FIXED,
-        reward_value=Decimal("1"),
+        reward_value=Decimal(1),
         reward_type=RewardType.SUBTOTAL_DISCOUNT,
     )
     rule0.channels.add(channel)
@@ -2125,6 +2125,47 @@ def test_create_discount_objects_for_order_promotions_race_condition(
     assert discounts[0].amount_value == reward_value
 
 
+def test_create_discount_objects_for_order_promotions_missing_rule_on_discount_object(
+    checkout_info,
+    checkout_lines_info,
+    gift_promotion_rule,
+):
+    # given
+    rule = gift_promotion_rule
+    checkout = checkout_info.checkout
+    channel = checkout_info.channel
+
+    gift_promotion_rule.channels.add(channel)
+    variant = gift_promotion_rule.gifts.first()
+    gift_promotion_rule.gifts.exclude(pk=variant.pk).delete()
+    gift_line = checkout.lines.create(
+        checkout=checkout,
+        variant=variant,
+        quantity=1,
+        is_gift=True,
+        undiscounted_unit_price_amount=10,
+    )
+    # create a discount object without promotion rule set
+    line_discount = CheckoutLineDiscount.objects.create(
+        promotion_rule=None,
+        line=gift_line,
+        type=DiscountType.ORDER_PROMOTION,
+        value_type=DiscountValueType.FIXED,
+        value=Decimal(5),
+        amount_value=Decimal(5),
+        currency=channel.currency_code,
+    )
+
+    # when
+    create_checkout_discount_objects_for_order_promotions(
+        checkout_info, checkout_lines_info
+    )
+
+    # then
+    line_discount.refresh_from_db()
+    assert line_discount.promotion_rule_id == rule.id
+
+
 def test_create_or_update_order_discount_race_condition(
     checkout_info,
     checkout_lines_info,
@@ -2134,7 +2175,7 @@ def test_create_or_update_order_discount_race_condition(
     promotion = catalogue_promotion_without_rules
     channel = checkout_info.channel
 
-    reward_value = Decimal("2")
+    reward_value = Decimal(2)
     rule = promotion.rules.create(
         order_predicate={
             "total_price": {
@@ -2311,3 +2352,41 @@ def test_create_checkout_line_discount_objects_for_catalogue_promotions_race_con
 
     # then
     assert CheckoutLineDiscount.objects.count() == 1
+
+
+def test_get_best_gift_reward_warehouse_without_shipping_zones(
+    gift_promotion_rule, channel_USD, warehouse, site_settings
+):
+    # given
+    assert site_settings.use_legacy_shipping_zone_stock_availability is True
+    warehouse.shipping_zones.clear()
+
+    rules = [gift_promotion_rule]
+    country = "US"
+
+    # when
+    rule, listing = _get_best_gift_reward(rules, channel_USD, country)
+
+    # then - legacy: warehouse has no shipping zones, gift not available
+    assert rule is None
+    assert listing is None
+
+
+def test_get_best_gift_reward_warehouse_without_shipping_zones_excluded_from_stock_calculations(
+    gift_promotion_rule, channel_USD, warehouse, site_settings
+):
+    # given
+    site_settings.use_legacy_shipping_zone_stock_availability = False
+    site_settings.save(update_fields=["use_legacy_shipping_zone_stock_availability"])
+
+    warehouse.shipping_zones.clear()
+
+    rules = [gift_promotion_rule]
+    country = "US"
+
+    # when
+    rule, listing = _get_best_gift_reward(rules, channel_USD, country)
+
+    # then - shipping zones excluded: gift is available
+    assert rule == gift_promotion_rule
+    assert listing is not None

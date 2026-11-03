@@ -1,11 +1,12 @@
 from typing import TYPE_CHECKING, Union
 
-from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.indexes import BTreeIndex, GinIndex
+from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 
 from ..core.db.fields import SanitizedJSONField
+from ..core.editorjs import clean_editorjs
 from ..core.models import ModelWithMetadata, PublishableModel, PublishedQuerySet
-from ..core.utils.editorjs import clean_editor_js
 from ..permission.enums import PagePermissions, PageTypePermissions
 from ..seo.models import SeoModel, SeoModelTranslationWithSlug
 
@@ -30,15 +31,24 @@ class Page(ModelWithMetadata, SeoModel, PublishableModel):
     page_type = models.ForeignKey(
         "PageType", related_name="pages", on_delete=models.CASCADE
     )
-    content = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editor_js)
+    content = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editorjs)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    search_vector = SearchVectorField(blank=True, null=True)
+    search_index_dirty = models.BooleanField(default=True, db_default=True)
 
     objects = PageManager()  # type: ignore[misc]
 
     class Meta(ModelWithMetadata.Meta):
         ordering = ("slug",)
         permissions = ((PagePermissions.MANAGE_PAGES.codename, "Manage pages."),)
-        indexes = [*ModelWithMetadata.Meta.indexes, GinIndex(fields=["title", "slug"])]
+        indexes = [
+            *ModelWithMetadata.Meta.indexes,
+            GinIndex(
+                name="page_tsearch",
+                fields=["search_vector"],
+            ),
+            BTreeIndex(fields=["slug"], name="page_slug_btree_idx"),
+        ]
 
     def __str__(self):
         return self.title
@@ -49,7 +59,7 @@ class PageTranslation(SeoModelTranslationWithSlug):
         Page, related_name="translations", on_delete=models.CASCADE
     )
     title = models.CharField(max_length=255, blank=True, null=True)
-    content = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editor_js)
+    content = SanitizedJSONField(blank=True, null=True, sanitizer=clean_editorjs)
 
     class Meta:
         constraints = [

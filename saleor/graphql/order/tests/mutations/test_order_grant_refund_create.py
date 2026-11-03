@@ -6,7 +6,10 @@ import pytest
 from .....core.prices import quantize_price
 from .....order.utils import update_order_charge_data
 from ....core.utils import to_global_id_or_none
-from ....tests.utils import assert_no_permission, get_graphql_content
+from ....tests.utils import (
+    assert_no_permission,
+    get_graphql_content,
+)
 from ...enums import (
     OrderChargeStatusEnum,
     OrderGrantedRefundStatusEnum,
@@ -27,6 +30,7 @@ mutation OrderGrantRefundCreate(
         amount
       }
       reason
+      reasonReference { id }
       user{
         id
       }
@@ -61,6 +65,7 @@ mutation OrderGrantRefundCreate(
         createdAt
         updatedAt
         reason
+        reasonReference { id }
         app{
           id
         }
@@ -328,7 +333,7 @@ def test_grant_refund_with_only_include_grant_refund_for_shipping(
     order = order_with_lines
     order_id = to_global_id_or_none(order)
     staff_api_client.user.user_permissions.add(permission_manage_orders)
-    amount = Decimal("20")
+    amount = Decimal(20)
     transaction_item = transaction_item_generator(
         charged_value=amount, order_id=order.id
     )

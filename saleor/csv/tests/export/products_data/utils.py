@@ -9,7 +9,7 @@ from .....attribute.models import (
     Attribute,
     AttributeProduct,
 )
-from .....core.utils.editorjs import clean_editor_js
+from .....core.editorjs import editorjs_to_text
 
 
 def add_product_attribute_data_to_expected_data(data, product, attribute_ids, pk=None):
@@ -64,7 +64,7 @@ def get_attribute_value(attribute, value_instance):
     if not value_instance:
         return ""
     if attribute.input_type == AttributeInputType.FILE:
-        value = "http://mirumee.com/media/" + value_instance.file_url
+        value = "https://example.com/media/" + value_instance.file_url
     elif attribute.input_type == AttributeInputType.REFERENCE:
         ref_id = value_instance.slug.split("_")[3]
         value = f"{attribute.entity_type}_{ref_id}"
@@ -73,7 +73,7 @@ def get_attribute_value(attribute, value_instance):
         if attribute.unit:
             value += f" {attribute.unit}"
     elif attribute.input_type == AttributeInputType.RICH_TEXT:
-        value = clean_editor_js(value_instance.rich_text, to_string=True)
+        value = editorjs_to_text(value_instance.rich_text)
     elif attribute.input_type == AttributeInputType.SWATCH:
         value = (
             value_instance.file_url if value_instance.file_url else value_instance.value

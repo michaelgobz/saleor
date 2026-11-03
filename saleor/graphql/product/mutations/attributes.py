@@ -10,13 +10,16 @@ from ....core.tracing import traced_atomic_transaction
 from ....permission.enums import ProductPermissions, ProductTypePermissions
 from ....product import models
 from ....product.error_codes import ProductErrorCode
+from ....product.utils.search_helpers import (
+    mark_products_search_vector_as_dirty_in_batches,
+)
 from ...attribute.mutations import (
     BaseReorderAttributesMutation,
     BaseReorderAttributeValuesMutation,
 )
 from ...attribute.types import Attribute
-from ...channel import ChannelContext
 from ...core import ResolveInfo
+from ...core.context import ChannelContext
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
 from ...core.inputs import ReorderInput
 from ...core.mutations import BaseMutation
@@ -225,18 +228,21 @@ class ProductAttributeAssign(BaseMutation, VariantAssignmentValidationMixin):
         variant_attrs_pks = [pk for pk, _, __ in variant_attrs_data]
 
         attrs_pk = product_attrs_pks + variant_attrs_pks
-        attributes = attribute_models.Attribute.objects.filter(
-            id__in=attrs_pk
-        ).values_list("pk", flat=True)
-        if len(attrs_pk) != len(attributes):
-            invalid_attrs = set(attrs_pk) - set(attributes)
-            invalid_attrs = [
-                graphene.Node.to_global_id("Attribute", pk) for pk in invalid_attrs
+        found_pks = {
+            str(pk)
+            for pk in attribute_models.Attribute.objects.filter(
+                pk__in=attrs_pk
+            ).values_list("pk", flat=True)
+        }
+        missing_pks = [pk for pk in attrs_pk if pk not in found_pks]
+        if missing_pks:
+            missing_attrs = [
+                graphene.Node.to_global_id("Attribute", pk) for pk in missing_pks
             ]
             error = ValidationError(
                 "Attribute doesn't exist.",
                 code=ProductErrorCode.NOT_FOUND.value,
-                params={"attributes": list(invalid_attrs)},
+                params={"attributes": missing_attrs},
             )
             errors["operations"].append(error)
 
@@ -281,17 +287,6 @@ class ProductAttributeAssign(BaseMutation, VariantAssignmentValidationMixin):
 
         # Resolve all the passed IDs to ints
         product_attrs_data, variant_attrs_data = cls.get_operations(info, operations)
-        variant_attrs_pks = [pk for pk, _, __ in variant_attrs_data]
-
-        if variant_attrs_pks and not product_type.has_variants:
-            raise ValidationError(
-                {
-                    "operations": ValidationError(
-                        "Variants are disabled in this product type.",
-                        code=ProductErrorCode.ATTRIBUTE_VARIANTS_DISABLED.value,
-                    )
-                }
-            )
 
         # Ensure the attribute are assignable
         cls.clean_operations(product_type, product_attrs_data, variant_attrs_data)
@@ -353,7 +348,12 @@ class ProductAttributeUnassign(BaseMutation):
         cls.save_field_values(product_type, "product_attributes", attribute_pks)
         cls.save_field_values(product_type, "variant_attributes", attribute_pks)
 
-        product_type.products.all().update(search_index_dirty=True)
+        product_ids = list(
+            models.Product.objects.filter(product_type=product_type).values_list(
+                "id", flat=True
+            )
+        )
+        mark_products_search_vector_as_dirty_in_batches(product_ids)
 
         return cls(product_type=product_type)
 

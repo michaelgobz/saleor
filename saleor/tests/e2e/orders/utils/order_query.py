@@ -6,11 +6,9 @@ ORDER_QUERY = (
     """
 query OrderDetails($id: ID!) {
   order(id: $id) {
-    availableShippingMethods {
-      id
-      active
-    }
     paymentStatus
+    authorizeStatus
+    chargeStatus
     isPaid
     payments {
       id
@@ -40,6 +38,7 @@ query OrderDetails($id: ID!) {
     }
     shippingMethods {
       id
+      active
     }
     shippingAddress {
       ...Address
@@ -51,6 +50,12 @@ query OrderDetails($id: ID!) {
     status
     transactions {
       id
+      chargedAmount {
+        amount
+      }
+      authorizedAmount {
+        amount
+      }
     }
     metadata {
       key

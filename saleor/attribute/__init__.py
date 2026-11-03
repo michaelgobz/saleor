@@ -5,6 +5,7 @@ class AttributeInputType:
     MULTISELECT = "multiselect"
     FILE = "file"
     REFERENCE = "reference"
+    SINGLE_REFERENCE = "single-reference"
     NUMERIC = "numeric"
     RICH_TEXT = "rich-text"
     PLAIN_TEXT = "plain-text"
@@ -18,6 +19,7 @@ class AttributeInputType:
         (MULTISELECT, "Multi Select"),
         (FILE, "File"),
         (REFERENCE, "Reference"),
+        (SINGLE_REFERENCE, "Single Reference"),
         (NUMERIC, "Numeric"),
         (RICH_TEXT, "Rich Text"),
         (PLAIN_TEXT, "Plain Text"),
@@ -40,6 +42,7 @@ class AttributeInputType:
     TYPES_WITH_UNIQUE_VALUES = [
         FILE,
         REFERENCE,
+        SINGLE_REFERENCE,
         RICH_TEXT,
         PLAIN_TEXT,
         NUMERIC,
@@ -54,49 +57,16 @@ class AttributeInputType:
     ]
 
 
-ATTRIBUTE_PROPERTIES_CONFIGURATION = {
-    "filterable_in_storefront": [
-        AttributeInputType.DROPDOWN,
-        AttributeInputType.MULTISELECT,
-        AttributeInputType.NUMERIC,
-        AttributeInputType.SWATCH,
-        AttributeInputType.BOOLEAN,
-        AttributeInputType.DATE,
-        AttributeInputType.DATE_TIME,
-    ],
-    "filterable_in_dashboard": [
-        AttributeInputType.DROPDOWN,
-        AttributeInputType.MULTISELECT,
-        AttributeInputType.NUMERIC,
-        AttributeInputType.SWATCH,
-        AttributeInputType.BOOLEAN,
-        AttributeInputType.DATE,
-        AttributeInputType.DATE_TIME,
-    ],
-    "available_in_grid": [
-        AttributeInputType.DROPDOWN,
-        AttributeInputType.MULTISELECT,
-        AttributeInputType.NUMERIC,
-        AttributeInputType.SWATCH,
-        AttributeInputType.BOOLEAN,
-        AttributeInputType.DATE,
-        AttributeInputType.DATE_TIME,
-    ],
-    "storefront_search_position": [
-        AttributeInputType.DROPDOWN,
-        AttributeInputType.MULTISELECT,
-        AttributeInputType.BOOLEAN,
-        AttributeInputType.DATE,
-        AttributeInputType.DATE_TIME,
-    ],
-}
-
-
 class AttributeType:
     PRODUCT_TYPE = "product-type"
     PAGE_TYPE = "page-type"
+    CUSTOMER_TYPE = "customer-type"
 
-    CHOICES = [(PRODUCT_TYPE, "Product type"), (PAGE_TYPE, "Page type")]
+    CHOICES = [
+        (PRODUCT_TYPE, "Product type"),
+        (PAGE_TYPE, "Page type"),
+        (CUSTOMER_TYPE, "Customer type"),
+    ]
 
 
 class AttributeEntityType:
@@ -109,9 +79,13 @@ class AttributeEntityType:
     PAGE = "Page"
     PRODUCT = "Product"
     PRODUCT_VARIANT = "ProductVariant"
+    CATEGORY = "Category"
+    COLLECTION = "Collection"
 
     CHOICES = [
         (PAGE, "Page"),
         (PRODUCT, "Product"),
         (PRODUCT_VARIANT, "Product Variant"),
+        (CATEGORY, "Category"),
+        (COLLECTION, "Collection"),
     ]

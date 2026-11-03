@@ -1,8 +1,11 @@
+from typing import Any
+
 from celery.utils.log import get_task_logger
 from django.conf import settings
+from django.db import transaction
 
 from ..account.models import User
-from ..account.search import prepare_user_search_document_value
+from ..account.search import generate_user_search_vector_value
 from ..celeryconf import app
 from ..core.db.connection import allow_writer
 from ..order.models import Order
@@ -16,6 +19,9 @@ from .postgres import FlatConcatSearchVector
 
 task_logger = get_task_logger(__name__)
 
+ORDER_BATCH_SIZE = 100
+USER_BATCH_SIZE = 100
+
 BATCH_SIZE = 500
 # Based on local testing, 500 should be a good balance between performance
 # total time and memory usage. Should be tested after some time and adjusted by
@@ -23,13 +29,25 @@ BATCH_SIZE = 500
 # and execution time of a single SQL statement.
 
 
-@app.task
-def set_user_search_document_values(updated_count: int = 0) -> None:
+@app.task(queue=settings.DATA_MIGRATIONS_TASKS_QUEUE_NAME)
+def set_user_search_document_values(
+    updated_count: int = 0, last_user_pk: int | None = None
+) -> None:
+    """Fill in search document values for users that do not have them yet.
+
+    Users are processed in batches in descending primary key order. `last_user_pk`
+    is the cursor pointing to the last processed user, so the next batch does not
+    need to scan through already processed rows.
+    """
+    lookup: dict[str, Any] = {"search_vector__isnull": True}
+    if last_user_pk is not None:
+        lookup["pk__lt"] = last_user_pk
+
     users = list(
         User.objects.using(settings.DATABASE_CONNECTION_REPLICA_NAME)
-        .filter(search_document="")
+        .filter(**lookup)
         .prefetch_related("addresses")
-        .order_by("-id")[:BATCH_SIZE]
+        .order_by("-pk")[:USER_BATCH_SIZE]
     )
 
     if not users:
@@ -37,55 +55,81 @@ def set_user_search_document_values(updated_count: int = 0) -> None:
         return
 
     with allow_writer():
-        updated_count += set_search_document_values(
-            users, prepare_user_search_document_value
+        updated_count += set_search_vector_values(
+            users, generate_user_search_vector_value
         )
 
     task_logger.info("Updated %d users", updated_count)
 
-    if len(users) < BATCH_SIZE:
+    if len(users) < USER_BATCH_SIZE:
         task_logger.info("Setting user search document values finished.")
         return
 
+    last_user_pk = users[-1].pk
     del users
 
-    set_user_search_document_values.delay(updated_count)
+    set_user_search_document_values.delay(updated_count, last_user_pk=last_user_pk)
 
 
-@app.task
-def set_order_search_document_values(updated_count: int = 0) -> None:
-    orders = list(
-        Order.objects.using(settings.DATABASE_CONNECTION_REPLICA_NAME)
-        .filter(search_vector=None)
-        .prefetch_related(
-            "user",
-            "billing_address",
-            "shipping_address",
-            "payments",
-            "discounts",
-            "lines",
-        )
-        .order_by("-number")[:BATCH_SIZE]
+@app.task(queue=settings.DATA_MIGRATIONS_TASKS_QUEUE_NAME)
+def set_order_search_document_values(
+    update_all: bool = False,
+    database_connection_name: str = settings.DATABASE_CONNECTION_REPLICA_NAME,
+    updated_count: int = 0,
+    order_number: int = 0,
+) -> None:
+    """Update search document values for orders.
+
+    If `update_all` is False, it will update only orders with search_vector=None.
+    """
+    lookup: dict[str, Any] = {"number__gte": order_number}
+    if not update_all:
+        lookup["search_vector"] = None
+
+    orders_qs = (
+        Order.objects.using(database_connection_name)
+        .filter(**lookup)
+        .order_by("number")
     )
 
-    if not orders:
+    numbers = list(orders_qs.values_list("number", flat=True)[:ORDER_BATCH_SIZE])
+    if not numbers:
         task_logger.info("No orders to update.")
         return
 
     with allow_writer():
-        updated_count += set_search_vector_values(
-            orders, prepare_order_search_vector_value
+        orders = (
+            Order.objects.filter(number__in=numbers)
+            .prefetch_related(
+                "user",
+                "billing_address",
+                "shipping_address",
+                "payments",
+                "discounts",
+                "lines",
+                "payment_transactions__events",
+                "invoices",
+                "events",
+            )
+            .order_by("pk")
         )
+        with transaction.atomic():
+            _orders_lock = list(orders.select_for_update(of=(["self"])))
+            updated_count += set_search_vector_values(
+                list(orders), prepare_order_search_vector_value
+            )
 
     task_logger.info("Updated %d orders", updated_count)
 
-    if len(orders) < BATCH_SIZE:
+    if len(numbers) < ORDER_BATCH_SIZE:
         task_logger.info("Setting order search document values finished.")
         return
 
     del orders
 
-    set_order_search_document_values.delay(updated_count)
+    set_order_search_document_values.delay(
+        update_all, database_connection_name, updated_count, order_number=numbers[-1]
+    )
 
 
 @app.task
@@ -116,19 +160,6 @@ def set_product_search_document_values(updated_count: int = 0) -> None:
     del products
 
     set_product_search_document_values.delay(updated_count)
-
-
-def set_search_document_values(instances: list, prepare_search_document_func):
-    if not instances:
-        return 0
-    Model = instances[0]._meta.model
-    for instance in instances:
-        instance.search_document = prepare_search_document_func(
-            instance, already_prefetched=True
-        )
-    Model.objects.bulk_update(instances, ["search_document"])
-
-    return len(instances)
 
 
 def set_search_vector_values(

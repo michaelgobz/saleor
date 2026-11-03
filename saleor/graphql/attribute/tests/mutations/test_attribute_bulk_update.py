@@ -4,6 +4,10 @@ import graphene
 
 from .....attribute.error_codes import AttributeBulkUpdateErrorCode
 from .....attribute.models import Attribute
+from .....attribute.tests.model_helpers import (
+    get_product_attribute_values,
+    get_product_attributes,
+)
 from ....core.enums import ErrorPolicyEnum
 from ....tests.utils import get_graphql_content
 
@@ -23,6 +27,17 @@ ATTRIBUTE_BULK_UPDATE_MUTATION = """
                     id
                     name
                     slug
+                    entityType
+                    referenceTypes {
+                        ... on ProductType {
+                            id
+                            slug
+                        }
+                        ... on PageType {
+                            id
+                            slug
+                        }
+                    }
                     choices(first: 10) {
                         edges {
                             node {
@@ -152,40 +167,6 @@ def test_attribute_bulk_update_without_permission(
     assert data["count"] == 0
     errors = data["results"][0]["errors"]
     assert errors
-
-
-def test_attribute_bulk_update_with_deprecated_fields(
-    staff_api_client,
-    color_attribute,
-):
-    # given
-    attributes = [
-        {
-            "id": graphene.Node.to_global_id("Attribute", color_attribute.id),
-            "fields": {"filterableInStorefront": True},
-        }
-    ]
-
-    # when
-    response = staff_api_client.post_graphql(
-        ATTRIBUTE_BULK_UPDATE_MUTATION,
-        {"attributes": attributes},
-    )
-    content = get_graphql_content(response)
-    data = content["data"]["attributeBulkUpdate"]
-
-    # then
-    errors = data["results"][0]["errors"]
-    message = (
-        "Deprecated fields 'storefront_search_position', "
-        "'filterable_in_storefront', 'available_in_grid' and are not "
-        "allowed in bulk mutation."
-    )
-
-    assert data["count"] == 0
-    assert errors
-    assert errors[0]["code"] == AttributeBulkUpdateErrorCode.INVALID.name
-    assert errors[0]["message"] == message
 
 
 def test_attribute_bulk_update_with_duplicated_external_ref(
@@ -490,6 +471,74 @@ def test_attribute_bulk_update_removes_invalid_value(
         errors[0]["message"]
         == f"Value {invalid_value_global_id} does not belong to this attribute."
     )
+
+
+def test_attribute_bulk_update_removes_value_mark_product_search_index_dirty(
+    staff_api_client, product, permission_manage_product_types_and_attributes
+):
+    # given
+    attribute = get_product_attributes(product).first()
+    value = get_product_attribute_values(product, attribute).first()
+    assert product.search_index_dirty is False
+
+    value_global_id = graphene.Node.to_global_id("AttributeValue", value.id)
+    attributes = [
+        {
+            "id": graphene.Node.to_global_id("Attribute", attribute.id),
+            "fields": {"removeValues": [value_global_id]},
+        }
+    ]
+
+    # when
+    staff_api_client.user.user_permissions.add(
+        permission_manage_product_types_and_attributes
+    )
+    response = staff_api_client.post_graphql(
+        ATTRIBUTE_BULK_UPDATE_MUTATION,
+        {"attributes": attributes},
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["attributeBulkUpdate"]
+
+    # then
+    assert data["count"] == 1
+    assert not data["results"][0]["errors"]
+    product.refresh_from_db()
+    assert product.search_index_dirty is True
+
+
+def test_attribute_bulk_update_removes_value_mark_page_search_index_dirty(
+    staff_api_client, page, permission_manage_page_types_and_attributes
+):
+    # given
+    value = page.attributevalues.first().value
+    attribute = value.attribute
+    assert page.search_index_dirty is False
+
+    value_global_id = graphene.Node.to_global_id("AttributeValue", value.id)
+    attributes = [
+        {
+            "id": graphene.Node.to_global_id("Attribute", attribute.id),
+            "fields": {"removeValues": [value_global_id]},
+        }
+    ]
+
+    # when
+    staff_api_client.user.user_permissions.add(
+        permission_manage_page_types_and_attributes
+    )
+    response = staff_api_client.post_graphql(
+        ATTRIBUTE_BULK_UPDATE_MUTATION,
+        {"attributes": attributes},
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["attributeBulkUpdate"]
+
+    # then
+    assert data["count"] == 1
+    assert not data["results"][0]["errors"]
+    page.refresh_from_db()
+    assert page.search_index_dirty is True
 
 
 def test_attribute_bulk_update_add_new_value(
@@ -880,3 +929,310 @@ def test_attribute_bulk_update_add_value_missing_name(
     assert errors[0]["code"] == AttributeBulkUpdateErrorCode.REQUIRED.name
     assert errors[1]["path"] == "addValues.1.name"
     assert errors[1]["code"] == AttributeBulkUpdateErrorCode.REQUIRED.name
+
+
+def test_attribute_bulk_update_reference_types(
+    staff_api_client,
+    permission_manage_product_types_and_attributes,
+    permission_manage_page_types_and_attributes,
+    product_type_product_single_reference_attribute,
+    product_type_variant_single_reference_attribute,
+    product_type_page_reference_attribute,
+    page_type_page_reference_attribute,
+    page_type_list,
+    product_type,
+):
+    # given
+    product_type_variant_single_reference_attribute.reference_product_types.add(
+        product_type
+    )
+    product_type_page_reference_attribute.reference_page_types.add(page_type_list[0])
+    page_type_page_reference_attribute.reference_page_types.add(page_type_list[1])
+
+    product_type_id = graphene.Node.to_global_id("ProductType", product_type.id)
+    page_type_ids = [
+        graphene.Node.to_global_id("PageType", page_type.id)
+        for page_type in page_type_list
+    ]
+    attributes = [
+        # set reference types
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", product_type_product_single_reference_attribute.id
+            ),
+            "fields": {"referenceTypes": [product_type_id]},
+        },
+        # clear product reference types
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", product_type_variant_single_reference_attribute.id
+            ),
+            "fields": {"referenceTypes": []},
+        },
+        # change reference types
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", product_type_page_reference_attribute.id
+            ),
+            "fields": {"referenceTypes": page_type_ids[1:]},
+        },
+        # clear page reference types
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", page_type_page_reference_attribute.id
+            ),
+            "fields": {"referenceTypes": []},
+        },
+    ]
+
+    # when
+    staff_api_client.user.user_permissions.add(
+        permission_manage_product_types_and_attributes,
+        permission_manage_page_types_and_attributes,
+    )
+    response = staff_api_client.post_graphql(
+        ATTRIBUTE_BULK_UPDATE_MUTATION,
+        {"attributes": attributes},
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["attributeBulkUpdate"]
+
+    # then
+    assert len(attributes) == 4
+    assert not data["results"][0]["errors"]
+    assert not data["results"][1]["errors"]
+    assert not data["results"][2]["errors"]
+    assert not data["results"][3]["errors"]
+    assert data["count"] == 4
+    assert len(data["results"][0]["attribute"]["referenceTypes"]) == 1
+    assert len(data["results"][1]["attribute"]["referenceTypes"]) == 0
+    assert (
+        len(data["results"][2]["attribute"]["referenceTypes"])
+        == len(page_type_list) - 1
+    )
+    assert len(data["results"][3]["attribute"]["referenceTypes"]) == 0
+
+    assert data["results"][0]["attribute"]["referenceTypes"][0]["id"] == product_type_id
+    assert {
+        ref_type["id"] for ref_type in data["results"][2]["attribute"]["referenceTypes"]
+    } == set(page_type_ids[1:])
+
+    product_type_product_single_reference_attribute.refresh_from_db()
+    assert (
+        product_type_product_single_reference_attribute.reference_product_types.count()
+        == 1
+    )
+    product_type_variant_single_reference_attribute.refresh_from_db()
+    assert (
+        product_type_variant_single_reference_attribute.reference_product_types.count()
+        == 0
+    )
+    product_type_page_reference_attribute.refresh_from_db()
+    assert product_type_page_reference_attribute.reference_page_types.count() == len(
+        page_type_ids[1:]
+    )
+    page_type_page_reference_attribute.refresh_from_db()
+    assert page_type_page_reference_attribute.reference_page_types.count() == 0
+
+
+@patch("saleor.graphql.attribute.mutations.mixins.REFERENCE_TYPES_LIMIT", 1)
+def test_attribute_bulk_update_invalid_reference_types(
+    staff_api_client,
+    permission_manage_product_types_and_attributes,
+    permission_manage_page_types_and_attributes,
+    product_type_variant_single_reference_attribute,
+    product_type_collection_single_reference_attribute,
+    product_type_page_reference_attribute,
+    color_attribute,
+    page_type_page_reference_attribute,
+    page_type_list,
+    product_type,
+):
+    # given
+    product_type_variant_single_reference_attribute.reference_product_types.add(
+        product_type
+    )
+    product_type_page_reference_attribute.reference_page_types.add(page_type_list[0])
+    page_type_page_reference_attribute.reference_page_types.add(page_type_list[1])
+
+    product_type_id = graphene.Node.to_global_id("ProductType", product_type.id)
+    page_type_ids = [
+        graphene.Node.to_global_id("PageType", page_type.id)
+        for page_type in page_type_list
+    ]
+    input_attributes = [
+        {
+            "id": graphene.Node.to_global_id("Attribute", color_attribute.id),
+            # invalid input type
+            "fields": {"referenceTypes": [product_type_id]},
+        },
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", product_type_collection_single_reference_attribute.id
+            ),
+            # invalid entity type of attribute
+            "fields": {"referenceTypes": [product_type_id]},
+        },
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", product_type_variant_single_reference_attribute.id
+            ),
+            # should be a list of product types
+            "fields": {"referenceTypes": [page_type_ids[1]]},
+        },
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", product_type_page_reference_attribute.id
+            ),
+            # # limit exceeded
+            "fields": {"referenceTypes": page_type_ids[1:]},
+        },
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", page_type_page_reference_attribute.id
+            ),
+            # should be a list of page types
+            "fields": {"referenceTypes": [product_type_id]},
+        },
+    ]
+
+    # when
+    staff_api_client.user.user_permissions.add(
+        permission_manage_product_types_and_attributes,
+        permission_manage_page_types_and_attributes,
+    )
+    response = staff_api_client.post_graphql(
+        ATTRIBUTE_BULK_UPDATE_MUTATION,
+        {"attributes": input_attributes},
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["attributeBulkUpdate"]
+
+    # then
+    assert data["results"][0]["errors"]
+    assert data["results"][1]["errors"]
+    assert data["results"][2]["errors"]
+    assert data["results"][3]["errors"]
+    assert data["results"][4]["errors"]
+    assert data["count"] == 0
+    for result in data["results"]:
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["code"] == AttributeBulkUpdateErrorCode.INVALID.name
+        assert result["errors"][0]["path"] == "referenceTypes"
+
+
+def test_attribute_type_without_mapped_permission_returns_error(
+    staff_api_client,
+    color_attribute,
+    permission_manage_product_types_and_attributes,
+    permission_manage_page_types_and_attributes,
+):
+    # given
+    staff_api_client.user.user_permissions.add(
+        permission_manage_product_types_and_attributes,
+        permission_manage_page_types_and_attributes,
+    )
+    original_name = color_attribute.name
+    attributes = [
+        {
+            "id": graphene.Node.to_global_id("Attribute", color_attribute.pk),
+            "fields": {"name": "NewName"},
+        }
+    ]
+
+    # when
+    with patch.dict(
+        "saleor.graphql.attribute.mutations.attribute_bulk_update."
+        "ATTRIBUTE_TYPE_PERMISSION_MAP",
+        {},
+        clear=True,
+    ):
+        response = staff_api_client.post_graphql(
+            ATTRIBUTE_BULK_UPDATE_MUTATION, {"attributes": attributes}
+        )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["attributeBulkUpdate"]
+    assert data["count"] == 0
+    assert len(data["results"]) == 1
+    errors = data["results"][0]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["code"] == AttributeBulkUpdateErrorCode.INVALID.name
+    assert errors[0]["message"] == (
+        f"No permission is defined for attribute type {color_attribute.type}."
+    )
+    color_attribute.refresh_from_db(fields=("name",))
+    assert color_attribute.name == original_name
+
+
+def test_attribute_bulk_update_customer_attribute(
+    staff_api_client,
+    permission_manage_customer_types_and_attributes,
+    loyalty_customer_attribute,
+):
+    # given
+    staff_api_client.user.user_permissions.add(
+        permission_manage_customer_types_and_attributes
+    )
+    new_name = "Membership tier"
+    attributes = [
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", loyalty_customer_attribute.pk
+            ),
+            "fields": {"name": new_name},
+        }
+    ]
+
+    # when
+    response = staff_api_client.post_graphql(
+        ATTRIBUTE_BULK_UPDATE_MUTATION,
+        {"attributes": attributes},
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["attributeBulkUpdate"]
+    assert data["count"] == 1
+    assert data["results"][0]["attribute"]["name"] == new_name
+    loyalty_customer_attribute.refresh_from_db()
+    assert loyalty_customer_attribute.name == new_name
+
+
+def test_attribute_bulk_update_customer_attribute_without_permission(
+    staff_api_client,
+    permission_manage_page_types_and_attributes,
+    permission_manage_product_types_and_attributes,
+    loyalty_customer_attribute,
+):
+    # given
+    staff_api_client.user.user_permissions.add(
+        permission_manage_page_types_and_attributes,
+        permission_manage_product_types_and_attributes,
+    )
+    old_name = loyalty_customer_attribute.name
+    attributes = [
+        {
+            "id": graphene.Node.to_global_id(
+                "Attribute", loyalty_customer_attribute.pk
+            ),
+            "fields": {"name": "Membership tier"},
+        }
+    ]
+
+    # when
+    response = staff_api_client.post_graphql(
+        ATTRIBUTE_BULK_UPDATE_MUTATION,
+        {"attributes": attributes},
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["attributeBulkUpdate"]
+    assert data["count"] == 0
+    errors = data["results"][0]["errors"]
+    assert len(errors) == 1
+    assert errors[0]["code"] == AttributeBulkUpdateErrorCode.REQUIRED.name
+    loyalty_customer_attribute.refresh_from_db()
+    assert loyalty_customer_attribute.name == old_name

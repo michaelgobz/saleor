@@ -6,10 +6,21 @@ configuration, such as: warehouses, shipping zones, staff accounts, plugin confi
 """
 
 from django.core.management.base import BaseCommand
+from django.db import transaction
 
 from ....account.models import Address, CustomerEvent, CustomerNote, User
-from ....checkout.models import Checkout, CheckoutLine, CheckoutMetadata
-from ....discount.models import OrderDiscount, OrderLineDiscount
+from ....checkout.models import (
+    Checkout,
+    CheckoutDelivery,
+    CheckoutLine,
+    CheckoutMetadata,
+)
+from ....discount.models import (
+    CheckoutDiscount,
+    CheckoutLineDiscount,
+    OrderDiscount,
+    OrderLineDiscount,
+)
 from ....giftcard.models import GiftCard, GiftCardEvent, GiftCardTag
 from ....invoice.models import Invoice, InvoiceEvent
 from ....order.models import (
@@ -44,9 +55,9 @@ class Command(BaseCommand):
         self.delete_payments()
         self.delete_allocations()
         self.delete_reservations()
+        self.delete_gift_cards()
         self.delete_checkouts()
         self.delete_invoices()
-        self.delete_gift_cards()
         self.delete_orders()
         self.delete_unassigned_addresses()
 
@@ -56,96 +67,120 @@ class Command(BaseCommand):
 
     def delete_allocations(self):
         allocations = Allocation.objects.all()
-        allocations._raw_delete(allocations.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        allocations._raw_delete(allocations.db)
 
         preorder_allocations = PreorderAllocation.objects.all()
-        preorder_allocations._raw_delete(preorder_allocations.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        preorder_allocations._raw_delete(preorder_allocations.db)
 
         self.stdout.write("Removed allocations")
 
     def delete_reservations(self):
         reservations = Reservation.objects.all()
-        reservations._raw_delete(reservations.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        reservations._raw_delete(reservations.db)
 
         preorder_reservations = PreorderReservation.objects.all()
-        preorder_reservations._raw_delete(preorder_reservations.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        preorder_reservations._raw_delete(preorder_reservations.db)
 
         self.stdout.write("Removed reservations")
 
     def delete_checkouts(self):
         metadata = CheckoutMetadata.objects.all()
-        metadata._raw_delete(metadata.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        metadata._raw_delete(metadata.db)
+
+        checkout_discounts = CheckoutDiscount.objects.all()
+        checkout_discounts._raw_delete(checkout_discounts.db)
+
+        checkout_line_discounts = CheckoutLineDiscount.objects.all()
+        checkout_line_discounts._raw_delete(checkout_line_discounts.db)
 
         checkout_lines = CheckoutLine.objects.all()
-        checkout_lines._raw_delete(checkout_lines.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        checkout_lines._raw_delete(checkout_lines.db)
 
-        checkout = Checkout.objects.all()
-        checkout._raw_delete(checkout.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        # We use a transaction in order to defer PostgreSQL FK checks due to
+        # Checkout and CheckoutDelivery models/tables referencing each other,
+        # thus this requires deferring the FK checks after deleting both tables
+        # (thus deferring autocommit)
+        #
+        # Note: this may cause locks to be held for longer, however this is the
+        #       the cheapest approach. Doing a bulk update would be highly
+        #       expensive in comparison
+        with transaction.atomic():
+            checkout_deliveries = CheckoutDelivery.objects.all()
+            checkout_deliveries._raw_delete(checkout_deliveries.db)
+
+            checkout = Checkout.objects.all()
+            checkout._raw_delete(checkout.db)
         self.stdout.write("Removed checkouts")
 
     def delete_payments(self):
         order_granted_refund_lines = OrderGrantedRefundLine.objects.all()
-        order_granted_refund_lines._raw_delete(order_granted_refund_lines.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        order_granted_refund_lines._raw_delete(order_granted_refund_lines.db)
 
         transaction_events = TransactionEvent.objects.all()
-        transaction_events._raw_delete(transaction_events.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        transaction_events._raw_delete(transaction_events.db)
 
         order_granted_refunds = OrderGrantedRefund.objects.all()
-        order_granted_refunds._raw_delete(order_granted_refunds.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        order_granted_refunds._raw_delete(order_granted_refunds.db)
 
         transaction_items = TransactionItem.objects.all()
-        transaction_items._raw_delete(transaction_items.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        transaction_items._raw_delete(transaction_items.db)
 
         transactions = Transaction.objects.all()
-        transactions._raw_delete(transactions.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        transactions._raw_delete(transactions.db)
 
         payments = Payment.objects.all()
-        payments._raw_delete(payments.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        payments._raw_delete(payments.db)
         self.stdout.write("Removed payments and transactions")
 
     def delete_invoices(self):
         invoice_events = InvoiceEvent.objects.all()
-        invoice_events._raw_delete(invoice_events.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        invoice_events._raw_delete(invoice_events.db)
 
         invoice = Invoice.objects.all()
-        invoice._raw_delete(invoice.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        invoice._raw_delete(invoice.db)
         self.stdout.write("Removed invoices")
 
     def delete_gift_cards(self):
         gift_card_events = GiftCardEvent.objects.all()
-        gift_card_events._raw_delete(gift_card_events.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        gift_card_events._raw_delete(gift_card_events.db)
 
         gift_card_tags = GiftCardTag.objects.all()
         gift_card_tags.delete()
 
+        checkout_gift_cards = Checkout.gift_cards.through.objects.all()
+        checkout_gift_cards.delete()
+
+        order_gift_cards = Order.gift_cards.through.objects.all()
+        order_gift_cards.delete()
+
         gift_cards = GiftCard.objects.all()
-        gift_cards._raw_delete(gift_cards.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        gift_cards._raw_delete(gift_cards.db)
         self.stdout.write("Removed gift cards")
 
     def delete_orders(self):
         line_discounts = OrderLineDiscount.objects.all()
-        line_discounts._raw_delete(line_discounts.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        line_discounts._raw_delete(line_discounts.db)
 
         discounts = OrderDiscount.objects.all()
-        discounts._raw_delete(discounts.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        discounts._raw_delete(discounts.db)
 
         fulfillment_lines = FulfillmentLine.objects.all()
-        fulfillment_lines._raw_delete(fulfillment_lines.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        fulfillment_lines._raw_delete(fulfillment_lines.db)
 
         fulfillments = Fulfillment.objects.all()
-        fulfillments._raw_delete(fulfillments.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        fulfillments._raw_delete(fulfillments.db)
 
         order_lines = OrderLine.objects.all()
-        order_lines._raw_delete(order_lines.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        order_lines._raw_delete(order_lines.db)
 
         order_events = OrderEvent.objects.all()
-        order_events._raw_delete(order_events.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        order_events._raw_delete(order_events.db)
 
         customer_order_events = CustomerEvent.objects.filter(order__isnull=False)
-        customer_order_events._raw_delete(customer_order_events.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        customer_order_events._raw_delete(customer_order_events.db)
 
         orders = Order.objects.all()
-        orders._raw_delete(orders.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        orders._raw_delete(orders.db)
         self.stdout.write("Removed orders")
 
     def delete_unassigned_addresses(self):
@@ -154,7 +189,7 @@ class Command(BaseCommand):
             warehouse__isnull=True,
             sitesettings__isnull=True,
         )
-        addresses._raw_delete(addresses.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        addresses._raw_delete(addresses.db)
         self.stdout.write("Removed unassigned addresses")
 
     def delete_customers(self):
@@ -165,8 +200,8 @@ class Command(BaseCommand):
         customer_notes = CustomerNote.objects.all()
 
         customer_addresses.delete()
-        customer_events._raw_delete(customer_events.db)  # type: ignore[attr-defined] # raw access # noqa: E501
-        customer_notes._raw_delete(customer_notes.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        customer_events._raw_delete(customer_events.db)
+        customer_notes._raw_delete(customer_notes.db)
 
-        customers._raw_delete(customers.db)  # type: ignore[attr-defined] # raw access # noqa: E501
+        customers._raw_delete(customers.db)
         self.stdout.write("Removed customers")

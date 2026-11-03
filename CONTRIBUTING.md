@@ -39,52 +39,27 @@ Install & setup prerequisites via homebrew:
 
 ```shell
 brew install libmagic
-brew install pyenv
-
-pyenv install 3.12
-
-# optionally set python globally
-pyenv global 3.12
-
-brew install pipx
-pipx install poetry
+brew install uv
+uv python install 3.12
 ```
 
 Clone this [repository](https://github.com/saleor/saleor) and setup database and additional services in docker:
 
 ```shell
 cd .devcontainer
-docker compose up db dashboard redis mailpit
-```
-
-If you didn't set python version globally set [pyenv](https://github.com/pyenv/pyenv) local version:
-
-```shell
-pyenv local 3.12
+docker compose up db dashboard cache mailpit
 ```
 
 To create virtualenv and install dependencies run in root of the repository:
 
 ```shell
-poetry sync
+uv sync
 ```
-
-After installation activate virtualenv:
-
-```shell
-eval $(poetry env activate)
-```
-
-See [poetry docs](https://python-poetry.org/docs/managing-environments/#bash-csh-zsh) for all supported shells.
-
-> [!TIP]
-> Your shell prompt should have virtualenv information available and should look similar to this:
-> `(saleor-py3.12) ~/D/saleor %`
 
 Install pre commit hooks:
 
 ```shell
-pre-commit install
+uv run pre-commit install
 ```
 
 Create environment variables, by creating a `.env` file. You can use existing example for development:
@@ -109,19 +84,19 @@ You are ready to go 🎉.
 To start server:
 
 ```shell
-poe start
+uv run poe start
 ```
 
 to start Celery worker:
 
 ```
-poe worker
+uv run poe worker
 ```
 
 to start Celery Beat scheduler:
 
 ```shell
-poe scheduler
+uv run poe scheduler
 ```
 
 > [!NOTE]
@@ -130,13 +105,13 @@ poe scheduler
 To run database migrations:
 
 ```shell
-poe migrate
+uv run poe migrate
 ```
 
 To populate database with example data and create the admin user:
 
 ```shell
-poe populatedb
+uv run poe populatedb
 ```
 
 > [!NOTE]
@@ -145,27 +120,26 @@ poe populatedb
 To build `schema.graphql` file:
 
 ```shell
-poe build-schema
+uv run poe build-schema
 ```
 
 To run Django shell:
 
 ```
-poe shell
+uv run poe shell
 ```
 
 ## Managing dependencies
 
-### Poetry
+### uv
 
-To guarantee repeatable installations, all project dependencies are managed using [Poetry](https://python-poetry.org). The project's direct dependencies are listed in `pyproject.toml`.
-Running `poetry lock` generates `poetry.lock` which has all versions pinned.
+To guarantee repeatable installations, all project dependencies are managed using [uv](https://docs.astral.sh/uv/). The project's direct dependencies are listed in `pyproject.toml`.
+Running `uv lock` generates `uv.lock` which has all versions pinned.
 
-You can install Poetry by following the official installation [guide](https://python-poetry.org/docs/#installation).
-We recommend using at least version `2.1.1` as it contains many fixes and features that Saleor relies on.
+You can install uv by following the official installation [guide](https://docs.astral.sh/uv/getting-started/installation/).
 
 > [!TIP]
-> We recommend using this workflow and keeping `pyproject.toml` and `poetry.lock` under version control to ensure that all computers and environments run the same code.
+> We recommend using this workflow and keeping `pyproject.toml` and `uv.lock` under version control to ensure that all computers and environments run the same code.
 
 ## File structure
 
@@ -248,7 +222,7 @@ In the case of testing the `API`, we would like to split all tests into `mutatio
 To run tests, enter `poe test` in your terminal.
 
 ```bash
-poe test
+uv run poe test
 ```
 
 By default `poe test` is using the `--reuse-db` flag to speed up testing time.
@@ -256,20 +230,23 @@ By default `poe test` is using the `--reuse-db` flag to speed up testing time.
 > [!TIP]
 > If you need to ignore `--reuse-db` (e.g when testing Saleor on different versions that have different migrations) add `--create-db` argument: `poe test --create-db`
 
+> [!TIP]
+> Depending on your setup, you may want to run your Postgres on host (not inside container) to improve the test execution speed
+
 ### How to run particular tests?
 
 As running all tests is quite time-consuming, sometimes you want to run only tests from one dictionary or even just a particular test.
 You can use the following command for that. In the case of a particular directory or file, provide the path after the `pytest` command, like:
 
 ```bash
-poe test saleor/graphql/app/tests
+uv run poe test saleor/graphql/app/tests
 ```
 
 If you want to run a particular test, you need to provide the path to the file where the test is and the file name after the `::` sign. In the case of running a single test, it's also worth using the `-n0` flag to run the test only in one thread. It will significantly decrease time.
 See an example below:
 
 ```bash
-poe test saleor/graphql/app/tests/mutations/test_app_create.py::test_app_create_mutation -n0
+uv run poe test saleor/graphql/app/tests/mutations/test_app_create.py::test_app_create_mutation -n0
 ```
 
 ### Using pdb when testing
@@ -278,7 +255,7 @@ If you would like to use `pdb` in code when running a test, you need to use a fe
 So the previous example will look like this:
 
 ```bash
-poe test saleor/graphql/app/tests/mutations/test_app_create.py::test_app_create_mutation -n0 -s --allow-hosts=127.0.0.1
+uv run poe test saleor/graphql/app/tests/mutations/test_app_create.py::test_app_create_mutation -n0 -s --allow-hosts=127.0.0.1
 ```
 
 ### Recording cassettes
@@ -286,7 +263,7 @@ poe test saleor/graphql/app/tests/mutations/test_app_create.py::test_app_create_
 Some of our tests use `VCR.py` cassettes to record requests and responses from external APIs. To record one, you need to use the `vcr-record` flag and specify `allow-hosts`:
 
 ```bash
-poe test --vcr-record=once saleor/app/tests/test_app_commands.py --allow-hosts=127.0.0.1
+uv run poe test --vcr-record=once saleor/app/tests/test_app_commands.py --allow-hosts=127.0.0.1
 ```
 
 ### Writing benchmark tests
@@ -311,7 +288,7 @@ def test_apps_for_federation_query_count(
 To check the number of queries, run the benchmark test, and after that, call the following command in your terminal:
 
 ```bash
-django-queries show
+uv run django-queries show
 ```
 
 You will see the number of queries that were performed for each test
@@ -325,10 +302,10 @@ It significantly improves test readability and clarifies what you are testing.
 ## Coding style
 
 Saleor uses various tools to maintain a common coding style and help with development.
-To install all the development tools, use [Poetry](https://python-poetry.org):
+To install all the development tools, use [uv](https://docs.astral.sh/uv/):
 
 ```shell
-poetry sync
+uv sync
 ```
 
 Saleor uses the [pre-commit](https://pre-commit.com/#install) tool to check and automatically fix any formatting issue before creating a git commit.
@@ -336,7 +313,7 @@ Saleor uses the [pre-commit](https://pre-commit.com/#install) tool to check and 
 Run the following command to install pre-commit into your git hooks and have it run on every commit:
 
 ```shell
-pre-commit install
+uv run pre-commit install
 ```
 
 For more information on how it works, see the `.pre-commit-config.yaml` configuration file.
@@ -381,7 +358,7 @@ Use relative imports.
 ### Migrations
 
 Try to combine multiple migrations into one, but remember not to mix changes on the database with updating rows in migrations. In other words, operations that alter tables and use `RunPython` to run methods on existing data should be in separate files.
-Follow [zero-downtime policy](./developer/community/zero-downtime-migrations.mdx) when writing migrations.
+Follow [zero-downtime policy](https://docs.saleor.io/developer/community/zero-downtime-migrations) when writing migrations.
 
 ### Handling migrations between versions
 
@@ -405,6 +382,26 @@ Utility functions specific to the API should go to the `graphql` directory,
 otherwise to the main module directory, usually to the `utils.py` file.
 Try to find a name as descriptive as possible when writing such a method.
 Also, do not forget about the docstring, especially in a complicated function.
+
+### Locking Objects
+
+To lock objects and prevent race conditions in concurrent operations, use Django's [`select_for_update()`](https://docs.djangoproject.com/en/stable/ref/models/querysets/#select-for-update) method on querysets.
+
+#### General Guidelines
+
+- When locking **multiple objects**, always lock them **in a consistent order** to avoid deadlocks.
+  - Use a clear and stable ordering—typically by `pk`.
+  - When locking **across multiple models**, always acquire locks in a defined order. For example, lock the `Order` model **before** `OrderLine`.
+
+#### Best Practices
+
+To reduce the chance of deadlocks and to keep the locking logic consistent:
+
+- Wrap all locking logic in **helper functions**.
+- Place these helper functions in a file named `lock_objects.py` located in the same app directory as the model you're locking.
+  - For single-model locks, use the model's app directory (e.g. `orders/lock_objects.py`).
+  - For multi-model locks, place the function in the directory of the **last model being locked**.
+    - Example: If locking `Order` and `TransactionItem`, and `TransactionItem` is locked last, use `payment/lock_objects.py`.
 
 ### Searching
 

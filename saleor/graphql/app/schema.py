@@ -7,7 +7,8 @@ from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
 from ..core.doc_category import DOC_CATEGORY_APPS
 from ..core.fields import FilterConnectionField, PermissionsField
-from ..core.types import FilterInputObjectType, NonNullList
+from ..core.filters import FilterInputObjectType
+from ..core.types import NonNullList
 from ..core.utils import from_global_id_or_error
 from .dataloaders import AppByIdLoader, AppExtensionByIdLoader, app_promise_callback
 from .filters import AppExtensionFilter, AppFilter
@@ -19,8 +20,11 @@ from .mutations import (
     AppDeleteFailedInstallation,
     AppFetchManifest,
     AppInstall,
+    AppProblemCreate,
+    AppProblemDismiss,
     AppReenableSyncWebhooks,
     AppRetryInstall,
+    AppSelfUpdate,
     AppTokenCreate,
     AppTokenDelete,
     AppTokenVerify,
@@ -189,5 +193,10 @@ class AppMutations(graphene.ObjectType):
 
     app_activate = AppActivate.Field()
     app_deactivate = AppDeactivate.Field()
+
+    app_problem_create = AppProblemCreate.Field()
+    app_problem_dismiss = AppProblemDismiss.Field()
+
+    app_self_update = AppSelfUpdate.Field()
 
     app_reenable_sync_webhooks = AppReenableSyncWebhooks.Field()

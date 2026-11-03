@@ -42,6 +42,20 @@ def resolve_customers(info):
     )
 
 
+def resolve_customer_type(info, id):
+    return (
+        models.CustomerType.objects.using(get_database_connection_name(info.context))
+        .filter(id=id)
+        .first()
+    )
+
+
+def resolve_customer_types(info):
+    return models.CustomerType.objects.using(
+        get_database_connection_name(info.context)
+    ).all()
+
+
 def resolve_permission_group(info, id):
     return (
         models.Group.objects.using(get_database_connection_name(info.context))
@@ -67,7 +81,7 @@ def resolve_user(info, id=None, email=None, external_reference=None):
         if id:
             _model, filter_kwargs["pk"] = from_global_id_or_error(id, User)
         if email:
-            filter_kwargs["email"] = email
+            filter_kwargs["email__iexact"] = email.lower()
         if external_reference:
             filter_kwargs["external_reference"] = external_reference
         if requester.has_perms(

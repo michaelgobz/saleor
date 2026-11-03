@@ -21,45 +21,6 @@ QUERY_PAGES_WITH_FILTER = """
 """
 
 
-@pytest.mark.parametrize(
-    ("page_filter", "count"),
-    [
-        ({"search": "Page1"}, 2),
-        ({"search": "about"}, 1),
-        ({"search": "test"}, 1),
-        ({"search": "slug"}, 3),
-        ({"search": "Page"}, 2),
-    ],
-)
-def test_pages_query_with_filter(
-    page_filter, count, staff_api_client, permission_manage_pages, page_type
-):
-    query = QUERY_PAGES_WITH_FILTER
-    Page.objects.create(
-        title="Page1",
-        slug="slug_page_1",
-        content=dummy_editorjs("Content for page 1"),
-        page_type=page_type,
-    )
-    Page.objects.create(
-        title="Page2",
-        slug="slug_page_2",
-        content=dummy_editorjs("Content for page 2"),
-        page_type=page_type,
-    )
-    Page.objects.create(
-        title="About",
-        slug="slug_about",
-        content=dummy_editorjs("About test content"),
-        page_type=page_type,
-    )
-    variables = {"filter": page_filter}
-    staff_api_client.user.user_permissions.add(permission_manage_pages)
-    response = staff_api_client.post_graphql(query, variables)
-    content = get_graphql_content(response)
-    assert content["data"]["pages"]["totalCount"] == count
-
-
 def test_pages_query_with_filter_by_page_type(
     staff_api_client, permission_manage_pages, page_type_list
 ):
@@ -81,7 +42,7 @@ def test_pages_query_with_filter_by_page_type(
     [
         ({"slugs": ["test-url-1"]}, 1),
         ({"slugs": ["test-url-1", "test-url-2"]}, 2),
-        ({"slugs": []}, 2),
+        ({"slugs": []}, 4),
     ],
 )
 def test_pages_with_filtering(filter_by, pages_count, staff_api_client, page_list):
@@ -192,31 +153,156 @@ def test_query_pages_with_sort(
 
 
 PAGES_QUERY = """
-    query {
-        pages(first: 10) {
-            edges {
-                node {
-                    id
-                    title
-                    slug
-                    pageType {
-                        id
-                    }
-                    content
-                    contentJson
-                    attributes {
-                        attribute {
-                            slug
-                        }
-                        values {
-                            id
-                            slug
-                        }
-                    }
-                }
-            }
+{
+  pages(first: 10) {
+    edges {
+      node {
+        id
+        title
+        slug
+        pageType {
+          id
         }
+        content
+        contentJson
+        attributes {
+          attribute {
+            slug
+          }
+          values {
+            id
+            slug
+          }
+        }
+        assignedAttributes(limit:5) {
+          attr: attribute {
+            slug
+          }
+          ... on AssignedNumericAttribute {
+            attribute {
+              id
+            }
+            value
+          }
+          ... on AssignedTextAttribute {
+            text: value
+            text_translation: translation(languageCode: FR)
+          }
+          ... on AssignedPlainTextAttribute {
+            plain_text: value
+            plain_translation: translation(languageCode: FR)
+          }
+          ... on AssignedFileAttribute {
+            file: value {
+              contentType
+            }
+          }
+          ... on AssignedSinglePageReferenceAttribute {
+            page_ref: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedSingleProductReferenceAttribute {
+            product_ref: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedSingleProductVariantReferenceAttribute {
+            variant_ref: value {
+              __typename
+              sku
+            }
+          }
+          ... on AssignedSingleCategoryReferenceAttribute {
+            category_ref: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedSingleCollectionReferenceAttribute {
+            collection_ref: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedMultiPageReferenceAttribute {
+            __typename
+            pages: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedMultiProductReferenceAttribute {
+            __typename
+            producs: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedMultiProductVariantReferenceAttribute {
+            __typename
+            variants: value {
+              __typename
+              sku
+            }
+          }
+          ... on AssignedMultiCategoryReferenceAttribute {
+            __typename
+            categories: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedMultiCollectionReferenceAttribute {
+            __typename
+            collections: value {
+              __typename
+              slug
+            }
+          }
+          ... on AssignedSingleChoiceAttribute {
+            __typename
+            choice: value {
+              name
+              slug
+              translation(languageCode: FR)
+            }
+          }
+          ... on AssignedMultiChoiceAttribute {
+            __typename
+            choices: value {
+              name
+              slug
+              translation(languageCode: FR)
+            }
+          }
+          ... on AssignedSwatchAttribute {
+            swatch: value {
+              name
+              slug
+              hexColor
+              file {
+                url
+                contentType
+              }
+            }
+          }
+          ... on AssignedBooleanAttribute {
+            bool: value
+          }
+          ... on AssignedDateAttribute {
+            date: value
+          }
+          ... on AssignedDateTimeAttribute {
+            datetime: value
+          }
+        }
+      }
     }
+  }
+}
 """
 
 
@@ -311,3 +397,57 @@ def test_query_pages_by_customer(api_client, page_list, page):
     content = get_graphql_content(response)
     data = content["data"]["pages"]["edges"]
     assert len(data) == page_count - 1
+
+
+PAGES_QUERY_WITH_ATTRIBUTE_AND_CHANNEL = """
+    query ($channel: String) {
+        pages(first: 10, channel: $channel) {
+            edges {
+                node {
+                    id
+                    title
+                    slug
+                    pageType {
+                        id
+                    }
+                    content
+                    contentJson
+                    attributes {
+                        attribute {
+                            slug
+                        }
+                        values {
+                            id
+                            slug
+                        }
+                    }
+                }
+            }
+        }
+    }
+"""
+
+
+def test_pages_attribute_with_incorrect_channel_slug(
+    staff_api_client,
+    page_type_variant_reference_attribute,
+    permission_manage_pages,
+    page,
+    product,
+    channel_USD,
+):
+    # given
+    staff_api_client.user.user_permissions.add(permission_manage_pages)
+
+    query = PAGES_QUERY_WITH_ATTRIBUTE_AND_CHANNEL
+
+    # when
+    variables = {
+        "channel": "non-existing-channel-slug",
+    }
+    response = staff_api_client.post_graphql(query, variables)
+
+    # then
+    content = get_graphql_content(response)
+    pages_data = content["data"]["pages"]["edges"]
+    assert len(pages_data) == 0

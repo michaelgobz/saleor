@@ -2,29 +2,31 @@ import graphene
 from graphene import relay
 from promise import Promise
 
+from ....core.search import prefix_search
 from ....permission.utils import has_one_of_permissions
 from ....product import models
 from ....product.models import ALL_PRODUCTS_PERMISSIONS
+from ....thumbnail import ThumbnailSizeRounding
 from ....thumbnail.utils import (
     get_image_or_proxy_url,
     get_thumbnail_format,
     get_thumbnail_size,
 )
-from ...channel import ChannelQsContext
-from ...channel.dataloaders import ChannelBySlugLoader
+from ...channel.dataloaders.by_self import ChannelBySlugLoader
 from ...channel.utils import get_default_channel_slug_or_graphql_error
 from ...core.connection import (
     CountableConnection,
     create_connection_slice,
     filter_connection_queryset,
 )
-from ...core.context import get_database_connection_name
-from ...core.descriptions import RICH_CONTENT
+from ...core.context import ChannelQsContext, get_database_connection_name
+from ...core.descriptions import ADDED_IN_323, DEPRECATED_IN_3X_INPUT, RICH_CONTENT
 from ...core.doc_category import DOC_CATEGORY_PRODUCTS
 from ...core.federation import federated_entity, resolve_federation_references
 from ...core.fields import ConnectionField, FilterConnectionField, JSONString
 from ...core.scalars import DateTime
 from ...core.types import Image, ModelObjectType, ThumbnailField
+from ...core.utils import validate_and_apply_search_rank_sorting
 from ...meta.types import ObjectWithMetadata
 from ...translations.fields import TranslationField
 from ...translations.types import CategoryTranslation
@@ -34,8 +36,8 @@ from ..dataloaders import (
     CategoryChildrenByCategoryIdLoader,
     ThumbnailByCategoryIdSizeAndFormatLoader,
 )
-from ..filters import ProductFilterInput, ProductWhereInput
-from ..sorters import ProductOrder
+from ..filters.product import ProductFilterInput, ProductWhereInput
+from ..sorters import ProductOrder, ProductOrderField
 from .products import ProductCountableConnection
 
 
@@ -46,7 +48,15 @@ class Category(ModelObjectType[models.Category]):
     seo_description = graphene.String(description="SEO description of category.")
     name = graphene.String(required=True, description="Name of category")
     description = JSONString(description="Description of the category." + RICH_CONTENT)
+    full_description = JSONString(
+        description="Full description of the category. Returns null when unset."
+        + RICH_CONTENT
+        + ADDED_IN_323
+    )
     slug = graphene.String(required=True, description="Slug of the category.")
+    external_reference = graphene.String(
+        description=f"External ID of this category.{ADDED_IN_323}"
+    )
     parent = graphene.Field(lambda: Category, description="Parent category.")
     level = graphene.Int(required=True, description="Level of the category.")
     description_json = JSONString(
@@ -63,9 +73,15 @@ class Category(ModelObjectType[models.Category]):
     )
     products = FilterConnectionField(
         ProductCountableConnection,
-        filter=ProductFilterInput(description="Filtering options for products."),
-        where=ProductWhereInput(description="Filtering options for products."),
+        filter=ProductFilterInput(
+            description=(
+                f"Filtering options for products. {DEPRECATED_IN_3X_INPUT} "
+                "Use `where` filter instead."
+            )
+        ),
+        where=ProductWhereInput(description="Where filtering options for products."),
         sort_by=ProductOrder(description="Sort products."),
+        search=graphene.String(description="Search products."),
         channel=graphene.String(
             description="Slug of a channel for which the data should be returned."
         ),
@@ -111,6 +127,7 @@ class Category(ModelObjectType[models.Category]):
         root: models.Category,
         info,
         size: int | None = None,
+        size_rounding: ThumbnailSizeRounding | None = None,
         format: str | None = None,
     ) -> None | Image | Promise[Image]:
         if not root.background_image:
@@ -121,7 +138,7 @@ class Category(ModelObjectType[models.Category]):
             return Image(url=root.background_image.url, alt=alt)
 
         format = get_thumbnail_format(format)
-        selected_size = get_thumbnail_size(size)
+        selected_size = get_thumbnail_size(size, size_rounding)
 
         def _resolve_background_image(thumbnail):
             url = get_image_or_proxy_url(
@@ -160,6 +177,10 @@ class Category(ModelObjectType[models.Category]):
 
     @staticmethod
     def resolve_products(root: models.Category, info, *, channel=None, **kwargs):
+        validate_and_apply_search_rank_sorting(
+            kwargs, ProductOrderField.RANK, "ProductOrder", info
+        )
+        search = kwargs.get("search")
         requestor = get_user_or_app_from_context(info.context)
         has_required_permissions = has_one_of_permissions(
             requestor, ALL_PRODUCTS_PERMISSIONS
@@ -185,13 +206,21 @@ class Category(ModelObjectType[models.Category]):
             if channel_obj and has_required_permissions:
                 qs = qs.filter(channel_listings__channel_id=channel_obj.id)
             qs = qs.filter(category__in=tree)
-            qs = ChannelQsContext(qs=qs, channel_slug=channel)
+
+            if search:
+                channel_qs = ChannelQsContext(
+                    qs=prefix_search(qs, search), channel_slug=channel
+                )
+            else:
+                channel_qs = ChannelQsContext(qs=qs, channel_slug=channel)
 
             kwargs["channel"] = channel
-            qs = filter_connection_queryset(
-                qs, kwargs, allow_replica=info.context.allow_replica
+            channel_qs = filter_connection_queryset(
+                channel_qs, kwargs, allow_replica=info.context.allow_replica
             )
-            return create_connection_slice(qs, info, kwargs, ProductCountableConnection)
+            return create_connection_slice(
+                channel_qs, info, kwargs, ProductCountableConnection
+            )
 
         if channel:
             return (

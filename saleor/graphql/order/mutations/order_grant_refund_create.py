@@ -7,22 +7,29 @@ from django.db import transaction
 
 from ....order import models
 from ....order.utils import update_order_charge_data
+from ....page.models import Page
 from ....permission.enums import OrderPermissions
 from ...core import ResolveInfo
 from ...core.context import SyncWebhookControlContext
-from ...core.descriptions import ADDED_IN_320, PREVIEW_FEATURE
+from ...core.descriptions import (
+    ADDED_IN_322,
+    ADDED_IN_323,
+    PREVIEW_FEATURE,
+)
 from ...core.doc_category import DOC_CATEGORY_ORDERS
 from ...core.mutations import BaseMutation
 from ...core.scalars import Decimal
 from ...core.types import BaseInputObjectType
 from ...core.types.common import Error, NonNullList
 from ...payment.mutations.transaction.utils import get_transaction_item
+from ...payment.utils import validate_reason_reference_context
+from ...site.dataloaders import get_site_promise
 from ..enums import OrderGrantRefundCreateErrorCode, OrderGrantRefundCreateLineErrorCode
 from ..types import Order, OrderGrantedRefund
 from .order_grant_refund_utils import (
-    assign_order_lines,
-    get_input_lines_data,
-    handle_lines_with_quantity_already_refunded,
+    GrantRefundLineDict,
+    clean_grant_refund_lines,
+    resolve_reason_reference_page,
     shipping_costs_already_granted,
 )
 
@@ -54,6 +61,10 @@ class OrderGrantRefundCreateLineInput(BaseInputObjectType):
         description="The quantity of line items to be marked to refund.", required=True
     )
     reason = graphene.String(description="Reason of the granted refund for the line.")
+    reason_reference = graphene.ID(
+        description="ID of a `Page` (Model) to reference in reason for the line."
+        + ADDED_IN_323,
+    )
 
     class Meta:
         doc_category = DOC_CATEGORY_ORDERS
@@ -68,6 +79,9 @@ class OrderGrantRefundCreateInput(BaseInputObjectType):
         )
     )
     reason = graphene.String(description="Reason of the granted refund.")
+    reason_reference = graphene.ID(
+        description="ID of a `Page` (Model) to reference in reason." + ADDED_IN_322
+    )
     lines = NonNullList(
         OrderGrantRefundCreateLineInput,
         description="Lines to assign to granted refund.",
@@ -85,7 +99,7 @@ class OrderGrantRefundCreateInput(BaseInputObjectType):
             "If `amount` is not provided in the input and calculated automatically by "
             "Saleor, the `min(calculatedAmount, transaction.chargedAmount)` will be "
             "used. "
-            "Field required starting from Saleor 3.21." + ADDED_IN_320 + PREVIEW_FEATURE
+            "Field required starting from Saleor 3.21." + PREVIEW_FEATURE
         ),
         required=True,
     )
@@ -119,29 +133,28 @@ class OrderGrantRefundCreate(BaseMutation):
     def clean_input_lines(
         cls,
         order: models.Order,
-        lines: list[dict[str, str | int]],
-    ) -> tuple[list[models.OrderGrantedRefundLine], list[dict[str, str]] | None]:
-        errors: list[dict[str, str]] = []
-        input_lines_data = get_input_lines_data(
-            lines, errors, OrderGrantRefundCreateLineErrorCode.GRAPHQL_ERROR.value
+        lines: list[GrantRefundLineDict],
+        refund_reason_reference_type_pk: int | None,
+    ) -> list[models.OrderGrantedRefundLine]:
+        lines_errors: list[dict[str, str]] = []
+        result = clean_grant_refund_lines(
+            order=order,
+            lines=lines,
+            refund_reason_reference_type_pk=refund_reason_reference_type_pk,
+            errors=lines_errors,
+            line_error_code_enum=OrderGrantRefundCreateLineErrorCode,
         )
-        assign_order_lines(
-            order,
-            input_lines_data,
-            errors,
-            OrderGrantRefundCreateLineErrorCode.NOT_FOUND.value,
-        )
-        handle_lines_with_quantity_already_refunded(
-            order,
-            input_lines_data,
-            errors,
-            OrderGrantRefundCreateLineErrorCode.QUANTITY_GREATER_THAN_AVAILABLE.value,
-        )
-
-        if errors:
-            return [], errors
-
-        return list(input_lines_data.values()), None
+        if lines_errors:
+            raise ValidationError(
+                {
+                    "lines": ValidationError(
+                        "Provided input for lines is invalid.",
+                        code=OrderGrantRefundCreateErrorCode.INVALID.value,
+                        params={"lines": lines_errors},
+                    ),
+                }
+            )
+        return result
 
     @classmethod
     def calculate_amount(
@@ -193,25 +206,38 @@ class OrderGrantRefundCreate(BaseMutation):
         reason = input.get("reason") or ""
         transaction_id = input.get("transaction_id")
         input_lines = input.get("lines", [])
-        grant_refund_for_shipping = input.get("grant_refund_for_shipping", None)
+        grant_refund_for_shipping = input.get("grant_refund_for_shipping", False)
+        reason_reference_id = input.get("reason_reference")
 
         cls.validate_input(input)
 
+        site = get_site_promise(info.context).get()
+
+        refund_reason_reference_type = site.settings.refund_reason_reference_type
+        should_apply = validate_reason_reference_context(
+            reason_reference_id=reason_reference_id,
+            requestor_is_user=bool(info.context.user),
+            reason_reference_field_name="reason_reference",
+            error_code_enum=OrderGrantRefundCreateErrorCode,
+            reason_reference_type=refund_reason_reference_type,
+        )
+        refund_reason_reference_type_pk = (
+            refund_reason_reference_type.pk if refund_reason_reference_type else None
+        )
+
+        reason_reference_instance: Page | None = None
+        if should_apply and refund_reason_reference_type_pk:
+            reason_reference_instance = resolve_reason_reference_page(
+                str(reason_reference_id),
+                refund_reason_reference_type_pk,
+                OrderGrantRefundCreateErrorCode,
+            )
+
         cleaned_input_lines: list[models.OrderGrantedRefundLine] = []
         if input_lines:
-            cleaned_input_lines, lines_errors = cls.clean_input_lines(
-                order, input_lines
+            cleaned_input_lines = cls.clean_input_lines(
+                order, input_lines, refund_reason_reference_type_pk
             )
-            if lines_errors:
-                raise ValidationError(
-                    {
-                        "lines": ValidationError(
-                            "Provided input for lines is invalid.",
-                            code=OrderGrantRefundCreateErrorCode.INVALID.value,
-                            params={"lines": lines_errors},
-                        ),
-                    }
-                )
         if grant_refund_for_shipping and shipping_costs_already_granted(order):
             error_code = OrderGrantRefundCreateErrorCode.SHIPPING_COSTS_ALREADY_GRANTED
             raise ValidationError(
@@ -260,6 +286,7 @@ class OrderGrantRefundCreate(BaseMutation):
             "lines": cleaned_input_lines,
             "grant_refund_for_shipping": grant_refund_for_shipping,
             "transaction_item": transaction_item,
+            "reason_reference_instance": reason_reference_instance,
         }
 
     @classmethod
@@ -273,6 +300,7 @@ class OrderGrantRefundCreate(BaseMutation):
         cleaned_input_lines = cleaned_input["lines"]
         grant_refund_for_shipping = cleaned_input["grant_refund_for_shipping"]
         transaction_item = cleaned_input["transaction_item"]
+        reason_reference_instance = cleaned_input["reason_reference_instance"]
 
         with transaction.atomic():
             granted_refund = order.granted_refunds.create(
@@ -283,6 +311,7 @@ class OrderGrantRefundCreate(BaseMutation):
                 app=info.context.app,
                 shipping_costs_included=grant_refund_for_shipping or False,
                 transaction_item=transaction_item,
+                reason_reference=reason_reference_instance,
             )
             if cleaned_input_lines:
                 for line in cleaned_input_lines:

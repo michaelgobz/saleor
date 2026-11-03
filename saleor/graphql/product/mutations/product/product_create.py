@@ -6,11 +6,13 @@ from .....core.tracing import traced_atomic_transaction
 from .....permission.enums import ProductPermissions
 from .....product import models
 from ....attribute.types import AttributeValueInput
-from ....attribute.utils import AttrValuesInput, ProductAttributeAssignmentMixin
-from ....channel import ChannelContext
+from ....attribute.utils.attribute_assignment import AttributeAssignmentMixin
+from ....attribute.utils.shared import AttrValuesInput
 from ....core import ResolveInfo
+from ....core.context import ChannelContext
 from ....core.descriptions import (
     DEPRECATED_IN_3X_INPUT,
+    DEPRECATED_PRODUCT_RATING_INPUT,
     RICH_CONTENT,
 )
 from ....core.doc_category import DOC_CATEGORY_PRODUCTS
@@ -62,7 +64,11 @@ class ProductInput(BaseInputObjectType):
     )
     seo = SeoInput(description="Search engine optimization fields.")
     weight = WeightScalar(description="Weight of the Product.", required=False)
-    rating = graphene.Float(description="Defines the product rating value.")
+    rating = graphene.Float(
+        description=(
+            f"Defines the product rating value.{DEPRECATED_PRODUCT_RATING_INPUT}"
+        )
+    )
     metadata = NonNullList(
         MetadataInput,
         description="Fields required to update the product metadata. "
@@ -159,22 +165,20 @@ class ProductCreate(DeprecatedModelMutation):
         if attributes and product_type:
             try:
                 attributes_qs = product_type.product_attributes.all()
-                cleaned_input["attributes"] = (
-                    ProductAttributeAssignmentMixin.clean_input(
-                        attributes, attributes_qs
-                    )
+                cleaned_input["attributes"] = AttributeAssignmentMixin.clean_input(
+                    attributes, attributes_qs
                 )
             except ValidationError as e:
                 raise ValidationError({"attributes": e}) from e
 
     @classmethod
-    def save(cls, info: ResolveInfo, instance, cleaned_input):
+    def save(cls, info: ResolveInfo, instance, cleaned_input, instance_tracker=None):
         with traced_atomic_transaction():
             instance.search_index_dirty = True
             instance.save()
             attributes = cleaned_input.get("attributes")
             if attributes:
-                ProductAttributeAssignmentMixin.save(instance, attributes)
+                AttributeAssignmentMixin.save(instance, attributes)
 
     @classmethod
     def _save_m2m(cls, _info: ResolveInfo, instance, cleaned_data):

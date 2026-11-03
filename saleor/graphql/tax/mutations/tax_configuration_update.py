@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Final
 
 import graphene
 from django.core.exceptions import ValidationError
@@ -9,7 +9,6 @@ from ....plugins import PLUGIN_IDENTIFIER_PREFIX
 from ....tax import error_codes, models
 from ...account.enums import CountryCodeEnum
 from ...core import ResolveInfo
-from ...core.descriptions import ADDED_IN_319, ADDED_IN_321
 from ...core.doc_category import DOC_CATEGORY_TAXES
 from ...core.mutations import DeprecatedModelMutation
 from ...core.types import BaseInputObjectType, Error, NonNullList
@@ -18,7 +17,7 @@ from ...plugins.dataloaders import get_plugin_manager_promise
 from ..enums import TaxCalculationStrategy
 from ..types import TaxConfiguration
 
-TaxConfigurationUpdateErrorCode = graphene.Enum.from_enum(
+TaxConfigurationUpdateErrorCode: Final[graphene.Enum] = graphene.Enum.from_enum(
     error_codes.TaxConfigurationUpdateErrorCode
 )
 TaxConfigurationUpdateErrorCode.doc_category = DOC_CATEGORY_TAXES
@@ -51,7 +50,7 @@ class TaxConfigurationPerCountryInput(BaseInputObjectType):
         description=(
             "The tax app `App.identifier` that will be used to calculate the taxes for the "
             "given channel and country. If not provided, use the value from the channel's "
-            "tax configuration." + ADDED_IN_319
+            "tax configuration."
         ),
     )
     use_weighted_tax_for_shipping = graphene.Boolean(
@@ -60,7 +59,6 @@ class TaxConfigurationPerCountryInput(BaseInputObjectType):
             "the tax rate for shipping will be calculated based on the weighted average "
             "of tax rates from the order or checkout lines. Default value is `False`."
             "Can be used only with `taxCalculationStrategy` set to `FLAT_RATES`."
-            + ADDED_IN_321
         ),
     )
 
@@ -105,7 +103,6 @@ class TaxConfigurationUpdateInput(BaseInputObjectType):
             "the tax rate for shipping will be calculated based on the weighted average "
             "of tax rates from the order or checkout lines. Default value is `False`."
             "Can be used only with `taxCalculationStrategy` set to `FLAT_RATES`."
-            + ADDED_IN_321
         ),
     )
     tax_app_id = graphene.String(
@@ -117,7 +114,6 @@ class TaxConfigurationUpdateInput(BaseInputObjectType):
             "by using prefix `plugin:` with `PLUGIN_ID` "
             "e.g. with Avalara `plugin:mirumee.taxes.avalara`."
             "Will become mandatory in 4.0 for `TAX_APP` `taxCalculationStrategy`."
-            + ADDED_IN_319
         ),
     )
 
@@ -146,7 +142,7 @@ class TaxConfigurationUpdate(DeprecatedModelMutation):
         )
 
     class Meta:
-        description = "Update tax configuration for a channel."
+        description = "Updates tax configuration for a channel."
         error_type_class = TaxConfigurationUpdateError
         model = models.TaxConfiguration
         object_type = TaxConfiguration
@@ -368,7 +364,7 @@ class TaxConfigurationUpdate(DeprecatedModelMutation):
         ).delete()
 
     @classmethod
-    def save(cls, _info, instance, cleaned_input):
+    def save(cls, _info, instance, cleaned_input, instance_tracker=None):
         instance.save()
         update_countries_configuration = cleaned_input.get(
             "update_countries_configuration", []

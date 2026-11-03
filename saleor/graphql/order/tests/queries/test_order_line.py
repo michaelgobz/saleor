@@ -408,7 +408,6 @@ def test_order_query_product_image_size_and_format_given_proxy_url_returned(
     permission_group_manage_orders,
     order_line,
     product_with_image,
-    site_settings,
 ):
     # given
     order_line.variant.product = product_with_image
@@ -428,11 +427,10 @@ def test_order_query_product_image_size_and_format_given_proxy_url_returned(
     content = get_graphql_content(response)
     order_data = content["data"]["orders"]["edges"][0]["node"]
     media_id = graphene.Node.to_global_id("ProductMedia", media.pk)
-    domain = site_settings.site.domain
     assert len(order_data["lines"]) == 1
     assert (
         order_data["lines"][0]["thumbnail"]["url"]
-        == f"http://{domain}/thumbnail/{media_id}/128/{format.lower()}/"
+        == f"https://example.com/thumbnail/{media_id}/128/{format.lower()}/"
     )
 
 
@@ -441,7 +439,6 @@ def test_order_query_product_image_size_given_proxy_url_returned(
     permission_group_manage_orders,
     order_line,
     product_with_image,
-    site_settings,
 ):
     # given
     order_line.variant.product = product_with_image
@@ -462,7 +459,7 @@ def test_order_query_product_image_size_given_proxy_url_returned(
     assert len(order_data["lines"]) == 1
     assert (
         order_data["lines"][0]["thumbnail"]["url"]
-        == f"http://{site_settings.site.domain}/thumbnail/{media_id}/128/"
+        == f"https://example.com/thumbnail/{media_id}/128/"
     )
 
 
@@ -471,7 +468,6 @@ def test_order_query_product_image_size_given_thumbnail_url_returned(
     permission_group_manage_orders,
     order_line,
     product_with_image,
-    site_settings,
 ):
     # given
     order_line.variant.product = product_with_image
@@ -496,7 +492,7 @@ def test_order_query_product_image_size_given_thumbnail_url_returned(
     assert len(order_data["lines"]) == 1
     assert (
         order_data["lines"][0]["thumbnail"]["url"]
-        == f"http://{site_settings.site.domain}/media/thumbnails/{thumbnail_mock.name}"
+        == f"https://example.com/media/thumbnails/{thumbnail_mock.name}"
     )
 
 
@@ -505,7 +501,6 @@ def test_order_query_variant_image_size_and_format_given_proxy_url_returned(
     permission_group_manage_orders,
     order_line,
     variant_with_image,
-    site_settings,
 ):
     # given
     order_line.variant = variant_with_image
@@ -525,11 +520,10 @@ def test_order_query_variant_image_size_and_format_given_proxy_url_returned(
     content = get_graphql_content(response)
     order_data = content["data"]["orders"]["edges"][0]["node"]
     media_id = graphene.Node.to_global_id("ProductMedia", media.pk)
-    domain = site_settings.site.domain
     assert len(order_data["lines"]) == 1
     assert (
         order_data["lines"][0]["thumbnail"]["url"]
-        == f"http://{domain}/thumbnail/{media_id}/128/{format.lower()}/"
+        == f"https://example.com/thumbnail/{media_id}/128/{format.lower()}/"
     )
 
 
@@ -538,7 +532,6 @@ def test_order_query_variant_image_size_given_proxy_url_returned(
     permission_group_manage_orders,
     order_line,
     variant_with_image,
-    site_settings,
 ):
     # given
     order_line.variant = variant_with_image
@@ -559,7 +552,7 @@ def test_order_query_variant_image_size_given_proxy_url_returned(
     assert len(order_data["lines"]) == 1
     assert (
         order_data["lines"][0]["thumbnail"]["url"]
-        == f"http://{site_settings.site.domain}/thumbnail/{media_id}/128/"
+        == f"https://example.com/thumbnail/{media_id}/128/"
     )
 
 
@@ -568,7 +561,6 @@ def test_order_query_variant_image_size_given_thumbnail_url_returned(
     permission_group_manage_orders,
     order_line,
     variant_with_image,
-    site_settings,
 ):
     # given
     order_line.variant = variant_with_image
@@ -593,7 +585,7 @@ def test_order_query_variant_image_size_given_thumbnail_url_returned(
     assert len(order_data["lines"]) == 1
     assert (
         order_data["lines"][0]["thumbnail"]["url"]
-        == f"http://{site_settings.site.domain}/media/thumbnails/{thumbnail_mock.name}"
+        == f"https://example.com/media/thumbnails/{thumbnail_mock.name}"
     )
 
 
@@ -792,7 +784,7 @@ def test_order_line_returns_discount_object(
     staff_api_client, order_with_lines, permission_group_all_perms_all_channels
 ):
     # given
-    expected_amount = Decimal("6")
+    expected_amount = Decimal(6)
     expected_reason = "test"
 
     line = order_with_lines.lines.first()
@@ -836,7 +828,7 @@ def test_order_line_skips_voucher_discount_object_when_checkout_origin_and_legac
     channel_USD.use_legacy_line_discount_propagation_for_order = True
     channel_USD.save()
 
-    expected_amount = Decimal("6")
+    expected_amount = Decimal(6)
     expected_reason = "test"
 
     order_with_lines.origin = OrderOrigin.CHECKOUT
@@ -877,7 +869,7 @@ def test_order_line_skips_voucher_discount_object_when_checkout_origin(
     channel_USD.use_legacy_line_discount_propagation_for_order = False
     channel_USD.save()
 
-    expected_amount = Decimal("6")
+    expected_amount = Decimal(6)
     expected_reason = "test"
 
     order_with_lines.origin = OrderOrigin.CHECKOUT

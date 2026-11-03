@@ -84,7 +84,11 @@ def test_get_products_relations_data_attribute_ids(
     file_attribute,
     product_type_page_reference_attribute,
     product_type_product_reference_attribute,
+    product_type_collection_reference_attribute,
+    product_type_category_reference_attribute,
     page,
+    collection,
+    category,
 ):
     # given
     product = product_list[0]
@@ -92,6 +96,8 @@ def test_get_products_relations_data_attribute_ids(
         file_attribute,
         product_type_page_reference_attribute,
         product_type_product_reference_attribute,
+        product_type_collection_reference_attribute,
+        product_type_category_reference_attribute,
     )
     associate_attribute_values_to_instance(
         product,
@@ -114,6 +120,22 @@ def test_get_products_relations_data_attribute_ids(
     associate_attribute_values_to_instance(
         product,
         {product_type_product_reference_attribute.id: [product_ref_value]},
+    )
+    collection_ref_value = AttributeValue.objects.create(
+        attribute=product_type_collection_reference_attribute,
+        reference_collection=collection,
+    )
+    associate_attribute_values_to_instance(
+        product,
+        {product_type_collection_reference_attribute.id: [collection_ref_value]},
+    )
+    category_ref_value = AttributeValue.objects.create(
+        attribute=product_type_category_reference_attribute,
+        reference_category=category,
+    )
+    associate_attribute_values_to_instance(
+        product,
+        {product_type_category_reference_attribute.id: [category_ref_value]},
     )
 
     qs = Product.objects.all()
@@ -207,7 +229,7 @@ def test_prepare_products_relations_data(
     )
     images = ", ".join(
         [
-            "http://mirumee.com/media/" + image.image.name
+            "https://example.com/media/" + image.image.name
             for image in product_with_image.media.all()
         ]
     )
@@ -222,6 +244,34 @@ def test_prepare_products_relations_data(
     )
 
     assert result == expected_result
+
+
+def test_prepare_products_relations_data_ignores_unassigned_attribute_values(
+    product, color_attribute
+):
+    # given a product with an attribute value assigned
+    pk = product.pk
+    attribute_ids = [str(color_attribute.pk)]
+    qs = Product.objects.all()
+
+    result = prepare_products_relations_data(qs, set(), attribute_ids, [])
+
+    expected_result = add_product_attribute_data_to_expected_data(
+        {pk: {}}, product, attribute_ids, pk
+    )
+    assert expected_result[pk] != {}
+    assert result == expected_result
+
+    # given the attribute got unassigned from the product's product type,
+    # with the assigned value row left behind
+    product.product_type.product_attributes.remove(color_attribute)
+    assert product.attributevalues.filter(value__attribute=color_attribute).exists()
+
+    # when
+    result = prepare_products_relations_data(qs, set(), attribute_ids, [])
+
+    # then
+    assert result == {}
 
 
 def test_prepare_products_relations_data_only_fields(
@@ -610,7 +660,7 @@ def test_prepare_variants_relations_data(
         pk = variant.pk
         images = ", ".join(
             [
-                "http://mirumee.com/media/" + image.image.name
+                "https://example.com/media/" + image.image.name
                 for image in variant.media.all()
             ]
         )
@@ -654,7 +704,7 @@ def test_prepare_variants_relations_data_only_fields(
     pk = variant.pk
     images = ", ".join(
         [
-            "http://mirumee.com/media/" + image.image.name
+            "https://example.com/media/" + image.image.name
             for image in variant.media.all()
         ]
     )
@@ -801,13 +851,13 @@ def test_add_image_uris_to_data(product):
     result = add_image_uris_to_data(product.pk, image_path, field, input_data)
 
     # then
-    assert result[pk][field] == {"http://mirumee.com/media/" + image_path}
+    assert result[pk][field] == {"https://example.com/media/" + image_path}
 
 
 def test_add_image_uris_to_data_update_images(product):
     # given
     pk = product.pk
-    old_path = "http://mirumee.com/media/test/image0.jpg"
+    old_path = "https://example.com/media/test/image0.jpg"
     image_path = "test/path/image.jpg"
     input_data = {pk: {"product_media": {old_path}}}
     field = "product_media"
@@ -816,7 +866,7 @@ def test_add_image_uris_to_data_update_images(product):
     result = add_image_uris_to_data(product.pk, image_path, field, input_data)
 
     # then
-    assert result[pk][field] == {"http://mirumee.com/media/" + image_path, old_path}
+    assert result[pk][field] == {"https://example.com/media/" + image_path, old_path}
 
 
 def test_add_image_uris_to_data_no_image_path(product):
@@ -987,7 +1037,7 @@ def test_add_file_attribute_info_to_data(product):
 
     # then
     expected_header = f"{slug} (product attribute)"
-    assert result[pk][expected_header] == {"http://mirumee.com/media/" + test_url}
+    assert result[pk][expected_header] == {"https://example.com/media/" + test_url}
 
 
 def test_add_rich_text_attribute_info_to_data(product):
@@ -1432,7 +1482,7 @@ def test_add_swatch_attribute_value_info_to_data(product, numeric_attribute):
 
     # then
     expected_header = f"{numeric_attribute.slug} (product attribute)"
-    assert result[pk][expected_header] == {"http://mirumee.com/media/" + test_url}
+    assert result[pk][expected_header] == {"https://example.com/media/" + test_url}
 
 
 def test_add_warehouse_info_to_data(product):

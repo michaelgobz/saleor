@@ -38,7 +38,7 @@ class ChannelDelete(ModelDeleteMutation):
 
     class Meta:
         description = (
-            "Delete a channel. Orders associated with the deleted "
+            "Deletes a channel. Orders associated with the deleted "
             "channel will be moved to the target channel. "
             "Checkouts, product availability, and pricing will be removed."
         )
@@ -125,6 +125,15 @@ class ChannelDelete(ModelDeleteMutation):
         cls, root, info: ResolveInfo, /, *, id: str, input: dict | None = None
     ):
         origin_channel = cls.get_node_or_error(info, id, only_type=Channel)
+        if origin_channel is None:
+            raise ValidationError(
+                {
+                    "id": ValidationError(
+                        "Couldn't resolve to a node: empty channel id.",
+                        code=ChannelErrorCode.NOT_FOUND.value,
+                    )
+                }
+            )
         target_channel_global_id = input.get("channel_id") if input else None
         if target_channel_global_id:
             target_channel = cls.get_node_or_error(

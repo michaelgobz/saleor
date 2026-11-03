@@ -604,6 +604,19 @@ def test_query_user_by_email_address(
     assert customer_user.email == data["email"]
 
 
+def test_query_user_by_email_address_case_insensitive(
+    user_api_client, customer_user, permission_manage_users
+):
+    email = customer_user.email
+    variables = {"email": email.upper()}
+    response = user_api_client.post_graphql(
+        USER_QUERY, variables, permissions=[permission_manage_users]
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["user"]
+    assert customer_user.email == data["email"]
+
+
 def test_query_user_by_external_reference(
     user_api_client, customer_user, permission_manage_users
 ):
@@ -771,7 +784,7 @@ USER_AVATAR_QUERY = """
 
 
 def test_query_user_avatar_with_size_and_format_proxy_url_returned(
-    staff_api_client, media_root, permission_manage_staff, site_settings
+    staff_api_client, media_root, permission_manage_staff
 ):
     # given
     user = staff_api_client.user
@@ -794,15 +807,14 @@ def test_query_user_avatar_with_size_and_format_proxy_url_returned(
     # then
     content = get_graphql_content(response)
     data = content["data"]["user"]
-    domain = site_settings.site.domain
     assert (
         data["avatar"]["url"]
-        == f"http://{domain}/thumbnail/{user_uuid}/128/{format.lower()}/"
+        == f"https://example.com/thumbnail/{user_uuid}/128/{format.lower()}/"
     )
 
 
 def test_query_user_avatar_with_size_proxy_url_returned(
-    staff_api_client, media_root, permission_manage_staff, site_settings
+    staff_api_client, media_root, permission_manage_staff
 ):
     # given
     user = staff_api_client.user
@@ -823,14 +835,11 @@ def test_query_user_avatar_with_size_proxy_url_returned(
     # then
     content = get_graphql_content(response)
     data = content["data"]["user"]
-    assert (
-        data["avatar"]["url"]
-        == f"http://{site_settings.site.domain}/thumbnail/{user_uuid}/128/"
-    )
+    assert data["avatar"]["url"] == f"https://example.com/thumbnail/{user_uuid}/128/"
 
 
 def test_query_user_avatar_with_size_thumbnail_url_returned(
-    staff_api_client, media_root, permission_manage_staff, site_settings
+    staff_api_client, media_root, permission_manage_staff
 ):
     # given
     user = staff_api_client.user
@@ -856,12 +865,12 @@ def test_query_user_avatar_with_size_thumbnail_url_returned(
     data = content["data"]["user"]
     assert (
         data["avatar"]["url"]
-        == f"http://{site_settings.site.domain}/media/thumbnails/{thumbnail_mock.name}"
+        == f"https://example.com/media/thumbnails/{thumbnail_mock.name}"
     )
 
 
 def test_query_user_avatar_original_size_custom_format_provided_original_image_returned(
-    staff_api_client, media_root, permission_manage_staff, site_settings
+    staff_api_client, media_root, permission_manage_staff
 ):
     # given
     user = staff_api_client.user
@@ -885,12 +894,12 @@ def test_query_user_avatar_original_size_custom_format_provided_original_image_r
     data = content["data"]["user"]
     assert (
         data["avatar"]["url"]
-        == f"http://{site_settings.site.domain}/media/user-avatars/{avatar_mock.name}"
+        == f"https://example.com/media/user-avatars/{avatar_mock.name}"
     )
 
 
 def test_query_user_avatar_no_size_value(
-    staff_api_client, media_root, permission_manage_staff, site_settings
+    staff_api_client, media_root, permission_manage_staff
 ):
     # given
     user = staff_api_client.user
@@ -912,10 +921,7 @@ def test_query_user_avatar_no_size_value(
     # then
     content = get_graphql_content(response)
     data = content["data"]["user"]
-    assert (
-        data["avatar"]["url"]
-        == f"http://{site_settings.site.domain}/thumbnail/{user_uuid}/4096/"
-    )
+    assert data["avatar"]["url"] == f"https://example.com/thumbnail/{user_uuid}/4096/"
 
 
 def test_query_user_avatar_no_image(staff_api_client, permission_manage_staff):
@@ -1049,7 +1055,7 @@ def test_user_with_cancelled_fulfillments(
 
 
 USER_FEDERATION_QUERY = """
-  query GetUserInFederation($representations: [_Any]) {
+  query GetUserInFederation($representations: [_Any!]!) {
     _entities(representations: $representations) {
       __typename
       ... on User {
@@ -1340,3 +1346,114 @@ def test_query_customer_stored_payment_methods(
     content = get_graphql_content(response)
 
     assert content["data"]["user"]["storedPaymentMethods"] == []
+
+
+USER_ORDERS_WHERE_QUERY = """
+    query User($id: ID!, $where: CustomerOrderWhereInput!) {
+        user(id: $id) {
+            orders(first: 10, where: $where) {
+                totalCount
+                edges {
+                    node {
+                        id
+                        number
+                    }
+                }
+            }
+        }
+    }
+"""
+
+
+def test_user_orders_where_filter_by_status_staff(
+    staff_api_client,
+    customer_user,
+    order_list,
+    permission_group_manage_orders,
+    permission_manage_users,
+):
+    # given
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+    permission_group_manage_orders.permissions.add(permission_manage_users)
+
+    order_list[0].user = customer_user
+    order_list[0].status = OrderStatus.UNCONFIRMED
+    order_list[1].user = customer_user
+    order_list[1].status = OrderStatus.UNFULFILLED
+    order_list[2].user = customer_user
+    order_list[2].status = OrderStatus.UNFULFILLED
+    Order.objects.bulk_update(order_list, ["user", "status"])
+
+    user_id = graphene.Node.to_global_id("User", customer_user.pk)
+    variables = {
+        "id": user_id,
+        "where": {"status": {"eq": OrderStatus.UNCONFIRMED.upper()}},
+    }
+
+    # when
+    response = staff_api_client.post_graphql(USER_ORDERS_WHERE_QUERY, variables)
+
+    # then
+    content = get_graphql_content(response)
+    orders_data = content["data"]["user"]["orders"]
+    assert orders_data["totalCount"] == 1
+    assert orders_data["edges"][0]["node"]["id"] == graphene.Node.to_global_id(
+        "Order", order_list[0].pk
+    )
+
+
+def test_user_orders_where_filter_staff_sees_draft_orders(
+    staff_api_client,
+    customer_user,
+    order_list,
+    permission_group_manage_orders,
+    permission_manage_users,
+):
+    # given - staff with MANAGE_ORDERS can see draft orders in where filter results
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+    permission_group_manage_orders.permissions.add(permission_manage_users)
+
+    order_list[0].user = customer_user
+    order_list[0].status = OrderStatus.DRAFT
+    order_list[1].user = customer_user
+    order_list[1].status = OrderStatus.UNFULFILLED
+    Order.objects.bulk_update(order_list[:2], ["user", "status"])
+
+    user_id = graphene.Node.to_global_id("User", customer_user.pk)
+    variables = {
+        "id": user_id,
+        "where": {"status": {"eq": OrderStatus.DRAFT.upper()}},
+    }
+
+    # when
+    response = staff_api_client.post_graphql(USER_ORDERS_WHERE_QUERY, variables)
+
+    # then - staff can see draft orders
+    content = get_graphql_content(response)
+    orders_data = content["data"]["user"]["orders"]
+    assert orders_data["totalCount"] == 1
+    assert orders_data["edges"][0]["node"]["id"] == graphene.Node.to_global_id(
+        "Order", order_list[0].pk
+    )
+
+
+def test_user_orders_where_filter_no_permission(
+    user_api_client,
+    customer_user2,
+    order_list,
+):
+    # given - a user trying to query another user's orders
+    order_list[0].user = customer_user2
+    Order.objects.bulk_update(order_list[:1], ["user"])
+
+    user_id = graphene.Node.to_global_id("User", customer_user2.pk)
+    variables = {
+        "id": user_id,
+        "where": {},
+    }
+
+    # when
+    response = user_api_client.post_graphql(USER_ORDERS_WHERE_QUERY, variables)
+
+    # then
+    assert_no_permission(response)

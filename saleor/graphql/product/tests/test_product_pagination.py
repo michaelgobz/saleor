@@ -163,11 +163,11 @@ def test_categories_pagination_with_filtering(
 def collections_for_pagination(product, product_with_single_variant, channel_USD):
     collections = Collection.objects.bulk_create(
         [
-            Collection(name="Collection1", slug="col1"),
-            Collection(name="CollectionCollection1", slug="col_col1"),
-            Collection(name="CollectionCollection2", slug="col_col2"),
-            Collection(name="Collection2", slug="col2"),
-            Collection(name="Collection3", slug="col3"),
+            Collection(name="Collection1", slug="col_1"),
+            Collection(name="CollectionCollection1", slug="col_col_1"),
+            Collection(name="CollectionCollection2", slug="col_col_2"),
+            Collection(name="Collection2", slug="col_2"),
+            Collection(name="Collection3", slug="col_3"),
         ]
     )
     collections[2].products.add(product)
@@ -313,33 +313,33 @@ def products_for_pagination(
         [
             Product(
                 name="Product1",
-                slug="prod1",
+                slug="prod_1",
                 category=category,
                 product_type=product_type2,
                 description=dummy_editorjs("Test description 1."),
             ),
             Product(
                 name="ProductProduct1",
-                slug="prod_prod1",
+                slug="prod_prod_1",
                 category=category,
                 product_type=product_type,
             ),
             Product(
                 name="ProductProduct2",
-                slug="prod_prod2",
+                slug="prod_prod_2",
                 category=category,
                 product_type=product_type2,
             ),
             Product(
                 name="Product2",
-                slug="prod2",
+                slug="prod_2",
                 category=category,
                 product_type=product_type,
                 description=dummy_editorjs("Test description 2."),
             ),
             Product(
                 name="Product3",
-                slug="prod3",
+                slug="prod_3",
                 category=category,
                 product_type=product_type2,
                 description=dummy_editorjs("Test description 3."),
@@ -858,33 +858,28 @@ def product_types_for_pagination(db):
         [
             ProductType(
                 name="ProductType1",
-                slug="pt1",
-                is_digital=True,
+                slug="pt_1",
                 is_shipping_required=False,
             ),
             ProductType(
                 name="ProductTypeProductType1",
-                slug="pt_pt1",
-                is_digital=False,
+                slug="pt_pt_1",
                 is_shipping_required=False,
             ),
             ProductType(
                 name="ProductTypeProductType2",
-                slug="pt_pt2",
-                is_digital=False,
+                slug="pt_pt_2",
                 is_shipping_required=True,
             ),
             ProductType(
                 name="ProductType2",
-                slug="pt2",
-                is_digital=False,
+                slug="pt_2",
                 is_shipping_required=True,
                 has_variants=False,
             ),
             ProductType(
                 name="ProductType3",
-                slug="pt3",
-                is_digital=True,
+                slug="pt_3",
                 is_shipping_required=False,
                 has_variants=False,
             ),
@@ -929,10 +924,6 @@ QUERY_PRODUCT_TYPES_PAGINATION = """
             ["ProductTypeProductType2", "ProductTypeProductType1", "ProductType3"],
         ),
         (
-            {"field": "DIGITAL", "direction": "ASC"},
-            ["ProductType2", "ProductTypeProductType1", "ProductTypeProductType2"],
-        ),
-        (
             {"field": "SHIPPING_REQUIRED", "direction": "ASC"},
             ["ProductType1", "ProductType3", "ProductTypeProductType1"],
         ),
@@ -965,10 +956,6 @@ def test_product_types_pagination_with_sorting(
         ),
         ({"search": "ProductType1"}, ["ProductType1", "ProductTypeProductType1"]),
         ({"search": "pt_pt"}, ["ProductTypeProductType1", "ProductTypeProductType2"]),
-        (
-            {"productType": "DIGITAL"},
-            ["ProductType1", "ProductType3"],
-        ),
         ({"productType": "SHIPPABLE"}, ["ProductType2", "ProductTypeProductType2"]),
         ({"configurable": "CONFIGURABLE"}, ["ProductType1", "ProductTypeProductType1"]),
         ({"configurable": "SIMPLE"}, ["ProductType2", "ProductType3"]),

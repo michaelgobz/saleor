@@ -12,6 +12,7 @@ from django.urls import reverse
 from django.utils.functional import SimpleLazyObject
 
 from ...account.models import User
+from ...account.tests.fixtures.user import dangerously_create_test_user
 from ...core.jwt import create_access_token
 from ...plugins.manager import get_plugins_manager
 from ..utils import handled_errors_logger, unhandled_errors_logger
@@ -86,6 +87,8 @@ class ApiClient(BaseApiClient):
         self,
         query,
         variables=None,
+        # @deprecated - do not use it, because it makes implicit permissions check
+        # Use explicit permissions assertions
         permissions=None,
         check_no_permissions=True,
         **kwargs,
@@ -207,7 +210,7 @@ def graphql_log_handler():
 
 @pytest.fixture
 def superuser(db):
-    superuser = User.objects.create_user(
+    superuser = dangerously_create_test_user(
         "superuser@example.com",
         "pass",
         is_staff=True,

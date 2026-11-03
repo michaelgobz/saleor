@@ -2,10 +2,9 @@ import graphene
 
 from ...permission.enums import ShippingPermissions
 from ...shipping import models
-from ..channel.types import ChannelContext
 from ..core import ResolveInfo
 from ..core.connection import create_connection_slice, filter_connection_queryset
-from ..core.context import get_database_connection_name
+from ..core.context import ChannelContext, get_database_connection_name
 from ..core.doc_category import DOC_CATEGORY_SHIPPING
 from ..core.fields import FilterConnectionField, PermissionsField
 from ..core.utils import from_global_id_or_error
@@ -22,6 +21,7 @@ from .mutations import (
     ShippingZoneDelete,
     ShippingZoneUpdate,
 )
+from .mutations.delivery_options_calculate import DeliveryOptionsCalculate
 from .mutations.shipping_method_channel_listing_update import (
     ShippingMethodChannelListingUpdate,
 )
@@ -79,6 +79,7 @@ class ShippingQueries(graphene.ObjectType):
 
 
 class ShippingMutations(graphene.ObjectType):
+    delivery_options_calculate = DeliveryOptionsCalculate.Field()
     shipping_method_channel_listing_update = ShippingMethodChannelListingUpdate.Field()
     shipping_price_create = ShippingPriceCreate.Field()
     shipping_price_delete = ShippingPriceDelete.Field()

@@ -1,9 +1,22 @@
+from typing import Union
+
 import graphene
 from django.core.exceptions import ValidationError
 
+from ....account.models import User
+from ....app.models import App
 from ....checkout.checkout_cleaner import validate_checkout
 from ....checkout.complete_checkout import create_order_from_checkout
-from ....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
+from ....checkout.delivery_context import (
+    get_or_fetch_checkout_deliveries,
+    is_shipping_required,
+)
+from ....checkout.fetch import (
+    CheckoutInfo,
+    CheckoutLineInfo,
+    fetch_checkout_info,
+    fetch_checkout_lines,
+)
 from ....core.exceptions import GiftCardNotApplicable, InsufficientStock
 from ....core.taxes import TaxDataError
 from ....discount.models import NotApplicable
@@ -15,6 +28,10 @@ from ...core.context import SyncWebhookControlContext
 from ...core.doc_category import DOC_CATEGORY_ORDERS
 from ...core.mutations import BaseMutation
 from ...core.types import Error, NonNullList
+from ...core.types.common import (
+    PROMO_CODE_DETAILS_DESCRIPTION,
+    PromoCodeRejectionDetails,
+)
 from ...core.utils import CHECKOUT_CALCULATE_TAXES_MESSAGE, WebhookEventInfo
 from ...meta.inputs import MetadataInput, MetadataInputDescription
 from ...order.types import Order
@@ -36,6 +53,11 @@ class OrderCreateFromCheckoutError(Error):
     lines = graphene.List(
         graphene.NonNull(graphene.ID),
         description="List of line Ids which cause the error.",
+        required=False,
+    )
+    promo_code_details = graphene.Field(
+        PromoCodeRejectionDetails,
+        description=PROMO_CODE_DETAILS_DESCRIPTION,
         required=False,
     )
 
@@ -138,13 +160,35 @@ class OrderCreateFromCheckout(BaseMutation):
         ]
 
     @classmethod
-    def check_permissions(cls, context, permissions=None, **data):
+    def check_permissions(cls, context, permissions=None, **data):  # type: ignore[override]
         """Determine whether app has rights to perform this mutation."""
         permissions = permissions or cls._meta.permissions
         app = getattr(context, "app", None)
         if app:
             return app.has_perms(permissions)
         return False
+
+    @classmethod
+    def validate_checkout(
+        cls,
+        checkout_info: CheckoutInfo,
+        checkout_lines: list[CheckoutLineInfo],
+        unavailable_variant_pks: list[int],
+        manager,
+        requestor: Union["App", "User", None],
+    ):
+        if (
+            is_shipping_required(checkout_lines)
+            and checkout_info.checkout.assigned_delivery
+        ):
+            # Refresh stale shipping if needed
+            get_or_fetch_checkout_deliveries(checkout_info, requestor=requestor).get()
+        validate_checkout(
+            checkout_info=checkout_info,
+            lines=checkout_lines,
+            unavailable_variant_pks=unavailable_variant_pks,
+            manager=manager,
+        )
 
     @classmethod
     def perform_mutation(  # type: ignore[override]
@@ -182,14 +226,17 @@ class OrderCreateFromCheckout(BaseMutation):
         checkout_lines, unavailable_variant_pks = fetch_checkout_lines(checkout)
         checkout_info = fetch_checkout_info(checkout, checkout_lines, manager)
 
-        validate_checkout(
-            checkout_info=checkout_info,
-            lines=checkout_lines,
-            unavailable_variant_pks=unavailable_variant_pks,
-            manager=manager,
-        )
         app = get_app_promise(info.context).get()
+        requestor = app or user
+
         try:
+            cls.validate_checkout(
+                checkout_info,
+                checkout_lines,
+                unavailable_variant_pks,
+                manager,
+                requestor=requestor,
+            )
             order = create_order_from_checkout(
                 checkout_info=checkout_info,
                 manager=manager,
@@ -206,6 +253,7 @@ class OrderCreateFromCheckout(BaseMutation):
                     "voucher_code": ValidationError(
                         "Voucher not applicable",
                         code=code,
+                        params={"promo_code_details": e.rejection},
                     )
                 }
             ) from e
@@ -213,7 +261,15 @@ class OrderCreateFromCheckout(BaseMutation):
             error = prepare_insufficient_stock_checkout_validation_error(e)
             raise error from e
         except GiftCardNotApplicable as e:
-            raise ValidationError({"gift_cards": e}) from e
+            raise ValidationError(
+                {
+                    "gift_cards": ValidationError(
+                        e.message,
+                        code=OrderCreateFromCheckoutErrorCode.GIFT_CARD_NOT_APPLICABLE.value,
+                        params={"promo_code_details": e.rejection},
+                    )
+                }
+            ) from e
         except TaxDataError as e:
             raise ValidationError(
                 "Configured Tax App returned invalid response.",

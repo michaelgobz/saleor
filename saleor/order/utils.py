@@ -16,6 +16,7 @@ from prices import Money, TaxedMoney
 from ..account.models import User
 from ..account.utils import store_user_address
 from ..checkout import AddressType
+from ..checkout.models import Checkout
 from ..core.prices import quantize_price
 from ..core.taxes import zero_money
 from ..core.tracing import traced_atomic_transaction
@@ -44,13 +45,6 @@ from ..giftcard.models import GiftCard
 from ..giftcard.search import mark_gift_cards_search_index_as_dirty
 from ..payment import TransactionEventType
 from ..payment.model_helpers import get_total_authorized
-from ..product.utils.digital_products import get_default_digital_content_settings
-from ..shipping.interface import ShippingMethodData
-from ..shipping.models import ShippingMethod, ShippingMethodChannelListing
-from ..shipping.utils import (
-    convert_to_shipping_method_data,
-    initialize_shipping_method_active_status,
-)
 from ..tax.utils import get_display_gross_prices, get_tax_class_kwargs_for_order_line
 from ..warehouse.management import (
     decrease_allocations,
@@ -58,7 +52,6 @@ from ..warehouse.management import (
     increase_allocations,
     increase_stock,
 )
-from ..warehouse.models import Warehouse
 from . import (
     ORDER_EDITABLE_STATUS,
     FulfillmentStatus,
@@ -80,16 +73,10 @@ if TYPE_CHECKING:
     from ..graphql.order.utils import OrderLineData
     from ..payment.models import Payment, TransactionItem
     from ..plugins.manager import PluginsManager
+    from ..site.models import SiteSettings
+
 
 logger = logging.getLogger(__name__)
-
-
-def order_qs_select_for_update():
-    return Order.objects.order_by("id").select_for_update(of=(["self"]))
-
-
-def order_lines_qs_select_for_update() -> QuerySet[OrderLine]:
-    return OrderLine.objects.order_by("pk").select_for_update(of=["self"])
 
 
 def get_order_country(order: Order) -> str:
@@ -97,28 +84,6 @@ def get_order_country(order: Order) -> str:
     return get_active_country(
         order.channel, order.shipping_address, order.billing_address
     )
-
-
-def order_line_needs_automatic_fulfillment(line_data: OrderLineInfo) -> bool:
-    """Check if given line is digital and should be automatically fulfilled."""
-    digital_content_settings = get_default_digital_content_settings()
-    default_automatic_fulfillment = digital_content_settings["automatic_fulfillment"]
-    content = line_data.digital_content
-    if not content:
-        return False
-    if default_automatic_fulfillment and content.use_default_settings:
-        return True
-    if content.automatic_fulfillment:
-        return True
-    return False
-
-
-def order_needs_automatic_fulfillment(lines_data: list["OrderLineInfo"]) -> bool:
-    """Check if order has digital products which should be automatically fulfilled."""
-    for line_data in lines_data:
-        if line_data.is_digital and order_line_needs_automatic_fulfillment(line_data):
-            return True
-    return False
 
 
 def get_voucher_discount_assigned_to_order(order: Order):
@@ -140,7 +105,7 @@ def invalidate_order_prices(order: Order, *, save: bool = False) -> None:
     order.should_refresh_prices = True
 
     if save:
-        order.save(update_fields=["should_refresh_prices"])
+        order.save(update_fields=["should_refresh_prices", "updated_at"])
 
 
 def recalculate_order_weight(order: Order, *, save: bool = False):
@@ -191,36 +156,55 @@ def _calculate_quantity_including_returns(order):
     )
 
 
+def refresh_order_status(order: Order):
+    """Refresh order status based on the most recent data.
+
+    This function recalculates the order status using the most up-to-date information
+    about fulfillments, returns, and replacements. It should always be called within
+    a transaction and with the order locked to ensure data consistency and prevent race conditions.
+
+    Returns
+        bool: True if the order status was changed, False otherwise.
+
+    """
+    old_status = order.status
+    # Calculate the quantities for the most recent data
+    (
+        total_quantity,
+        quantity_fulfilled,
+        quantity_returned,
+        quantity_awaiting_approval,
+    ) = _calculate_quantity_including_returns(order)
+
+    all_products_replaced = total_quantity == 0
+    if all_products_replaced:
+        return False
+
+    order.status = determine_order_status(
+        total_quantity,
+        quantity_fulfilled,
+        quantity_returned,
+        quantity_awaiting_approval,
+    )
+    return old_status != order.status
+
+
 def update_order_status(order: Order):
     """Update order status depending on fulfillments."""
     with transaction.atomic():
         # Add a transaction block to ensure that the order status won't be overridden by
         # another process.
         locked_order = Order.objects.select_for_update().get(pk=order.pk)
-        # Calculate the quantities for the most recent data
-        (
-            total_quantity,
-            quantity_fulfilled,
-            quantity_returned,
-            quantity_awaiting_approval,
-        ) = _calculate_quantity_including_returns(locked_order)
 
-        all_products_replaced = total_quantity == 0
-        if all_products_replaced:
-            return
-
-        status = determine_order_status(
-            total_quantity,
-            quantity_fulfilled,
-            quantity_returned,
-            quantity_awaiting_approval,
-        )
+        status_updated = refresh_order_status(locked_order)
 
         # we would like to update the status for the order provided as the argument
         # to ensure that the reference order has up to date status
-        if status != order.status:
-            order.status = status
-            order.save(update_fields=["status", "updated_at"])
+        if status_updated:
+            # We need to update the order status in original order object to ensure that
+            # the status is updated in the mutation response.
+            order.status = locked_order.status
+            locked_order.save(update_fields=["status", "updated_at"])
 
 
 def determine_order_status(
@@ -246,7 +230,8 @@ def determine_order_status(
 def create_order_line(
     order,
     line_data,
-    manager,
+    requestor,
+    site_settings,
     allocate_stock=False,
 ) -> OrderLine:
     channel = order.channel
@@ -307,6 +292,7 @@ def create_order_line(
         product_sku=variant.sku,
         product_variant_id=variant.get_global_id(),
         is_shipping_required=variant.is_shipping_required(),
+        product_type_id=product.product_type_id,
         is_gift_card=variant.is_gift_card(),
         quantity=quantity,
         unit_price=unit_price,
@@ -351,7 +337,11 @@ def create_order_line(
                 )
             ],
             channel,
-            manager=manager,
+            site_settings=site_settings,
+            requestor=requestor,
+            calculate_stocks_with_shipping_zones=(
+                site_settings.use_legacy_shipping_zone_stock_availability
+            ),
         )
 
     if is_line_level_voucher(order.voucher):
@@ -369,14 +359,14 @@ def add_variant_to_order(
     user: Optional["User"],
     app: Optional["App"],
     manager: "PluginsManager",
+    site_settings: "SiteSettings",
     allocate_stock: bool = False,
 ) -> OrderLine:
     """Add total_quantity of variant to order.
 
     Returns an order line the variant was added to.
     """
-    is_new_line = not line_data.line_id
-    if not is_new_line:
+    if line_data.line_id is not None:
         line = order.lines.get(pk=line_data.line_id)
         old_quantity = line.quantity
         new_quantity = old_quantity + line_data.quantity
@@ -397,6 +387,7 @@ def add_variant_to_order(
             new_quantity,
             order,
             manager=manager,
+            site_settings=site_settings,
             send_event=False,
             update_fields=update_fields,
             allocate_stock=allocate_stock,
@@ -410,7 +401,8 @@ def add_variant_to_order(
     return create_order_line(
         order,
         line_data,
-        manager,
+        app or user,
+        site_settings,
         allocate_stock,
     )
 
@@ -484,6 +476,13 @@ def add_gift_cards_to_order(
     GiftCard.objects.bulk_update(gift_cards_to_update, update_fields)
     gift_card_events.gift_cards_used_in_order_event(balance_data, order, user, app)
 
+    # Invalidate prices for checkouts attached to gift cards used by this order.
+    # This will ensure the checkout status gets recalculcated to accomodate gift cards
+    # balance changes.
+    Checkout.objects.filter(gift_cards__in=gift_cards_to_update).exclude(
+        token=checkout_info.checkout.token
+    ).update(price_expiration=timezone.now())
+
     gift_card_compensation = total_before_gift_card_compensation - total_price_left
     if gift_card_compensation.amount > 0:
         details = {
@@ -532,7 +531,8 @@ def _update_allocations_for_line(
     old_quantity: int,
     new_quantity: int,
     channel: "Channel",
-    manager: "PluginsManager",
+    requestor: "App | User | None",
+    site_settings: "SiteSettings",
 ):
     if old_quantity == new_quantity:
         return
@@ -541,10 +541,19 @@ def _update_allocations_for_line(
         if not get_order_lines_with_track_inventory([line_info]):
             return
         line_info.quantity = new_quantity - old_quantity
-        increase_allocations([line_info], channel, manager)
+        calculate_stocks_with_shipping_zones = (
+            site_settings.use_legacy_shipping_zone_stock_availability
+        )
+        increase_allocations(
+            [line_info],
+            channel,
+            site_settings,
+            requestor,
+            calculate_stocks_with_shipping_zones=calculate_stocks_with_shipping_zones,
+        )
     else:
         line_info.quantity = old_quantity - new_quantity
-        decrease_allocations([line_info], manager)
+        decrease_allocations([line_info], site_settings, requestor)
 
 
 def change_order_line_quantity(
@@ -555,6 +564,7 @@ def change_order_line_quantity(
     new_quantity: int,
     order: "Order",
     manager: "PluginsManager",
+    site_settings: "SiteSettings",
     send_event: bool = True,
     update_fields: list[str] | None = None,
     allocate_stock: bool = False,
@@ -565,8 +575,9 @@ def change_order_line_quantity(
     currency = channel.currency_code
     if new_quantity:
         if allocate_stock:
+            requestor = app or user
             _update_allocations_for_line(
-                line_info, old_quantity, new_quantity, channel, manager
+                line_info, old_quantity, new_quantity, channel, requestor, site_settings
             )
         line.quantity = new_quantity
         total_price_net_amount = line.quantity * line.unit_price_net_amount
@@ -612,7 +623,7 @@ def change_order_line_quantity(
             )
 
     else:
-        delete_order_line(line_info, manager)
+        delete_order_line(line_info, site_settings, app or user)
 
     quantity_diff = old_quantity - new_quantity
 
@@ -639,10 +650,12 @@ def create_order_event(line, user, app, quantity_diff):
         )
 
 
-def delete_order_line(line_info, manager):
+def delete_order_line(
+    line_info, site_settings: "SiteSettings", requestor: "App | User | None"
+):
     """Delete an order line from an order."""
     if line_info.line.order.is_unconfirmed():
-        decrease_allocations([line_info], manager)
+        decrease_allocations([line_info], site_settings, requestor)
     line_info.line.delete()
 
 
@@ -669,92 +682,8 @@ def sum_order_totals(qs, currency_code):
     )
 
 
-def get_all_shipping_methods_for_order(
-    order: Order,
-    shipping_channel_listings: Iterable["ShippingMethodChannelListing"],
-    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
-) -> list[ShippingMethodData]:
-    if not order.is_shipping_required(
-        database_connection_name=database_connection_name
-    ):
-        return []
-
-    shipping_address = order.shipping_address
-    if not shipping_address:
-        return []
-
-    all_methods = []
-
-    shipping_methods = (
-        ShippingMethod.objects.using(database_connection_name)
-        .applicable_shipping_methods_for_instance(
-            order,
-            channel_id=order.channel_id,
-            price=order.subtotal.gross,
-            shipping_address=shipping_address,
-            country_code=shipping_address.country.code,
-            database_connection_name=database_connection_name,
-        )
-        .prefetch_related("channel_listings")
-    )
-
-    listing_map = {
-        listing.shipping_method_id: listing for listing in shipping_channel_listings
-    }
-
-    for method in shipping_methods:
-        listing = listing_map.get(method.id)
-        if listing:
-            shipping_method_data = convert_to_shipping_method_data(method, listing)
-            all_methods.append(shipping_method_data)
-    return all_methods
-
-
-def get_valid_shipping_methods_for_order(
-    order: Order,
-    shipping_channel_listings: Iterable["ShippingMethodChannelListing"],
-    manager: "PluginsManager",
-    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
-    allow_sync_webhooks: bool = True,
-) -> list[ShippingMethodData]:
-    """Return a list of shipping methods according to Saleor's own business logic."""
-    valid_methods = get_all_shipping_methods_for_order(
-        order, shipping_channel_listings, database_connection_name
-    )
-    if not valid_methods:
-        return []
-
-    if order.status in ORDER_EDITABLE_STATUS and allow_sync_webhooks:
-        excluded_methods = manager.excluded_shipping_methods_for_order(
-            order, valid_methods
-        )
-        initialize_shipping_method_active_status(valid_methods, excluded_methods)
-
-    return valid_methods
-
-
-def is_shipping_required(lines: Iterable["OrderLine"]):
-    return any(line.is_shipping_required for line in lines)
-
-
 def get_total_quantity(lines: Iterable["OrderLine"]):
     return sum([line.quantity for line in lines])
-
-
-def get_valid_collection_points_for_order(
-    lines: Iterable["OrderLine"],
-    channel_id: int,
-    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
-):
-    if not is_shipping_required(lines):
-        return []
-
-    line_ids = [line.id for line in lines]
-    qs = OrderLine.objects.using(database_connection_name).filter(id__in=line_ids)
-
-    return Warehouse.objects.using(
-        database_connection_name
-    ).applicable_for_click_and_collect(qs, channel_id)
 
 
 def get_discounted_lines(lines, voucher):
@@ -1033,11 +962,11 @@ def update_order_charge_status(order: Order, granted_refund_amount: Decimal):
     the order.total - order granted refund
     We treat the order as not charged when the charged amount is 0.
     """
-    total_charged = order.total_charged_amount or Decimal("0")
+    total_charged = order.total_charged_amount or Decimal(0)
     total_charged = quantize_price(total_charged, order.currency)
 
     current_total_gross = order.total_gross_amount - granted_refund_amount
-    current_total_gross = max(current_total_gross, Decimal("0"))
+    current_total_gross = max(current_total_gross, Decimal(0))
     current_total_gross = quantize_price(current_total_gross, order.currency)
 
     if total_charged == current_total_gross:
@@ -1114,7 +1043,7 @@ def update_order_authorize_status(order: Order, granted_refund_amount: Decimal):
     ) or Decimal(0)
     total_covered = quantize_price(total_covered, order.currency)
     current_total_gross = order.total_gross_amount - granted_refund_amount
-    current_total_gross = max(current_total_gross, Decimal("0"))
+    current_total_gross = max(current_total_gross, Decimal(0))
     current_total_gross = quantize_price(current_total_gross, order.currency)
 
     if total_covered == Decimal(0) and order.total.gross.amount == Decimal(0):

@@ -863,10 +863,7 @@ def test_sort_product_by_rank_without_search(
     }
     response = user_api_client.post_graphql(SEARCH_PRODUCTS_QUERY, variables)
     content = get_graphql_content(response, ignore_errors=True)
-    message = (
-        "Sorting by RANK is available only when using a search filter or search "
-        "argument."
-    )
+    message = "Sorting by RANK is available only when using a search filter."
     assert "errors" in content
     assert content["errors"][0]["message"] == message
 
@@ -893,10 +890,7 @@ def test_products_query_by_rank_returns_error_with_filter_nontype_search(
 
     assert "errors" in content
     errors = content["errors"]
-    expected_message = (
-        "Sorting by RANK is available only when using a search filter "
-        "or search argument."
-    )
+    expected_message = "Sorting by RANK is available only when using a search filter."
     assert len(errors) == 1
     assert errors[0]["message"] == expected_message
 
@@ -936,10 +930,7 @@ def test_products_query_by_rank_returns_error_with_nontype_search(
 
     assert "errors" in content
     errors = content["errors"]
-    expected_message = (
-        "Sorting by RANK is available only when using a search filter "
-        "or search argument."
-    )
+    expected_message = "Sorting by RANK is available only when using a search filter."
     assert len(errors) == 1
     assert errors[0]["message"] == expected_message
 
@@ -1181,6 +1172,11 @@ def test_products_with_variants_query_as_app(
               node{
                 id
                 name
+                assignedAttributes(limit:10) {
+                    attribute {
+                        slug
+                    }
+                }
                 attributes {
                     attribute {
                         id
@@ -1211,6 +1207,9 @@ def test_products_with_variants_query_as_app(
         attrs = response_product["node"]["attributes"]
         assert len(attrs) == 1
         assert attrs[0]["attribute"]["id"] == attribute_id
+        assigned_attribtues = response_product["node"]["assignedAttributes"]
+        assert len(assigned_attribtues) == 1
+        assert assigned_attribtues[0]["attribute"]["slug"] == attribute.slug
 
 
 PRODUCT_SEARCH_QUERY = """
@@ -1302,6 +1301,86 @@ def test_search_product_using_search_argument_with_sort_by(
         product_1.name,
         product_2.name,
     }
+
+
+def test_products_search_sorted_by_rank_exact_match_prioritized(
+    staff_api_client, permission_manage_products, product_type, category, channel_USD
+):
+    # given
+    products = Product.objects.bulk_create(
+        [
+            Product(
+                name="Authoring Tool",
+                slug="authoring-tool",
+                product_type=product_type,
+                category=category,
+            ),
+            Product(
+                name="Author",
+                slug="author",
+                product_type=product_type,
+                category=category,
+            ),
+            Product(
+                name="Unrelated Item",
+                slug="unrelated-item",
+                product_type=product_type,
+                category=category,
+            ),
+            Product(
+                name="Authority Badge",
+                slug="authority-badge",
+                product_type=product_type,
+                category=category,
+            ),
+        ]
+    )
+    ProductChannelListing.objects.bulk_create(
+        [
+            ProductChannelListing(
+                product=product,
+                channel=channel_USD,
+                is_published=True,
+                visible_in_listings=True,
+                discounted_price_amount=10,
+                currency=channel_USD.currency_code,
+                available_for_purchase_at=datetime.datetime(
+                    1999, 1, 1, tzinfo=datetime.UTC
+                ),
+            )
+            for product in products
+        ]
+    )
+    for product in products:
+        product.search_vector = FlatConcatSearchVector(
+            *prepare_product_search_vector_value(product)
+        )
+    Product.objects.bulk_update(products, ["search_vector"])
+
+    variables = {
+        "search": "author",
+        "sortBy": {"field": "RANK", "direction": "DESC"},
+        "first": 10,
+        "channel": channel_USD.slug,
+    }
+
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    # when
+    response = staff_api_client.post_graphql(PRODUCT_SEARCH_QUERY, variables)
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["products"]["edges"]
+
+    assert len(data) == 3
+    # Exact name match "Author" should rank highest
+    assert data[0]["node"]["name"] == "Author"
+    # Unrelated item should not appear
+    returned_names = {node["node"]["name"] for node in data}
+    assert "Unrelated Item" not in returned_names
+    assert "Authoring Tool" in returned_names
+    assert "Authority Badge" in returned_names
 
 
 @pytest.mark.parametrize(
@@ -1409,5 +1488,6 @@ def test_search_product_sort_by_attribute_returns_correct_cursor(
 
     # Ref saleor.product.managers.ProductsQueryset.sort_by_attribute
     # First field stores the flag to determine if product has assigned attribute values
-    # Second is the list of attribute values as string
-    assert ["0", attr_value.name, product.name] == cursor_data
+    # Second is the numeric value, set only for attributes of numeric input type
+    # Third is the list of attribute values as string
+    assert ["0", None, attr_value.name, product.name] == cursor_data

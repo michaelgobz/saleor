@@ -6,6 +6,10 @@ from django_countries import countries
 
 from ..... import __version__
 from .....core.tests.test_taxes import app_factory, tax_app_factory  # noqa: F401
+from .....payment.gateway import (
+    GIFT_CARD_PAYMENT_GATEWAY_ID,
+    GIFT_CARD_PAYMENT_GATEWAY_NAME,
+)
 from .....permission.enums import get_permissions_codename
 from .....shipping import PostalCodeRuleInclusionType
 from .....shipping.models import ShippingMethod
@@ -293,7 +297,7 @@ def test_query_company_address(user_api_client, site_settings, address):
     assert company_address["postalCode"] == address.postal_code
 
 
-def test_query_domain(user_api_client, site_settings, settings):
+def test_query_domain(user_api_client, settings):
     # given
     query = """
     query {
@@ -313,8 +317,8 @@ def test_query_domain(user_api_client, site_settings, settings):
     # then
     content = get_graphql_content(response)
     data = content["data"]["shop"]
-    assert data["domain"]["host"] == site_settings.site.domain
-    assert data["domain"]["sslEnabled"] == settings.ENABLE_SSL
+    assert data["domain"]["host"] == "example.com"
+    assert data["domain"]["sslEnabled"] is True
     assert data["domain"]["url"]
 
 
@@ -384,40 +388,6 @@ def test_query_charge_taxes_on_shipping(api_client, site_settings):
     data = content["data"]["shop"]
     charge_taxes_on_shipping = site_settings.charge_taxes_on_shipping
     assert data["chargeTaxesOnShipping"] == charge_taxes_on_shipping
-
-
-def test_query_digital_content_settings(
-    staff_api_client, site_settings, permission_manage_settings
-):
-    # given
-    query = """
-    query {
-        shop {
-            automaticFulfillmentDigitalProducts
-            defaultDigitalMaxDownloads
-            defaultDigitalUrlValidDays
-        }
-    }"""
-
-    max_download = 2
-    url_valid_days = 3
-    site_settings.automatic_fulfillment_digital_products = True
-    site_settings.default_digital_max_downloads = max_download
-    site_settings.default_digital_url_valid_days = url_valid_days
-    site_settings.save()
-
-    # when
-    response = staff_api_client.post_graphql(
-        query, permissions=[permission_manage_settings]
-    )
-
-    # then
-    content = get_graphql_content(response)
-    data = content["data"]["shop"]
-    automatic_fulfillment = site_settings.automatic_fulfillment_digital_products
-    assert data["automaticFulfillmentDigitalProducts"] == automatic_fulfillment
-    assert data["defaultDigitalMaxDownloads"] == max_download
-    assert data["defaultDigitalUrlValidDays"] == url_valid_days
 
 
 QUERY_RETRIEVE_DEFAULT_MAIL_SENDER_SETTINGS = """
@@ -592,10 +562,12 @@ def test_query_available_payment_gateways_specified_currency_USD(
     assert {gateway["id"] for gateway in data} == {
         "mirumee.payments.dummy",
         "sampleDummy.active",
+        GIFT_CARD_PAYMENT_GATEWAY_ID,
     }
     assert {gateway["name"] for gateway in data} == {
         "Dummy",
         "SampleDummy",
+        GIFT_CARD_PAYMENT_GATEWAY_NAME,
     }
 
 

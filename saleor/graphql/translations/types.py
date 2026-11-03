@@ -1,3 +1,4 @@
+from itertools import chain
 from typing import TypeVar
 
 import graphene
@@ -16,14 +17,26 @@ from ...permission.enums import (
     ProductPermissions,
     ShippingPermissions,
 )
+from ...permission.utils import all_permissions_required
 from ...product import models as product_models
 from ...shipping import models as shipping_models
 from ...site import models as site_models
-from ..attribute.dataloaders import AttributesByAttributeId, AttributeValueByIdLoader
-from ..channel import ChannelContext
-from ..core.context import get_database_connection_name
+from ..attribute.dataloaders.assigned_attributes import (
+    AttributesByAttributeId,
+    AttributesByPageIdAndLimitLoader,
+    AttributesByProductIdAndLimitLoader,
+    AttributesByProductVariantIdAndSelectionAndLimitLoader,
+    AttributesVisibleToCustomerByPageIdAndLimitLoader,
+    AttributesVisibleToCustomerByProductIdAndLimitLoader,
+    AttributesVisibleToCustomerByProductVariantIdAndSelectionAndLimitLoader,
+    AttributeValueByIdLoader,
+    AttributeValuesByPageIdAndAttributeIdAndLimitLoader,
+    AttributeValuesByProductIdAndAttributeIdAndLimitLoader,
+    AttributeValuesByVariantIdAndAttributeIdAndLimitLoader,
+)
+from ..core.context import ChannelContext, get_database_connection_name
 from ..core.descriptions import (
-    ADDED_IN_321,
+    ADDED_IN_323,
     DEPRECATED_IN_3X_TYPE,
     RICH_CONTENT,
 )
@@ -40,34 +53,29 @@ from ..discount.dataloaders import (
 from ..menu.dataloaders import MenuItemByIdLoader
 from ..page.dataloaders import (
     PageByIdLoader,
-    SelectedAttributesAllByPageIdLoader,
-    SelectedAttributesVisibleInStorefrontPageIdLoader,
 )
 from ..product.dataloaders import (
     CategoryByIdLoader,
     CollectionByIdLoader,
     ProductByIdLoader,
+    ProductMediaByIdLoader,
     ProductVariantByIdLoader,
-    SelectedAttributesAllByProductIdLoader,
-    SelectedAttributesByProductVariantIdLoader,
-    SelectedAttributesVisibleInStorefrontByProductIdLoader,
 )
 from ..shipping.dataloaders import ShippingMethodByIdLoader
-from ..utils import get_user_or_app_from_context
 from .fields import TranslationField
 
+type ATTRIBUTE_ID = int
 
-def get_translatable_attribute_values(attributes: list) -> list[AttributeValue]:
-    """Filter the list of passed attributes.
 
-    Return those which are translatable attributes.
-    """
-    translatable_values: list[AttributeValue] = []
-    for assignment in attributes:
-        attr = assignment["attribute"]
-        if attr.input_type in AttributeInputType.TRANSLATABLE_ATTRIBUTES:
-            translatable_values.extend(assignment["values"])
-    return translatable_values
+def get_translatable_attribute_values(
+    attributes: list[attribute_models.Attribute],
+) -> list[ATTRIBUTE_ID]:
+    attribute_ids = []
+    for attribute in attributes:
+        if attribute.input_type not in AttributeInputType.TRANSLATABLE_ATTRIBUTES:
+            continue
+        attribute_ids.append(attribute.id)
+    return attribute_ids
 
 
 T = TypeVar("T", bound=Model)
@@ -174,7 +182,7 @@ class AttributeTranslatableContent(ModelObjectType[attribute_models.Attribute]):
 
     @staticmethod
     def resolve_attribute(root: attribute_models.Attribute, _info):
-        return root
+        return ChannelContext(node=root, channel_slug=None)
 
     @staticmethod
     def resolve_attribute_id(root: attribute_models.Attribute, _info):
@@ -220,7 +228,7 @@ class AttributeValueTranslatableContent(
 
     @staticmethod
     def resolve_attribute_value(root: attribute_models.AttributeValue, _info):
-        return root
+        return ChannelContext(node=root, channel_slug=None)
 
     @staticmethod
     def resolve_attribute(root: attribute_models.AttributeValue, info):
@@ -298,15 +306,103 @@ class ProductVariantTranslatableContent(ModelObjectType[product_models.ProductVa
 
     @staticmethod
     def resolve_attribute_values(root: product_models.ProductVariant, info):
+        def with_attribute_values(attribute_values: list[list[AttributeValue]]):
+            return list(chain.from_iterable(attribute_values))
+
+        def with_attributes(attributes: list[attribute_models.Attribute]):
+            attribute_ids = get_translatable_attribute_values(attributes)
+            limit = None
+            return (
+                AttributeValuesByVariantIdAndAttributeIdAndLimitLoader(info.context)
+                .load_many(
+                    [(root.id, attribute_id, limit) for attribute_id in attribute_ids]
+                )
+                .then(with_attribute_values)
+            )
+
+        variant_selection = None
+        limit = None
+        if all_permissions_required(info.context, [ProductPermissions.MANAGE_PRODUCTS]):
+            return (
+                AttributesByProductVariantIdAndSelectionAndLimitLoader(info.context)
+                .load((root.id, limit, variant_selection))
+                .then(with_attributes)
+            )
         return (
-            SelectedAttributesByProductVariantIdLoader(info.context)
-            .load(root.id)
-            .then(get_translatable_attribute_values)
+            AttributesVisibleToCustomerByProductVariantIdAndSelectionAndLimitLoader(
+                info.context
+            )
+            .load((root.id, limit, variant_selection))
+            .then(with_attributes)
         )
 
     @staticmethod
     def resolve_product_variant_id(root: product_models.ProductVariant, _info):
         return graphene.Node.to_global_id("ProductVariant", root.id)
+
+
+class ProductMediaTranslation(
+    BaseTranslationType[product_models.ProductMediaTranslation]
+):
+    id = graphene.GlobalID(
+        required=True,
+        description="The ID of the product media translation.",
+    )
+    alt = graphene.String(
+        required=True,
+        description="Translated product media alt text.",
+    )
+    translatable_content = graphene.Field(
+        "saleor.graphql.translations.types.ProductMediaTranslatableContent",
+        description="Represents the product media fields to translate.",
+    )
+
+    class Meta:
+        model = product_models.ProductMediaTranslation
+        interfaces = [graphene.relay.Node]
+        description = "Represents product media translations." + ADDED_IN_323
+
+    @staticmethod
+    def resolve_translatable_content(
+        root: product_models.ProductMediaTranslation, info
+    ):
+        return ProductMediaByIdLoader(info.context).load(root.product_media_id)
+
+
+class ProductMediaTranslatableContent(ModelObjectType[product_models.ProductMedia]):
+    id = graphene.GlobalID(
+        required=True,
+        description="The ID of the product media translatable content.",
+    )
+    product_media_id = graphene.ID(
+        required=True,
+        description="The ID of the product media to translate.",
+    )
+    alt = graphene.String(
+        required=True,
+        description="Product media alt text to translate.",
+    )
+    translation = TranslationField(ProductMediaTranslation, type_name="product media")
+    product_media = graphene.Field(
+        "saleor.graphql.product.types.products.ProductMedia",
+        description="Represents a product media.",
+    )
+
+    class Meta:
+        model = product_models.ProductMedia
+        interfaces = [graphene.relay.Node]
+        description = (
+            "Represents product media's original translatable fields and related "
+            "translations." + ADDED_IN_323
+        )
+
+    @staticmethod
+    def resolve_product_media(root: product_models.ProductMedia, _info):
+        return root
+
+    @staticmethod
+    def resolve_product_media_id(root: product_models.ProductMedia, _info):
+        return graphene.Node.to_global_id("ProductMedia", root.pk)
 
 
 class ProductTranslation(BaseTranslationType[product_models.ProductTranslation]):
@@ -315,7 +411,7 @@ class ProductTranslation(BaseTranslationType[product_models.ProductTranslation])
     )
     seo_title = graphene.String(description="Translated SEO title.")
     seo_description = graphene.String(description="Translated SEO description.")
-    slug = graphene.String(description="Translated product slug." + ADDED_IN_321)
+    slug = graphene.String(description="Translated product slug.")
     name = graphene.String(description="Translated product name.")
     description = JSONString(
         description="Translated description of the product." + RICH_CONTENT
@@ -354,7 +450,7 @@ class ProductTranslatableContent(ModelObjectType[product_models.Product]):
     )
     seo_title = graphene.String(description="SEO title to translate.")
     seo_description = graphene.String(description="SEO description to translate.")
-    slug = graphene.String(description="Slug to translate." + ADDED_IN_321)
+    slug = graphene.String(description="Slug to translate.")
     name = graphene.String(required=True, description="Product's name to translate.")
     description = JSONString(
         description="Product's description to translate." + RICH_CONTENT
@@ -394,21 +490,31 @@ class ProductTranslatableContent(ModelObjectType[product_models.Product]):
 
     @staticmethod
     def resolve_attribute_values(root: product_models.Product, info):
-        requestor = get_user_or_app_from_context(info.context)
-        if (
-            requestor
-            and requestor.is_active
-            and requestor.has_perm(ProductPermissions.MANAGE_PRODUCTS)
-        ):
+        def with_attribute_values(attribute_values: list[list[AttributeValue]]):
+            return list(chain.from_iterable(attribute_values))
+
+        def with_attributes(attributes: list[attribute_models.Attribute]):
+            attribute_ids = get_translatable_attribute_values(attributes)
+            limit = None
             return (
-                SelectedAttributesAllByProductIdLoader(info.context)
-                .load(root.id)
-                .then(get_translatable_attribute_values)
+                AttributeValuesByProductIdAndAttributeIdAndLimitLoader(info.context)
+                .load_many(
+                    [(root.id, attribute_id, limit) for attribute_id in attribute_ids]
+                )
+                .then(with_attribute_values)
             )
+
+        if all_permissions_required(info.context, [ProductPermissions.MANAGE_PRODUCTS]):
+            return (
+                AttributesByProductIdAndLimitLoader(info.context)
+                .load((root.id, None))
+                .then(with_attributes)
+            )
+
         return (
-            SelectedAttributesVisibleInStorefrontByProductIdLoader(info.context)
-            .load(root.id)
-            .then(get_translatable_attribute_values)
+            AttributesVisibleToCustomerByProductIdAndLimitLoader(info.context)
+            .load((root.id, None))
+            .then(with_attributes)
         )
 
     @staticmethod
@@ -422,10 +528,14 @@ class CollectionTranslation(BaseTranslationType[product_models.CollectionTransla
     )
     seo_title = graphene.String(description="Translated SEO title.")
     seo_description = graphene.String(description="Translated SEO description.")
-    slug = graphene.String(description="Translated collection slug." + ADDED_IN_321)
+    slug = graphene.String(description="Translated collection slug.")
     name = graphene.String(description="Translated collection name.")
     description = JSONString(
         description="Translated description of the collection." + RICH_CONTENT
+    )
+    full_description = JSONString(
+        description="Translated full description of the collection. "
+        "Returns null when unset." + RICH_CONTENT + ADDED_IN_323
     )
     description_json = JSONString(
         description="Translated description of the collection." + RICH_CONTENT,
@@ -460,10 +570,14 @@ class CollectionTranslatableContent(ModelObjectType[product_models.Collection]):
     )
     seo_title = graphene.String(description="SEO title to translate.")
     seo_description = graphene.String(description="SEO description to translate.")
-    slug = graphene.String(description="Slug to translate" + ADDED_IN_321)
+    slug = graphene.String(description="Slug to translate")
     name = graphene.String(required=True, description="Collection's name to translate.")
     description = JSONString(
         description="Collection's description to translate." + RICH_CONTENT
+    )
+    full_description = JSONString(
+        description="Collection's full description to translate. "
+        "Returns null when unset." + RICH_CONTENT + ADDED_IN_323
     )
     description_json = JSONString(
         description="Description of the collection." + RICH_CONTENT,
@@ -514,10 +628,14 @@ class CategoryTranslation(BaseTranslationType[product_models.CategoryTranslation
     )
     seo_title = graphene.String(description="Translated SEO title.")
     seo_description = graphene.String(description="Translated SEO description.")
-    slug = graphene.String(description="Translated category slug." + ADDED_IN_321)
+    slug = graphene.String(description="Translated category slug.")
     name = graphene.String(description="Translated category name.")
     description = JSONString(
         description="Translated description of the category." + RICH_CONTENT
+    )
+    full_description = JSONString(
+        description="Translated full description of the category. "
+        "Returns null when unset." + RICH_CONTENT + ADDED_IN_323
     )
     description_json = JSONString(
         description="Translated description of the category." + RICH_CONTENT,
@@ -553,12 +671,16 @@ class CategoryTranslatableContent(ModelObjectType[product_models.Category]):
     )
     seo_title = graphene.String(description="SEO title to translate.")
     seo_description = graphene.String(description="SEO description to translate.")
-    slug = graphene.String(description="Slug to translate." + ADDED_IN_321)
+    slug = graphene.String(description="Slug to translate.")
     name = graphene.String(
         required=True, description="Name of the category translatable content."
     )
     description = JSONString(
         description="Category description to translate." + RICH_CONTENT
+    )
+    full_description = JSONString(
+        description="Category's full description to translate. "
+        "Returns null when unset." + RICH_CONTENT + ADDED_IN_323
     )
     description_json = JSONString(
         description="Description of the category." + RICH_CONTENT,
@@ -596,7 +718,7 @@ class PageTranslation(BaseTranslationType[page_models.PageTranslation]):
     id = graphene.GlobalID(required=True, description="The ID of the page translation.")
     seo_title = graphene.String(description="Translated SEO title.")
     seo_description = graphene.String(description="Translated SEO description.")
-    slug = graphene.String(description="Translated page slug." + ADDED_IN_321)
+    slug = graphene.String(description="Translated page slug.")
     title = graphene.String(description="Translated page title.")
     content = JSONString(description="Translated content of the page." + RICH_CONTENT)
     content_json = JSONString(
@@ -630,7 +752,7 @@ class PageTranslatableContent(ModelObjectType[page_models.Page]):
     page_id = graphene.ID(required=True, description="The ID of the page to translate.")
     seo_title = graphene.String(description="SEO title to translate.")
     seo_description = graphene.String(description="SEO description to translate.")
-    slug = graphene.String(description="Slug to translate." + ADDED_IN_321)
+    slug = graphene.String(description="Slug to translate.")
     title = graphene.String(required=True, description="Page title to translate.")
     content = JSONString(description="Content of the page to translate." + RICH_CONTENT)
     content_json = JSONString(
@@ -661,12 +783,15 @@ class PageTranslatableContent(ModelObjectType[page_models.Page]):
 
     @staticmethod
     def resolve_page(root: page_models.Page, info):
-        return (
+        page = (
             page_models.Page.objects.using(get_database_connection_name(info.context))
             .visible_to_user(info.context.user)
             .filter(pk=root.id)
             .first()
         )
+        if not page:
+            return None
+        return ChannelContext(page, channel_slug=None)
 
     @staticmethod
     def resolve_content_json(root: page_models.Page, _info):
@@ -675,22 +800,25 @@ class PageTranslatableContent(ModelObjectType[page_models.Page]):
 
     @staticmethod
     def resolve_attribute_values(root: page_models.Page, info):
-        requestor = get_user_or_app_from_context(info.context)
-        if (
-            requestor
-            and requestor.is_active
-            and requestor.has_perm(PagePermissions.MANAGE_PAGES)
-        ):
+        def with_attribute_values(attribute_values: list[list[AttributeValue]]):
+            return list(chain.from_iterable(attribute_values))
+
+        def with_attributes(attributes):
+            attribute_ids = get_translatable_attribute_values(attributes)
+            limit = None
             return (
-                SelectedAttributesAllByPageIdLoader(info.context)
-                .load(root.id)
-                .then(get_translatable_attribute_values)
+                AttributeValuesByPageIdAndAttributeIdAndLimitLoader(info.context)
+                .load_many(
+                    [(root.id, attribute_id, limit) for attribute_id in attribute_ids]
+                )
+                .then(with_attribute_values)
             )
-        return (
-            SelectedAttributesVisibleInStorefrontPageIdLoader(info.context)
-            .load(root.id)
-            .then(get_translatable_attribute_values)
-        )
+
+        if all_permissions_required(info.context, [PagePermissions.MANAGE_PAGES]):
+            dataloader = AttributesByPageIdAndLimitLoader(info.context)
+        else:
+            dataloader = AttributesVisibleToCustomerByPageIdAndLimitLoader(info.context)
+        return dataloader.load((root.id, None)).then(with_attributes)
 
     @staticmethod
     def resolve_page_id(root: page_models.Page, _info):

@@ -1,6 +1,7 @@
+import threading
 from collections import defaultdict
 from collections.abc import Iterable
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from promise import Promise
 from promise.dataloader import DataLoader as BaseLoader
@@ -16,8 +17,9 @@ K = TypeVar("K")
 R = TypeVar("R")
 
 
-class DataLoader(BaseLoader, Generic[K, R]):
+class DataLoader[K, R](BaseLoader):
     context_key: str
+    thread_id: int
     context: SaleorContext
     database_connection_name: str
 
@@ -34,7 +36,14 @@ class DataLoader(BaseLoader, Generic[K, R]):
         return loader
 
     def __init__(self, context: SaleorContext) -> None:
-        if getattr(self, "context", None) != context:
+        thread_id = threading.get_native_id()
+        current_thread_id = getattr(self, "thread_id", None)
+        if current_thread_id != thread_id:
+            assert current_thread_id is None, (
+                "Dataloaders cannot be shared between threads"
+            )
+
+            self.thread_id = thread_id
             self.context = context
             self.database_connection_name = get_database_connection_name(context)
             super().__init__()
@@ -42,7 +51,9 @@ class DataLoader(BaseLoader, Generic[K, R]):
     def batch_load_fn(  # pylint: disable=method-hidden
         self, keys: Iterable[K]
     ) -> Promise[list[R]]:
-        with tracer.start_as_current_span(self.__class__.__name__) as span:
+        with tracer.start_as_current_span(
+            self.__class__.__name__, end_on_exit=False
+        ) as span:
             span.set_attribute(
                 saleor_attributes.OPERATION_NAME, "dataloader.batch_load"
             )
@@ -51,8 +62,24 @@ class DataLoader(BaseLoader, Generic[K, R]):
                 results = self.batch_load(keys)
 
             if not isinstance(results, Promise):
+                span.set_attribute(
+                    saleor_attributes.GRAPHQL_RESOLVER_ROW_COUNT, len(results)
+                )
+                span.end()
                 return Promise.resolve(results)
-            return results
+
+            def did_fulfill(results: list[R]) -> list[R]:
+                span.set_attribute(
+                    saleor_attributes.GRAPHQL_RESOLVER_ROW_COUNT, len(results)
+                )
+                span.end()
+                return results
+
+            def did_reject(error: Exception) -> list[R]:
+                span.end()
+                raise error
+
+            return results.then(did_fulfill, did_reject)
 
     def batch_load(self, keys: Iterable[K]) -> Promise[list[R]] | list[R]:
         raise NotImplementedError()

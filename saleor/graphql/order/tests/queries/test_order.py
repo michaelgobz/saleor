@@ -2,13 +2,16 @@ from decimal import Decimal
 
 import graphene
 import pytest
+from django.utils import timezone
 from prices import Money, TaxedMoney
 
-from .....checkout.utils import PRIVATE_META_APP_SHIPPING_ID
 from .....core.prices import quantize_price
 from .....core.taxes import zero_taxed_money
 from .....discount import DiscountType
+from .....giftcard import GiftCardEvents, events
+from .....giftcard.models import GiftCardEvent
 from .....order import FulfillmentStatus, OrderOrigin, OrderStatus
+from .....order.delivery_context import PRIVATE_META_APP_SHIPPING_ID
 from .....order.events import transaction_event
 from .....order.models import Order, OrderGrantedRefund
 from .....order.utils import (
@@ -203,30 +206,6 @@ query OrdersQuery {
                         amount
                     }
                 }
-                availableShippingMethods {
-                    id
-                    name
-                    description
-                    price{
-                      amount
-                    }
-                    minimumOrderPrice {
-                      amount
-                    }
-                    maximumOrderPrice{
-                      amount
-                    }
-                    maximumDeliveryDays
-                    minimumDeliveryDays
-                    metadata{
-                      key
-                      value
-                    }
-                    privateMetadata{
-                      key
-                      value
-                    }
-                }
                 shippingMethods{
                   id
                   name
@@ -281,19 +260,23 @@ query OrdersQuery {
                     id
                     name
                 }
-                shippingMethod{
-                    id
-                    name
-                    price {
-                        amount
-                        currency
-                    }
-
-                }
                 deliveryMethod {
                     __typename
                     ... on ShippingMethod {
                         id
+                        name
+                        price {
+                            amount
+                            currency
+                        }
+                        metadata {
+                            key
+                            value
+                        }
+                        privateMetadata {
+                            key
+                            value
+                        }
                     }
                     ... on Warehouse {
                         id
@@ -334,7 +317,7 @@ def test_order_query(
 ):
     # given
     order = fulfilled_order
-    shipping_net = Money(amount=Decimal("10"), currency="USD")
+    shipping_net = Money(amount=Decimal(10), currency="USD")
     shipping_gross = Money(
         amount=shipping_net.amount * Decimal(1.23), currency="USD"
     ).quantize()
@@ -347,9 +330,8 @@ def test_order_query(
     private_value = "abc123"
     public_value = "123abc"
     order.checkout_token = checkout.token
-    order.shipping_method.store_value_in_metadata({"test": public_value})
-    order.shipping_method.store_value_in_private_metadata({"test": private_value})
-    order.shipping_method.save()
+    order.shipping_method_metadata = {"test": public_value}
+    order.shipping_method_private_metadata = {"test": private_value}
     order.save()
 
     permission_group_manage_orders.user_set.add(staff_api_client.user)
@@ -431,12 +413,12 @@ def test_order_query(
         lines_qs=order.lines.all(), channel_id=order.channel.id
     )
 
-    assert len(order_data["availableShippingMethods"]) == (expected_methods.count())
+    assert len(order_data["shippingMethods"]) == (expected_methods.count())
     assert len(order_data["availableCollectionPoints"]) == (
         expected_collection_points.count()
     )
 
-    method = order_data["availableShippingMethods"][0]
+    method = order_data["shippingMethods"][0]
     expected_method = expected_methods.first()
     expected_shipping_price = expected_method.channel_listings.get(
         channel_id=order.channel_id
@@ -608,7 +590,7 @@ def test_order_query_total_price_is_0(
     price = zero_taxed_money(order.currency)
     order.shipping_price = price
     order.total = price
-    shipping_tax_rate = Decimal("0")
+    shipping_tax_rate = Decimal(0)
     order.shipping_tax_rate = shipping_tax_rate
     private_value = "abc123"
     public_value = "123abc"
@@ -789,13 +771,13 @@ def test_order_query_customer(api_client):
 @pytest.mark.parametrize(
     ("total_authorized", "total_charged", "expected_status"),
     [
-        (Decimal("98.40"), Decimal("0"), OrderAuthorizeStatusEnum.FULL.name),
-        (Decimal("0"), Decimal("98.40"), OrderAuthorizeStatusEnum.FULL.name),
-        (Decimal("10"), Decimal("88.40"), OrderAuthorizeStatusEnum.FULL.name),
-        (Decimal("0"), Decimal("0"), OrderAuthorizeStatusEnum.NONE.name),
-        (Decimal("11"), Decimal("0"), OrderAuthorizeStatusEnum.PARTIAL.name),
-        (Decimal("0"), Decimal("50.00"), OrderAuthorizeStatusEnum.PARTIAL.name),
-        (Decimal("10"), Decimal("40.40"), OrderAuthorizeStatusEnum.PARTIAL.name),
+        (Decimal("98.40"), Decimal(0), OrderAuthorizeStatusEnum.FULL.name),
+        (Decimal(0), Decimal("98.40"), OrderAuthorizeStatusEnum.FULL.name),
+        (Decimal(10), Decimal("88.40"), OrderAuthorizeStatusEnum.FULL.name),
+        (Decimal(0), Decimal(0), OrderAuthorizeStatusEnum.NONE.name),
+        (Decimal(11), Decimal(0), OrderAuthorizeStatusEnum.PARTIAL.name),
+        (Decimal(0), Decimal("50.00"), OrderAuthorizeStatusEnum.PARTIAL.name),
+        (Decimal(10), Decimal("40.40"), OrderAuthorizeStatusEnum.PARTIAL.name),
     ],
 )
 def test_order_query_authorize_status(
@@ -829,12 +811,12 @@ def test_order_query_authorize_status(
 @pytest.mark.parametrize(
     ("total_authorized", "total_charged", "expected_status"),
     [
-        (Decimal("10.40"), Decimal("0"), OrderChargeStatusEnum.NONE.name),
-        (Decimal("98.40"), Decimal("0"), OrderChargeStatusEnum.NONE.name),
-        (Decimal("0"), Decimal("0"), OrderChargeStatusEnum.NONE.name),
-        (Decimal("0"), Decimal("11.00"), OrderChargeStatusEnum.PARTIAL.name),
+        (Decimal("10.40"), Decimal(0), OrderChargeStatusEnum.NONE.name),
+        (Decimal("98.40"), Decimal(0), OrderChargeStatusEnum.NONE.name),
+        (Decimal(0), Decimal(0), OrderChargeStatusEnum.NONE.name),
+        (Decimal(0), Decimal("11.00"), OrderChargeStatusEnum.PARTIAL.name),
         (Decimal("88.40"), Decimal("10.00"), OrderChargeStatusEnum.PARTIAL.name),
-        (Decimal("0"), Decimal("98.40"), OrderChargeStatusEnum.FULL.name),
+        (Decimal(0), Decimal("98.40"), OrderChargeStatusEnum.FULL.name),
     ],
 )
 def test_order_query_charge_status(
@@ -897,7 +879,7 @@ def test_order_query_with_transactions_details(
 ):
     # given
     order = fulfilled_order
-    net = Money(amount=Decimal("100"), currency="USD")
+    net = Money(amount=Decimal(100), currency="USD")
     gross = Money(amount=net.amount * Decimal(1.23), currency="USD").quantize()
     shipping_price = TaxedMoney(net=net, gross=gross)
     order.shipping_price = shipping_price
@@ -924,7 +906,7 @@ def test_order_query_with_transactions_details(
                 name="Credit card",
                 psp_reference="123",
                 currency="USD",
-                authorized_value=Decimal("15"),
+                authorized_value=Decimal(15),
                 available_actions=[TransactionAction.CHARGE, TransactionAction.CANCEL],
             ),
             TransactionItem(
@@ -933,7 +915,7 @@ def test_order_query_with_transactions_details(
                 name="Credit card",
                 psp_reference="321",
                 currency="USD",
-                authorized_value=Decimal("10"),
+                authorized_value=Decimal(10),
                 available_actions=[TransactionAction.CHARGE, TransactionAction.CANCEL],
             ),
             TransactionItem(
@@ -942,7 +924,7 @@ def test_order_query_with_transactions_details(
                 name="Credit card",
                 psp_reference="111",
                 currency="USD",
-                charged_value=Decimal("15"),
+                charged_value=Decimal(15),
                 available_actions=[TransactionAction.REFUND],
             ),
             TransactionItem(
@@ -951,7 +933,7 @@ def test_order_query_with_transactions_details(
                 name="Credit card",
                 psp_reference="111",
                 currency="USD",
-                canceled_value=Decimal("19"),
+                canceled_value=Decimal(19),
                 available_actions=[],
             ),
         ]
@@ -991,10 +973,10 @@ def test_order_query_with_transactions_details(
     assert order_data["isPaid"] == order.is_fully_paid()
 
     assert len(order_data["payments"]) == order.payments.count()
-    assert Decimal(order_data["totalAuthorized"]["amount"]) == Decimal("25")
-    assert Decimal(order_data["totalCaptured"]["amount"]) == Decimal("15")
-    assert Decimal(order_data["totalCharged"]["amount"]) == Decimal("15")
-    assert Decimal(order_data["totalCanceled"]["amount"]) == Decimal("19")
+    assert Decimal(order_data["totalAuthorized"]["amount"]) == Decimal(25)
+    assert Decimal(order_data["totalCaptured"]["amount"]) == Decimal(15)
+    assert Decimal(order_data["totalCharged"]["amount"]) == Decimal(15)
+    assert Decimal(order_data["totalCanceled"]["amount"]) == Decimal(19)
 
     assert Decimal(str(order_data["totalBalance"]["amount"])) == Decimal("-83.4")
 
@@ -1040,12 +1022,25 @@ def test_order_query_external_shipping_method(
     permission_group_manage_shipping,
     order_with_lines,
 ):
-    external_shipping_method_id = graphene.Node.to_global_id("app", "1:external123")
-
     # given
+    external_shipping_method_id = graphene.Node.to_global_id("app", "1:external123")
+    external_shipping_method_name = "External Shipping Method"
+    external_shipping_metadata_key = "external_metadata_key"
+    external_shipping_metadata_value = "external_metadata_value"
+    external_shipping_private_metadata_key = "external_private_metadata_key"
+    external_shipping_private_metadata_value = "external_private_metadata_value"
+
     order = order_with_lines
     order.shipping_method = None
     order.private_metadata = {PRIVATE_META_APP_SHIPPING_ID: external_shipping_method_id}
+    order.shipping_method_name = external_shipping_method_name
+    order.shipping_method_metadata = {
+        external_shipping_metadata_key: external_shipping_metadata_value
+    }
+    order.shipping_method_private_metadata = {
+        external_shipping_private_metadata_key: external_shipping_private_metadata_value
+    }
+
     order.save()
 
     permission_group_manage_orders.user_set.add(staff_api_client.user)
@@ -1058,10 +1053,31 @@ def test_order_query_external_shipping_method(
     # then
     order_data = content["data"]["orders"]["edges"][0]["node"]
     assert order_data["shippingMethod"]["id"] == external_shipping_method_id
-    assert order_data["shippingMethod"]["name"] == order.shipping_method_name
+    assert order_data["deliveryMethod"]["id"] == external_shipping_method_id
+    assert order_data["shippingMethod"]["name"] == external_shipping_method_name
+    assert order_data["deliveryMethod"]["name"] == external_shipping_method_name
     assert order_data["shippingMethod"]["price"]["amount"] == float(
         order.shipping_price_gross.amount
     )
+    assert order_data["deliveryMethod"]["price"]["amount"] == float(
+        order.shipping_price_gross.amount
+    )
+    expected_metadata = [
+        {
+            "key": external_shipping_metadata_key,
+            "value": external_shipping_metadata_value,
+        }
+    ]
+    expected_private_metadata = [
+        {
+            "key": external_shipping_private_metadata_key,
+            "value": external_shipping_private_metadata_value,
+        }
+    ]
+    assert order_data["shippingMethod"]["metadata"] == expected_metadata
+    assert order_data["deliveryMethod"]["metadata"] == expected_metadata
+    assert order_data["shippingMethod"]["privateMetadata"] == expected_private_metadata
+    assert order_data["deliveryMethod"]["privateMetadata"] == expected_private_metadata
 
 
 def test_order_discounts_query(
@@ -1398,9 +1414,9 @@ def test_order_query_in_pln_channel(
         country_code=order.shipping_address.country.code,
         channel_id=order.channel_id,
     )
-    assert len(order_data["availableShippingMethods"]) == (expected_methods.count())
+    assert len(order_data["shippingMethods"]) == (expected_methods.count())
 
-    method = order_data["availableShippingMethods"][0]
+    method = order_data["shippingMethods"][0]
     expected_method = expected_methods.first()
     expected_shipping_price = expected_method.channel_listings.get(
         channel_id=order.channel_id
@@ -1840,6 +1856,40 @@ def test_query_order_fields_order_with_old_id_staff_with_perm(
     assert content["data"]["order"]["userEmail"] == order.user_email
 
 
+def test_query_order_fields_order_with_old_id_and_anonymous_request(
+    order, app_api_client, permission_manage_orders
+):
+    # given
+    order.user = None
+    order.use_old_id = True
+    order.save(update_fields=["use_old_id", "user_id"])
+
+    variables = {"id": graphene.Node.to_global_id("Order", order.id)}
+
+    # when
+    response = app_api_client.post_graphql(
+        QUERY_ORDER_FIELDS_BY_ID,
+        variables,
+        permissions=(permission_manage_orders,),
+        check_no_permissions=False,
+    )
+
+    # then
+    content = get_graphql_content(response)
+    assert content["data"]["order"]
+    assert (
+        content["data"]["order"]["billingAddress"]["streetAddress1"]
+        == order.billing_address.street_address_1[0] + "........"
+    )
+    assert (
+        content["data"]["order"]["shippingAddress"]["streetAddress1"]
+        == order.shipping_address.street_address_1[0] + "........"
+    )
+    assert (
+        content["data"]["order"]["userEmail"] == order.user_email[0] + "...@example.com"
+    )
+
+
 def test_query_order_fields_by_old_id_app_no_perm(order, app_api_client):
     """Test that old order IDs require proper app permissions to access sensitive fields."""
     # given
@@ -1884,6 +1934,90 @@ def test_order_query_gift_cards(
     assert (
         gift_card.current_balance.amount == gift_card_data["currentBalance"]["amount"]
     )
+
+
+QUERY_ORDER_GIFT_CARD_EVENTS = """
+    query OrderQuery($id: ID!) {
+        order(id: $id) {
+            giftCards {
+                events {
+                    type
+                    orderId
+                }
+            }
+        }
+    }
+"""
+
+
+def test_order_query_gift_card_events_manage_orders_only_returns_used_in_order(
+    staff_api_client,
+    permission_group_manage_orders,
+    order_with_lines,
+    gift_card,
+):
+    # given
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+    order_with_lines.gift_cards.add(gift_card)
+
+    GiftCardEvent.objects.create(
+        gift_card=gift_card, type=GiftCardEvents.ISSUED, date=timezone.now()
+    )
+    events.gift_cards_bought_event([gift_card], order_with_lines, None, None)
+    events.gift_cards_used_in_order_event(
+        [(gift_card, 10.0)], order_with_lines, None, None
+    )
+
+    order_id = graphene.Node.to_global_id("Order", order_with_lines.id)
+    variables = {"id": order_id}
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_ORDER_GIFT_CARD_EVENTS, variables)
+
+    # then
+    content = get_graphql_content(response)
+    events_data = content["data"]["order"]["giftCards"][0]["events"]
+    assert len(events_data) == 1
+    assert events_data[0]["type"] == GiftCardEvents.USED_IN_ORDER.upper()
+    assert events_data[0]["orderId"] == order_id
+
+
+def test_order_query_gift_card_events_manage_orders_and_gift_cards_returns_all_events(
+    staff_api_client,
+    permission_group_manage_orders,
+    permission_manage_gift_card,
+    order_with_lines,
+    gift_card,
+):
+    # given
+    permission_group_manage_orders.user_set.add(staff_api_client.user)
+    staff_api_client.user.user_permissions.add(permission_manage_gift_card)
+    order_with_lines.gift_cards.add(gift_card)
+
+    GiftCardEvent.objects.create(
+        gift_card=gift_card, type=GiftCardEvents.ISSUED, date=timezone.now()
+    )
+    events.gift_cards_bought_event([gift_card], order_with_lines, None, None)
+    events.gift_cards_used_in_order_event(
+        [(gift_card, 10.0)], order_with_lines, None, None
+    )
+
+    order_id = graphene.Node.to_global_id("Order", order_with_lines.id)
+    variables = {"id": order_id}
+
+    # when
+    response = staff_api_client.post_graphql(QUERY_ORDER_GIFT_CARD_EVENTS, variables)
+
+    # then
+    content = get_graphql_content(response)
+    events_data = content["data"]["order"]["giftCards"][0]["events"]
+    assert len(events_data) == 3
+    event_types = {event["type"] for event in events_data}
+    assert event_types == {
+        GiftCardEvents.ISSUED.upper(),
+        GiftCardEvents.BOUGHT.upper(),
+        GiftCardEvents.USED_IN_ORDER.upper(),
+    }
 
 
 QUERY_ORDER_PRICES = """

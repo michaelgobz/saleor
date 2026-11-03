@@ -1,8 +1,10 @@
+import dataclasses
 from decimal import Decimal
-from unittest.mock import Mock
+from unittest.mock import patch
 
 import graphene
 import pytest
+from promise import Promise
 
 from ...core.prices import quantize_price
 from ...core.taxes import TaxData, TaxLineData
@@ -23,7 +25,13 @@ def order_with_lines(order_with_lines):
     return order_with_lines
 
 
-def test_fetch_order_prices_tax_app(order_with_lines, tax_configuration_tax_app):
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
+def test_fetch_order_prices_tax_app(
+    mocked_trigger_webhook_sync_promise,
+    order_with_lines,
+    tax_configuration_tax_app,
+    plugins_manager,
+):
     # given
     order = order_with_lines
     currency = order.currency
@@ -77,11 +85,14 @@ def test_fetch_order_prices_tax_app(order_with_lines, tax_configuration_tax_app)
         ],
     )
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(
+        dataclasses.asdict(tax_data)
+    )
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     assert order.shipping_price_net_amount == shipping_price_net
@@ -123,9 +134,12 @@ def test_fetch_order_prices_tax_app(order_with_lines, tax_configuration_tax_app)
     assert line_2.unit_discount_amount == Decimal(0)
 
 
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
 def test_fetch_order_prices_catalogue_discount_tax_app(
+    mocked_trigger_webhook_sync_promise,
     order_with_lines_and_catalogue_promotion,
     tax_configuration_tax_app,
+    plugins_manager,
 ):
     # given
     order = order_with_lines_and_catalogue_promotion
@@ -194,11 +208,14 @@ def test_fetch_order_prices_catalogue_discount_tax_app(
         ],
     )
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(
+        dataclasses.asdict(tax_data)
+    )
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     discount = line_1.discounts.get()
@@ -252,9 +269,12 @@ def test_fetch_order_prices_catalogue_discount_tax_app(
     assert line_2.unit_price_gross_amount == line_2_unit_price_gross
 
 
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
 def test_fetch_order_prices_order_discount_tax_app(
+    mocked_trigger_webhook_sync_promise,
     order_with_lines_and_order_promotion,
     tax_configuration_tax_app,
+    plugins_manager,
 ):
     # given
     order = order_with_lines_and_order_promotion
@@ -339,11 +359,14 @@ def test_fetch_order_prices_order_discount_tax_app(
         ],
     )
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(
+        dataclasses.asdict(tax_data)
+    )
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     discount = order.discounts.get()
@@ -421,9 +444,12 @@ def test_fetch_order_prices_order_discount_tax_app(
     )
 
 
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
 def test_fetch_order_prices_order_discount_tax_app_prices_entered_with_taxes(
+    mocked_trigger_webhook_sync_promise,
     order_with_lines_and_order_promotion,
     tax_configuration_tax_app,
+    plugins_manager,
 ):
     # given
     order = order_with_lines_and_order_promotion
@@ -509,11 +535,14 @@ def test_fetch_order_prices_order_discount_tax_app_prices_entered_with_taxes(
         ],
     )
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(
+        dataclasses.asdict(tax_data)
+    )
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     discount = order.discounts.get()
@@ -601,10 +630,13 @@ def test_fetch_order_prices_order_discount_tax_app_prices_entered_with_taxes(
     )
 
 
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
 def test_fetch_order_prices_gift_discount_tax_app(
+    mocked_trigger_webhook_sync_promise,
     order_with_lines_and_gift_promotion,
     tax_configuration_tax_app,
     channel_USD,
+    plugins_manager,
 ):
     # given
     order = order_with_lines_and_gift_promotion
@@ -669,12 +701,14 @@ def test_fetch_order_prices_gift_discount_tax_app(
         ],
     )
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(
+        dataclasses.asdict(tax_data)
+    )
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
-
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
     # then
     assert order.shipping_price_net_amount == shipping_price_net
     assert order.shipping_price_gross_amount == shipping_price_gross
@@ -732,9 +766,12 @@ def test_fetch_order_prices_gift_discount_tax_app(
     assert gift_discount.amount.amount == gift_price
 
 
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
 def test_fetch_order_prices_catalogue_and_order_discounts_tax_app(
+    mocked_trigger_webhook_sync_promise,
     draft_order_and_promotions,
     tax_configuration_tax_app,
+    plugins_manager,
 ):
     # given
     order, rule_catalogue, rule_total, _ = draft_order_and_promotions
@@ -797,11 +834,14 @@ def test_fetch_order_prices_catalogue_and_order_discounts_tax_app(
         ],
     )
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(
+        dataclasses.asdict(tax_data)
+    )
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     line_1, line_2 = lines
@@ -931,10 +971,13 @@ def test_fetch_order_prices_catalogue_and_order_discounts_tax_app(
     )
 
 
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
 def test_fetch_order_prices_manual_order_discount_and_line_level_voucher_tax_app(
+    mocked_trigger_webhook_sync_promise,
     order_with_lines,
     voucher,
     tax_configuration_tax_app,
+    plugins_manager,
 ):
     # given
     order = order_with_lines
@@ -942,7 +985,7 @@ def test_fetch_order_prices_manual_order_discount_and_line_level_voucher_tax_app
     line_1, line_2 = order.lines.all()
 
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    voucher_reward = Decimal("4")
+    voucher_reward = Decimal(4)
     voucher_listing.discount_value = voucher_reward
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -956,7 +999,7 @@ def test_fetch_order_prices_manual_order_discount_and_line_level_voucher_tax_app
     create_or_update_voucher_discount_objects_for_order(order)
 
     # create manual order discount
-    manual_reward = Decimal("10")
+    manual_reward = Decimal(10)
     manual_discount_reason = "Manual discount reason"
     manual_discount = order.discounts.create(
         value_type=DiscountValueType.FIXED,
@@ -1051,11 +1094,14 @@ def test_fetch_order_prices_manual_order_discount_and_line_level_voucher_tax_app
         ],
     )
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(
+        dataclasses.asdict(tax_data)
+    )
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     line_1, line_2 = lines
@@ -1138,10 +1184,13 @@ def test_fetch_order_prices_manual_order_discount_and_line_level_voucher_tax_app
     assert voucher_discount.amount.amount == voucher_reward
 
 
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
 def test_fetch_order_prices_manual_line_discount_and_entire_order_voucher_tax_app(
+    mocked_trigger_webhook_sync_promise,
     order_with_lines,
     voucher,
     tax_configuration_tax_app,
+    plugins_manager,
 ):
     # given
     order = order_with_lines
@@ -1152,7 +1201,7 @@ def test_fetch_order_prices_manual_line_discount_and_entire_order_voucher_tax_ap
     voucher.discount_value_type = DiscountValueType.PERCENTAGE
     voucher.save(update_fields=["discount_value_type"])
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    voucher_reward_value = Decimal("20")
+    voucher_reward_value = Decimal(20)
     voucher_listing.discount_value = voucher_reward_value
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1161,7 +1210,7 @@ def test_fetch_order_prices_manual_line_discount_and_entire_order_voucher_tax_ap
     order.voucher_code = code
     create_or_update_voucher_discount_objects_for_order(order)
 
-    manual_line_discount_value = Decimal("50")
+    manual_line_discount_value = Decimal(50)
     manual_discount_reason = "Manual line discount"
     update_discount_for_order_line(
         line_1,
@@ -1253,11 +1302,14 @@ def test_fetch_order_prices_manual_line_discount_and_entire_order_voucher_tax_ap
         ],
     )
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(
+        dataclasses.asdict(tax_data)
+    )
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     line_1, line_2 = lines
@@ -1340,10 +1392,13 @@ def test_fetch_order_prices_manual_line_discount_and_entire_order_voucher_tax_ap
     assert voucher_discount.amount.amount == voucher_reward
 
 
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
 def test_fetch_order_prices_shipping_voucher_and_manual_discount_tax_app(
+    mocked_trigger_webhook_sync_promise,
     order_with_lines,
     voucher,
     tax_configuration_tax_app,
+    plugins_manager,
 ):
     # given
     order = order_with_lines
@@ -1354,7 +1409,7 @@ def test_fetch_order_prices_shipping_voucher_and_manual_discount_tax_app(
     voucher.discount_value_type = DiscountValueType.FIXED
     voucher.save(update_fields=["type", "discount_value_type"])
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    voucher_discount_amount = Decimal("4")
+    voucher_discount_amount = Decimal(4)
     voucher_listing.discount_value = voucher_discount_amount
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1363,7 +1418,7 @@ def test_fetch_order_prices_shipping_voucher_and_manual_discount_tax_app(
     order.voucher_code = code
     create_or_update_voucher_discount_objects_for_order(order)
 
-    manual_discount_value = Decimal("10")
+    manual_discount_value = Decimal(10)
     manual_discount_reason = "Manual discount reason"
     order.discounts.create(
         value_type=DiscountValueType.PERCENTAGE,
@@ -1455,11 +1510,14 @@ def test_fetch_order_prices_shipping_voucher_and_manual_discount_tax_app(
         ],
     )
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(
+        dataclasses.asdict(tax_data)
+    )
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     line_1, line_2 = lines
@@ -1543,10 +1601,13 @@ def test_fetch_order_prices_shipping_voucher_and_manual_discount_tax_app(
     assert shipping_voucher_discount.amount.amount == voucher_discount_amount
 
 
+@patch("saleor.tax.webhooks.shared.trigger_webhook_sync_promise")
 def test_fetch_order_prices_entire_order_voucher_no_tax_data_tax_app(
+    mocked_trigger_webhook_sync_promise,
     order_with_lines,
     voucher,
     tax_configuration_tax_app,
+    plugins_manager,
 ):
     """Test if for empty tax data, Saleor apply correctly net values."""
     # given
@@ -1559,7 +1620,7 @@ def test_fetch_order_prices_entire_order_voucher_no_tax_data_tax_app(
     voucher.discount_value_type = DiscountValueType.PERCENTAGE
     voucher.save(update_fields=["discount_value_type"])
     voucher_listing = voucher.channel_listings.get(channel=order.channel)
-    voucher_reward_value = Decimal("20")
+    voucher_reward_value = Decimal(20)
     voucher_listing.discount_value = voucher_reward_value
     voucher_listing.save(update_fields=["discount_value"])
 
@@ -1609,11 +1670,12 @@ def test_fetch_order_prices_entire_order_voucher_no_tax_data_tax_app(
 
     tax_data = {}
 
-    manager_methods = {"get_taxes_for_order": Mock(return_value=tax_data)}
-    manager = Mock(**manager_methods)
+    mocked_trigger_webhook_sync_promise.return_value = Promise.resolve(tax_data)
 
     # when
-    order, lines = fetch_order_prices_if_expired(order, manager, None, True)
+    order, lines = fetch_order_prices_if_expired(
+        order, plugins_manager, None, None, True
+    ).get()
 
     # then
     line_1, line_2 = lines

@@ -12,7 +12,11 @@ from .....thumbnail import IconThumbnailFormat
 from .....thumbnail.models import Thumbnail
 from ....app.enums import CircuitBreakerState, CircuitBreakerStateEnum
 from ....tests.fixtures import ApiClient
-from ....tests.utils import assert_no_permission, get_graphql_content
+from ....tests.utils import (
+    assert_no_permission,
+    get_graphql_content,
+    get_graphql_content_from_response,
+)
 
 QUERY_APP = """
     query ($id: ID){
@@ -45,8 +49,8 @@ QUERY_APP = """
                 id
                 label
                 url
-                mount
-                target
+                mountName
+                targetName
                 permissions{
                     code
                 }
@@ -289,37 +293,6 @@ def test_app_query_without_permission_and_id(
     assert not content["data"]["app"]
 
 
-def test_app_query_with_permission(
-    app_api_client, permission_manage_apps, app, external_app, webhook
-):
-    app.permissions.add(permission_manage_apps)
-    id = graphene.Node.to_global_id("App", app.id)
-    variables = {"id": id}
-    response = app_api_client.post_graphql(
-        QUERY_APP,
-        variables,
-    )
-    content = get_graphql_content(response)
-
-    tokens = app.tokens.all()
-    app_data = content["data"]["app"]
-    tokens_data = app_data["tokens"]
-    assert tokens.count() == 1
-    assert tokens_data[0]["authToken"] == tokens.first().auth_token[-4:]
-
-    assert app_data["isActive"] == app.is_active
-    assert len(app_data["webhooks"]) == 1
-    assert app_data["webhooks"][0]["name"] == webhook.name
-    assert app_data["type"] == app.type.upper()
-    assert app_data["aboutApp"] == app.about_app
-    assert app_data["dataPrivacy"] == app.data_privacy
-    assert app_data["dataPrivacyUrl"] == app.data_privacy_url
-    assert app_data["homepageUrl"] == app.homepage_url
-    assert app_data["supportUrl"] == app.support_url
-    assert app_data["configurationUrl"] == app.configuration_url
-    assert app_data["appUrl"] == app.app_url
-
-
 def test_app_with_extensions_query(
     staff_api_client,
     permission_manage_apps,
@@ -339,8 +312,8 @@ def test_app_with_extensions_query(
     extensions_data = app_data["extensions"]
     returned_ids = {e["id"] for e in extensions_data}
     returned_labels = {e["label"] for e in extensions_data}
-    returned_mounts = {e["mount"].lower() for e in extensions_data}
-    returned_targets = {e["target"].lower() for e in extensions_data}
+    returned_mounts = {e["mountName"].lower() for e in extensions_data}
+    returned_targets = {e["targetName"].lower() for e in extensions_data}
     returned_permission_codes = [e["permissions"] for e in extensions_data]
     for app_extension in app_extensions:
         global_id = graphene.Node.to_global_id("AppExtension", app_extension.id)
@@ -420,8 +393,8 @@ QUERY_APP_AVAILABLE_FOR_STAFF_WITHOUT_MANAGE_APPS = """
                 id
                 label
                 url
-                mount
-                target
+                mountName
+                targetName
                 permissions{
                     code
                 }
@@ -483,11 +456,10 @@ def test_app_query_access_token_with_audience(
     permission_manage_staff,
     external_app,
     webhook,
-    site_settings,
 ):
     app = external_app
     app.permissions.add(permission_manage_staff)
-    app.audience = f"https://{site_settings.site.domain}.com/app-123"
+    app.audience = "https://example.com/app-123"
     app.save()
 
     webhook = webhook
@@ -508,6 +480,40 @@ def test_app_query_access_token_with_audience(
     assert decoded_token["aud"] == app.audience
 
 
+@pytest.mark.parametrize("app_type", ["external", "custom"])
+def test_app_query_access_token_errors_when_app_has_manage_apps(
+    app_type,
+    staff_api_client,
+    permission_manage_apps,
+    app_with_token,
+    external_app,
+):
+    # given
+    app = external_app if app_type == "external" else app_with_token
+    app.permissions.add(permission_manage_apps)
+
+    id = graphene.Node.to_global_id("App", app.id)
+    variables = {"id": id}
+
+    # when
+    response = staff_api_client.post_graphql(
+        QUERY_APP,
+        variables,
+        permissions=[permission_manage_apps],
+    )
+
+    # then
+    content = get_graphql_content_from_response(response)
+    expected_message = (
+        "App must not have MANAGE_APPS permission, please remove it first."
+    )
+    assert len(content["errors"]) == 1
+    assert content["errors"][0]["message"] == expected_message
+    assert content["errors"][0]["path"] == ["app", "accessToken"]
+    assert content["data"]["app"]["accessToken"] is None
+    assert content["data"]["app"]["id"] == id
+
+
 @pytest.mark.parametrize(
     "format",
     [
@@ -522,7 +528,6 @@ def test_app_query_logo_thumbnail_with_size_and_format_url_returned(
     format,
     staff_api_client,
     app,
-    site_settings,
     icon_image,
     media_root,
 ):
@@ -531,7 +536,6 @@ def test_app_query_logo_thumbnail_with_size_and_format_url_returned(
     app.save()
     id = graphene.Node.to_global_id("App", app.id)
     media_id = graphene.Node.to_global_id("App", app.uuid)
-    domain = site_settings.site.domain
     if thumbnail_exists:
         thumbnail = Thumbnail.objects.create(
             app=app,
@@ -539,9 +543,9 @@ def test_app_query_logo_thumbnail_with_size_and_format_url_returned(
             format=format or IconThumbnailFormat.ORIGINAL,
             image=icon_image,
         )
-        expected_url = f"http://{domain}/media/{thumbnail.image.name}"
+        expected_url = f"https://example.com/media/{thumbnail.image.name}"
     else:
-        expected_url = f"http://{domain}/thumbnail/{media_id}/128/"
+        expected_url = f"https://example.com/thumbnail/{media_id}/128/"
         if format not in [None, IconThumbnailFormat.ORIGINAL]:
             expected_url += f"{format}/"
     variables = {"id": id, "size": 120, "format": format.upper() if format else None}
@@ -565,14 +569,13 @@ def test_app_query_logo_thumbnail_with_size_and_format_url_returned(
     ],
 )
 def test_app_query_logo_thumbnail_with_zero_size_value_original_image_url_returned(
-    format, staff_api_client, app, site_settings, icon_image, media_root
+    format, staff_api_client, app, icon_image, media_root
 ):
     # given
     app.brand_logo_default = icon_image
     app.save()
     id = graphene.Node.to_global_id("App", app.id)
-    domain = site_settings.site.domain
-    expected_url = f"http://{domain}/media/{app.brand_logo_default.name}"
+    expected_url = f"https://example.com/media/{app.brand_logo_default.name}"
     variables = {"id": id, "size": 0, "format": format.upper() if format else None}
     # when
     response = staff_api_client.post_graphql(
@@ -806,3 +809,53 @@ def test_app_query_breaker_last_change(
         content["data"]["app"]["breakerLastStateChange"]
     )
     assert retrieved_date == now
+
+
+QUERY_APP_DEPRECATION_REASON = """
+    query ($id: ID) {
+        app(id: $id) {
+            id
+            deprecationReason
+        }
+    }
+"""
+
+
+def test_app_deprecation_reason(app, staff_api_client, permission_manage_apps):
+    # given
+    reason = "Replaced by the new payments app."
+    app.deprecation_reason = reason
+    app.save(update_fields=["deprecation_reason"])
+    variables = {"id": graphene.Node.to_global_id("App", app.id)}
+
+    # when
+    response = staff_api_client.post_graphql(
+        QUERY_APP_DEPRECATION_REASON,
+        variables,
+        permissions=(permission_manage_apps,),
+        check_no_permissions=False,
+    )
+    content = get_graphql_content(response)
+
+    # then
+    assert content["data"]["app"]["deprecationReason"] == reason
+
+
+def test_app_deprecation_reason_null_when_not_deprecated(
+    app, staff_api_client, permission_manage_apps
+):
+    # given
+    assert app.deprecation_reason is None
+    variables = {"id": graphene.Node.to_global_id("App", app.id)}
+
+    # when
+    response = staff_api_client.post_graphql(
+        QUERY_APP_DEPRECATION_REASON,
+        variables,
+        permissions=(permission_manage_apps,),
+        check_no_permissions=False,
+    )
+    content = get_graphql_content(response)
+
+    # then
+    assert content["data"]["app"]["deprecationReason"] is None

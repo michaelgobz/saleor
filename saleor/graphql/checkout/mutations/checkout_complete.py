@@ -1,12 +1,20 @@
+from typing import Union
+
 import graphene
 from django.core.exceptions import ValidationError
 
-from ....checkout import AddressType
+from ....account.models import User
+from ....app.models import App
+from ....checkout import AddressType, models
 from ....checkout.checkout_cleaner import (
     clean_checkout_shipping,
     validate_checkout_email,
 )
 from ....checkout.complete_checkout import complete_checkout
+from ....checkout.delivery_context import (
+    get_or_fetch_checkout_deliveries,
+    is_shipping_required,
+)
 from ....checkout.error_codes import CheckoutErrorCode
 from ....checkout.fetch import (
     CheckoutInfo,
@@ -14,7 +22,6 @@ from ....checkout.fetch import (
     fetch_checkout_info,
     fetch_checkout_lines,
 )
-from ....checkout.utils import is_shipping_required
 from ....order import models as order_models
 from ....permission.enums import AccountPermissions
 from ....webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
@@ -172,6 +179,8 @@ class CheckoutComplete(BaseMutation, I18nMixin):
         cls,
         checkout_info: CheckoutInfo,
         lines: list[CheckoutLineInfo],
+        info: ResolveInfo,
+        requestor: Union["App", "User", None],
     ):
         """Validate checkout addresses.
 
@@ -185,6 +194,11 @@ class CheckoutComplete(BaseMutation, I18nMixin):
         billing_address = checkout_info.billing_address
 
         if is_shipping_required(lines):
+            if checkout_info.checkout.assigned_delivery:
+                # Refresh stale shipping if needed
+                get_or_fetch_checkout_deliveries(
+                    checkout_info, requestor=requestor
+                ).get()
             clean_checkout_shipping(checkout_info, lines, CheckoutErrorCode)
             if shipping_address:
                 shipping_address_data = shipping_address.as_data()
@@ -196,6 +210,7 @@ class CheckoutComplete(BaseMutation, I18nMixin):
                         required_check=True,
                         enable_normalization=True,
                         instance=shipping_address,
+                        info=info,
                     )
                 if shipping_address_data != shipping_address.as_data():
                     shipping_address.save()
@@ -218,6 +233,7 @@ class CheckoutComplete(BaseMutation, I18nMixin):
                 required_check=True,
                 enable_normalization=True,
                 instance=billing_address,
+                info=info,
             )
         if billing_address_data != billing_address.as_data():
             billing_address.save()
@@ -312,9 +328,30 @@ class CheckoutComplete(BaseMutation, I18nMixin):
             )
         checkout_info = fetch_checkout_info(checkout, lines, manager)
 
-        cls.validate_checkout_addresses(checkout_info, lines)
-
         requestor = get_user_or_app_from_context(info.context)
+        try:
+            cls.validate_checkout_addresses(
+                checkout_info, lines, info, requestor=requestor
+            )
+        except models.Checkout.DoesNotExist as e:
+            order = order_models.Order.objects.get_by_checkout_token(
+                checkout_info.checkout.token
+            )
+            if order:
+                return CheckoutComplete(
+                    order=SyncWebhookControlContext(order),
+                    confirmation_needed=False,
+                    confirmation_data={},
+                )
+            raise ValidationError(
+                {
+                    "checkout": ValidationError(
+                        "Checkout does not exist anymore.",
+                        code=CheckoutErrorCode.NOT_FOUND.value,
+                    )
+                }
+            ) from e
+
         if requestor and requestor.has_perm(AccountPermissions.IMPERSONATE_USER):
             # Allow impersonating user and process a checkout by using user details
             # assigned to checkout.

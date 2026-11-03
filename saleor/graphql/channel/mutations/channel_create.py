@@ -1,4 +1,5 @@
 import graphene
+from django.conf import settings
 from django.utils.text import slugify
 
 from ....channel import models
@@ -9,9 +10,8 @@ from ....webhook.event_types import WebhookEventAsyncType
 from ...account.enums import CountryCodeEnum
 from ...core import ResolveInfo
 from ...core.descriptions import (
-    ADDED_IN_318,
-    ADDED_IN_320,
-    ADDED_IN_321,
+    ADDED_IN_322,
+    ADDED_IN_323,
     DEPRECATED_IN_3X_INPUT,
     PREVIEW_FEATURE,
 )
@@ -23,7 +23,7 @@ from ...core.doc_category import (
     DOC_CATEGORY_PRODUCTS,
 )
 from ...core.mutations import DeprecatedModelMutation
-from ...core.scalars import Day, Hour, Minute
+from ...core.scalars import DateTime, Day, Hour, Minute
 from ...core.types import BaseInputObjectType, ChannelError, NonNullList
 from ...core.types import common as common_types
 from ...core.utils import WebhookEventInfo
@@ -55,6 +55,45 @@ class StockSettingsInput(BaseInputObjectType):
         doc_category = DOC_CATEGORY_PRODUCTS
 
 
+class CheckoutAutoCompleteInput(BaseInputObjectType):
+    enabled = graphene.Boolean(
+        required=True,
+        description=(
+            "Default `false`. Determines if the paid checkouts should be automatically "
+            "completed. This setting applies only to checkouts where payment "
+            "was processed through transactions."
+            "When enabled, the checkout will be automatically completed once the "
+            "checkout `charge_status` reaches `FULL`. This occurs when the total sum "
+            "of charged and authorized transaction amounts equals or exceeds the "
+            "checkout's total amount."
+        ),
+    )
+    delay = Minute(
+        required=False,
+        description=(
+            "The time in minutes after which the fully paid checkout will be "
+            "automatically completed. Default is "
+            f"{settings.DEFAULT_AUTOMATIC_CHECKOUT_COMPLETION_DELAY}. "
+            "Set to 0 for immediate completion. "
+            "Should be less than the threshold for the oldest modified checkout "
+            "eligible for automatic completion."
+        ),
+    )
+    cut_off_date = DateTime(
+        required=False,
+        description=(
+            "Specifies the earliest date on which fully paid checkouts can begin "
+            "to be automatically completed. Fully paid checkouts dated before this "
+            "cut-off will not be automatically completed. Must be less than the "
+            "threshold of the oldest modified checkout eligible for automatic "
+            "completion. Default is current date time."
+        ),
+    )
+
+    class Meta:
+        doc_category = DOC_CATEGORY_CHECKOUT
+
+
 class CheckoutSettingsInput(BaseInputObjectType):
     use_legacy_error_flow = graphene.Boolean(
         description=(
@@ -75,11 +114,25 @@ class CheckoutSettingsInput(BaseInputObjectType):
             "completed. This setting applies only to checkouts where payment "
             "was processed through transactions."
             "When enabled, the checkout will be automatically completed once the "
-            "checkout `charge_status` reaches `FULL`. This occurs when the total sum "
+            "checkout `authorize_status` reaches `FULL`. This occurs when the total sum "
             "of charged and authorized transaction amounts equals or exceeds the "
             "checkout's total amount."
+            + DEPRECATED_IN_3X_INPUT
+            + " Use `automatic_completion` instead."
         )
-        + ADDED_IN_320,
+    )
+    automatic_completion = CheckoutAutoCompleteInput(
+        description="Settings for automatic completion of fully paid checkouts."
+        + ADDED_IN_322,
+        required=False,
+    )
+    allow_legacy_gift_card_use = graphene.Boolean(
+        description=(
+            "Default to `true`. Determines whether gift cards can be attached to "
+            "a Checkout via `addPromoCode` mutation. Usage of this mutation with gift cards "
+            "is deprecated."
+        )
+        + ADDED_IN_323,
     )
 
     class Meta:
@@ -136,9 +189,7 @@ class OrderSettingsInput(BaseInputObjectType):
             "Specify whether a coupon applied to draft orders will count toward "
             "voucher usage."
             "\n\nWarning:  when switching this setting from `false` to `true`, "
-            "the vouchers will be disconnected from all draft orders."
-            + ADDED_IN_318
-            + PREVIEW_FEATURE
+            "the vouchers will be disconnected from all draft orders." + PREVIEW_FEATURE
         ),
     )
     draft_order_line_price_freeze_period = Hour(
@@ -146,7 +197,7 @@ class OrderSettingsInput(BaseInputObjectType):
         description=(
             "Time in hours after which the draft order line price will be refreshed. "
             "Default value is 24 hours. "
-            "Enter 0 or null to disable." + ADDED_IN_321 + PREVIEW_FEATURE
+            "Enter 0 or null to disable." + PREVIEW_FEATURE
         ),
     )
 
@@ -166,7 +217,7 @@ class OrderSettingsInput(BaseInputObjectType):
             "returned in the `OrderLine.discounts` field. In this case, "
             "percentage-based vouchers retain their original type."
             "\nIn future releases, `OrderLineDiscount` will become the default "
-            "behavior, and this flag will be deprecated and removed." + ADDED_IN_321
+            "behavior, and this flag will be deprecated and removed."
         ),
     )
 
@@ -181,6 +232,27 @@ class PaymentSettingsInput(BaseInputObjectType):
             "Determine the transaction flow strategy to be used. "
             "Include the selected option in the payload sent to the payment app, as a "
             "requested action for the transaction."
+        ),
+    )
+    release_funds_for_expired_checkouts = graphene.Boolean(
+        required=False,
+        description=(
+            "Determine if the funds for expired checkouts should be released automatically."
+        ),
+    )
+    checkout_ttl_before_releasing_funds = Hour(
+        required=False,
+        description=(
+            "The time in hours after which funds for expired checkouts will be released."
+        ),
+    )
+    checkout_release_funds_cut_off_date = DateTime(
+        required=False,
+        description=(
+            "Specifies the earliest date on which funds for expired checkouts can begin "
+            "to be released. Expired checkouts dated before this cut-off will not have their "
+            "funds released. Additionally, no funds will be released for checkouts that are "
+            "more than one year old, regardless of the cut-off date."
         ),
     )
 
@@ -267,7 +339,7 @@ class ChannelCreate(DeprecatedModelMutation):
         )
 
     class Meta:
-        description = "Creates new channel."
+        description = "Creates a new channel."
         model = models.Channel
         object_type = Channel
         permissions = (ChannelPermissions.MANAGE_CHANNELS,)

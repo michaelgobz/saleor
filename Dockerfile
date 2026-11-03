@@ -9,10 +9,13 @@ RUN apt-get -y update \
 
 # Install Python dependencies
 WORKDIR /app
-RUN --mount=type=cache,mode=0755,target=/root/.cache/pip pip install poetry==2.1.1
-RUN poetry config virtualenvs.create false
-COPY poetry.lock pyproject.toml /app/
-RUN --mount=type=cache,mode=0755,target=/root/.cache/pypoetry poetry install
+COPY --from=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff \
+  /uv /uvx /bin/
+ENV UV_COMPILE_BYTECODE=1 UV_SYSTEM_PYTHON=1 UV_PROJECT_ENVIRONMENT=/usr/local
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project --no-editable
 
 ### Final image
 FROM python:3.12-slim
@@ -23,17 +26,19 @@ RUN groupadd -r saleor && useradd -r -g saleor saleor
 RUN apt-get update \
   && apt-get install -y \
   libffi8 \
-  libgdk-pixbuf2.0-0 \
+  libgdk-pixbuf-2.0-0 \
   liblcms2-2 \
   libopenjp2-7 \
   libssl3 \
   libtiff6 \
   libwebp7 \
   libpq5 \
+  libmagic1 \
+  libxslt1-dev `# libxslt is needed by lxml (PyPI)` \
   # Required by celery[sqs] which uses pycurl for AWS SQS support
   libcurl4 \
-  shared-mime-info \
-  mime-support \
+  # Required to allows to identify file types when handling file uploads
+  media-types \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
@@ -59,4 +64,4 @@ LABEL org.opencontainers.image.title="saleor/saleor" \
   org.opencontainers.image.authors="Saleor Commerce (https://saleor.io)" \
   org.opencontainers.image.licenses="BSD-3-Clause"
 
-CMD ["uvicorn", "saleor.asgi:application", "--host=0.0.0.0", "--port=8000", "--workers=2", "--lifespan=off", "--ws=none", "--no-server-header", "--no-access-log", "--timeout-keep-alive=35", "--timeout-graceful-shutdown=30", "--limit-max-requests=10000"]
+CMD ["uvicorn", "saleor.asgi:application", "--host=0.0.0.0", "--port=8000", "--workers=2", "--lifespan=auto", "--ws=none", "--no-server-header", "--no-access-log", "--timeout-keep-alive=35", "--timeout-graceful-shutdown=30", "--limit-max-requests=10000"]

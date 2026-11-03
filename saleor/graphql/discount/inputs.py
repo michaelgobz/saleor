@@ -1,16 +1,14 @@
 import graphene
 
-from ..core.descriptions import ADDED_IN_319, PREVIEW_FEATURE
+from ..core.descriptions import PREVIEW_FEATURE
 from ..core.doc_category import DOC_CATEGORY_DISCOUNTS
 from ..core.scalars import JSON, PositiveDecimal
 from ..core.types import BaseInputObjectType, NonNullList
 from ..discount.filters import DiscountedObjectWhereInput
-from ..product.filters import (
-    CategoryWhereInput,
-    CollectionWhereInput,
-    ProductVariantWhereInput,
-    ProductWhereInput,
-)
+from ..product.filters.category import CategoryWhereInput
+from ..product.filters.collection import CollectionWhereInput
+from ..product.filters.product import ProductWhereInput
+from ..product.filters.product_variant import ProductVariantWhereInput
 from .enums import RewardTypeEnum, RewardValueTypeEnum
 
 
@@ -25,7 +23,7 @@ class PredicateInputObjectType(BaseInputObjectType):
         abstract = True
 
     @classmethod
-    def __init_subclass_with_meta__(cls, _meta=None, **options):
+    def __init_subclass_with_meta__(cls, _meta=None, **options):  # type: ignore[override]
         super().__init_subclass_with_meta__(_meta=_meta, **options)
         cls._meta.fields.update(
             {
@@ -88,7 +86,7 @@ class PromotionRuleBaseInput(BaseInputObjectType):
         OrderPredicateInput,
         description=(
             "Defines the conditions on the checkout/draft order level that must be met "
-            "for the reward to be applied." + ADDED_IN_319 + PREVIEW_FEATURE
+            "for the reward to be applied." + PREVIEW_FEATURE
         ),
     )
     reward_value_type = RewardValueTypeEnum(
@@ -103,7 +101,5 @@ class PromotionRuleBaseInput(BaseInputObjectType):
         ),
     )
     reward_type = RewardTypeEnum(
-        description="Defines the reward type of the promotion rule."
-        + ADDED_IN_319
-        + PREVIEW_FEATURE
+        description="Defines the reward type of the promotion rule." + PREVIEW_FEATURE
     )

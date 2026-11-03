@@ -6,13 +6,13 @@ from uuid import UUID
 from django.conf import settings
 from django.db import transaction
 from django.db.models import prefetch_related_objects
-from prices import TaxedMoney
 
 from ...channel.models import Channel
 from ...core.db.connection import allow_writer
 from ...core.prices import quantize_price
 from ...core.taxes import zero_money
 from ...order.base_calculations import base_order_subtotal
+from ...order.lock_objects import order_qs_select_for_update
 from ...order.models import Order, OrderLine
 from .. import DiscountType
 from ..interface import VariantPromotionRuleInfo
@@ -43,8 +43,6 @@ def create_order_line_discount_objects(
         list[str],
     ],
 ) -> None | list["EditableOrderLineInfo"]:
-    from ...order.utils import order_qs_select_for_update
-
     if not discount_data or not lines_info:
         return None
 
@@ -202,6 +200,7 @@ def create_order_discount_objects_for_order_promotions(
     (
         gift_promotion_applied,
         discount_object,
+        _end_date,
     ) = create_discount_objects_for_order_promotions(
         order,
         lines_info,
@@ -221,19 +220,26 @@ def _clear_prefetched_order_discounts(order):
 
 
 def _set_order_base_prices(order: Order, lines_info: list["EditableOrderLineInfo"]):
-    """Set base order prices that includes only catalogue discounts."""
+    """Set base order prices that includes only catalogue discounts.
+
+    The values are stored in their own `base_subtotal`/`base_total` fields, the way
+    `Checkout` keeps them. Order promotions are qualified by a predicate evaluated in
+    the database, so these pre-tax prices have to be persisted - but they must not be
+    written to `subtotal`/`total`, which carry the taxes and are saved only once the
+    tax calculation has finished.
+    """
     lines = [line_info.line for line_info in lines_info]
     subtotal = base_order_subtotal(order, lines)
     shipping_price = order.undiscounted_base_shipping_price
     total = subtotal + shipping_price
 
     update_fields = []
-    if order.subtotal != TaxedMoney(net=subtotal, gross=subtotal):
-        order.subtotal = TaxedMoney(net=subtotal, gross=subtotal)
-        update_fields.extend(["subtotal_net_amount", "subtotal_gross_amount"])
-    if order.total != TaxedMoney(net=total, gross=total):
-        order.total = TaxedMoney(net=total, gross=total)
-        update_fields.extend(["total_net_amount", "total_gross_amount"])
+    if order.base_subtotal != subtotal:
+        order.base_subtotal = subtotal
+        update_fields.append("base_subtotal_amount")
+    if order.base_total != total:
+        order.base_total = total
+        update_fields.append("base_total_amount")
 
     if update_fields:
         with allow_writer():
@@ -282,8 +288,6 @@ def create_order_line_discount_objects_for_catalogue_promotions(
     rules_info: Iterable[VariantPromotionRuleInfo],
     channel: Channel,
 ) -> list["OrderLineDiscount"]:
-    from ...order.utils import order_qs_select_for_update
-
     line_discounts_to_create: list[OrderLineDiscount] = []
     for rule_info in rules_info:
         line_discount = _create_order_line_discount_for_catalogue_promotion(

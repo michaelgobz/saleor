@@ -1,15 +1,12 @@
-import datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Optional
 
-from django.utils import timezone
-
+from ..core.taxes import zero_money
 from ..core.utils.events import (
-    call_event_including_protected_events,
-    webhook_async_event_requires_sync_webhooks_to_trigger,
+    call_event,
 )
 from ..payment.models import TransactionItem
-from ..webhook.event_types import WebhookEventAsyncType, WebhookEventSyncType
+from ..webhook.event_types import WebhookEventAsyncType
 from ..webhook.utils import get_webhooks_for_multiple_events
 from . import CheckoutAuthorizeStatus, CheckoutChargeStatus
 from .calculations import fetch_checkout_data
@@ -35,6 +32,7 @@ from ..plugins.manager import PluginsManager
 CHECKOUT_WEBHOOK_EVENT_MAP = {
     WebhookEventAsyncType.CHECKOUT_CREATED: PluginsManager.checkout_created.__name__,
     WebhookEventAsyncType.CHECKOUT_UPDATED: PluginsManager.checkout_updated.__name__,
+    WebhookEventAsyncType.CHECKOUT_FULLY_AUTHORIZED: PluginsManager.checkout_fully_authorized.__name__,
     WebhookEventAsyncType.CHECKOUT_FULLY_PAID: PluginsManager.checkout_fully_paid.__name__,
     WebhookEventAsyncType.CHECKOUT_METADATA_UPDATED: PluginsManager.checkout_metadata_updated.__name__,
 }
@@ -48,63 +46,11 @@ def call_checkout_event(
     if event_name not in CHECKOUT_WEBHOOK_EVENT_MAP:
         raise ValueError(f"Event {event_name} not found in CHECKOUT_WEBHOOK_EVENT_MAP.")
 
-    webhook_event_map = get_webhooks_for_multiple_events(
-        [event_name, *WebhookEventSyncType.CHECKOUT_EVENTS]
-    )
+    webhook_event_map = get_webhooks_for_multiple_events([event_name])
     webhooks = webhook_event_map.get(event_name, set())
-    if not webhook_async_event_requires_sync_webhooks_to_trigger(
-        event_name,
-        webhook_event_map,
-        possible_sync_events=WebhookEventSyncType.CHECKOUT_EVENTS,
-    ):
-        plugin_manager_method_name = CHECKOUT_WEBHOOK_EVENT_MAP[event_name]
-        event_func = getattr(manager, plugin_manager_method_name)
-        call_event_including_protected_events(event_func, checkout, webhooks=webhooks)
-        return
-
-    lines_info, _ = fetch_checkout_lines(
-        checkout,
-    )
-    checkout_info = fetch_checkout_info(
-        checkout,
-        lines_info,
-        manager,
-    )
-    call_checkout_info_event(
-        manager=manager,
-        event_name=event_name,
-        checkout_info=checkout_info,
-        lines=lines_info,
-        webhook_event_map=webhook_event_map,
-    )
-    return
-
-
-def _trigger_checkout_sync_webhooks(
-    manager: "PluginsManager",
-    checkout_info: "CheckoutInfo",
-    lines: list["CheckoutLineInfo"],
-    webhook_event_map: dict[str, set["Webhook"]],
-    address: Optional["Address"] = None,
-):
-    _ = checkout_info.get_all_shipping_methods()
-
-    # + timedelta(seconds=10) to confirm that triggered webhooks will still have
-    # valid prices. Triggered only when we have active sync tax webhook.
-    if webhook_event_map.get(
-        WebhookEventSyncType.CHECKOUT_CALCULATE_TAXES
-    ) and checkout_info.checkout.price_expiration < timezone.now() + datetime.timedelta(
-        seconds=10
-    ):
-        fetch_checkout_data(
-            checkout_info=checkout_info,
-            manager=manager,
-            lines=lines,
-            address=address
-            or checkout_info.shipping_address
-            or checkout_info.billing_address,
-            force_update=True,
-        )
+    plugin_manager_method_name = CHECKOUT_WEBHOOK_EVENT_MAP[event_name]
+    event_func = getattr(manager, plugin_manager_method_name)
+    call_event(event_func, checkout, webhooks=webhooks)
 
 
 def call_checkout_events(
@@ -118,35 +64,13 @@ def call_checkout_events(
             f"Events {missing_events} not found in CHECKOUT_WEBHOOK_EVENT_MAP."
         )
 
-    webhook_event_map = get_webhooks_for_multiple_events(
-        [*event_names, *WebhookEventSyncType.CHECKOUT_EVENTS]
-    )
-    any_event_requires_sync_webhooks = any(
-        webhook_async_event_requires_sync_webhooks_to_trigger(
-            event_name,
-            webhook_event_map,
-            possible_sync_events=WebhookEventSyncType.CHECKOUT_EVENTS,
-        )
-        for event_name in event_names
-    )
-    if any_event_requires_sync_webhooks:
-        lines_info, _ = fetch_checkout_lines(
-            checkout,
-        )
-        checkout_info = fetch_checkout_info(
-            checkout,
-            lines_info,
-            manager,
-        )
-        _trigger_checkout_sync_webhooks(
-            manager, checkout_info, lines_info, webhook_event_map=webhook_event_map
-        )
+    webhook_event_map = get_webhooks_for_multiple_events(event_names)
 
     for event_name in event_names:
         plugin_manager_method_name = CHECKOUT_WEBHOOK_EVENT_MAP[event_name]
         webhooks = webhook_event_map.get(event_name, set())
         event_func = getattr(manager, plugin_manager_method_name)
-        call_event_including_protected_events(event_func, checkout, webhooks=webhooks)
+        call_event(event_func, checkout, webhooks=webhooks)
 
 
 def call_checkout_info_event(
@@ -159,9 +83,7 @@ def call_checkout_info_event(
 ) -> None:
     checkout = checkout_info.checkout
     if webhook_event_map is None:
-        webhook_event_map = get_webhooks_for_multiple_events(
-            [event_name, *WebhookEventSyncType.CHECKOUT_EVENTS]
-        )
+        webhook_event_map = get_webhooks_for_multiple_events([event_name])
     if event_name not in CHECKOUT_WEBHOOK_EVENT_MAP:
         raise ValueError(f"Event {event_name} not found in CHECKOUT_WEBHOOK_EVENT_MAP.")
 
@@ -169,27 +91,7 @@ def call_checkout_info_event(
 
     plugin_manager_method_name = CHECKOUT_WEBHOOK_EVENT_MAP[event_name]
     event_func = getattr(manager, plugin_manager_method_name)
-
-    # No need to trigger additional sync webhook when we don't have active webhook or
-    # we don't have active sync checkout webhooks
-    if not webhook_async_event_requires_sync_webhooks_to_trigger(
-        event_name,
-        webhook_event_map,
-        possible_sync_events=WebhookEventSyncType.CHECKOUT_EVENTS,
-    ):
-        call_event_including_protected_events(event_func, checkout, webhooks=webhooks)
-        return
-
-    _trigger_checkout_sync_webhooks(
-        manager,
-        checkout_info,
-        lines,
-        address=address,
-        webhook_event_map=webhook_event_map,
-    )
-
-    call_event_including_protected_events(event_func, checkout, webhooks=webhooks)
-    return
+    call_event(event_func, checkout, webhooks=webhooks)
 
 
 def update_last_transaction_modified_at_for_checkout(
@@ -205,18 +107,18 @@ def update_last_transaction_modified_at_for_checkout(
 
 def transaction_amounts_for_checkout_updated(
     transaction: TransactionItem,
+    checkout: Checkout,
     manager: "PluginsManager",
     user: Optional["User"],
     app: Optional["App"],
 ):
-    if not transaction.checkout_id:
-        return
-    checkout = cast(Checkout, transaction.checkout)
     lines, _ = fetch_checkout_lines(checkout)
     checkout_info = fetch_checkout_info(checkout, lines, manager)
     previous_charge_status = checkout_info.checkout.charge_status
     previous_authorize_status = checkout_info.checkout.authorize_status
-    fetch_checkout_data(checkout_info, manager, lines, force_status_update=True)
+    fetch_checkout_data(
+        checkout_info, manager, lines, force_status_update=True, requestor=user or app
+    ).get()
     _transaction_amounts_for_checkout_updated(
         transaction,
         previous_charge_status,
@@ -241,7 +143,14 @@ def transaction_amounts_for_checkout_updated_without_price_recalculation(
     previous_charge_status = checkout_info.checkout.charge_status
     previous_authorize_status = checkout_info.checkout.authorize_status
 
-    current_total_gross = checkout_info.checkout.total.gross
+    current_total_gross = (
+        checkout_info.checkout.total.gross
+        - checkout_info.checkout.get_total_gift_cards_balance()
+    )
+    current_total_gross = max(
+        current_total_gross, zero_money(current_total_gross.currency)
+    )
+
     update_checkout_payment_statuses(
         checkout=checkout_info.checkout,
         checkout_total_gross=current_total_gross,
@@ -270,8 +179,6 @@ def _transaction_amounts_for_checkout_updated(
     user: Optional["User"],
     app: Optional["App"],
 ):
-    from .tasks import automatic_checkout_completion_task
-
     checkout = checkout_info.checkout
 
     previous_charge_status_is_fully_paid = previous_charge_status in [
@@ -302,17 +209,16 @@ def _transaction_amounts_for_checkout_updated(
             checkout_info=checkout_info,
             lines=lines,
         )
-
-    channel = checkout_info.channel
-    if (
-        channel.automatically_complete_fully_paid_checkouts
-        and
-        # ensure that checkout completion is triggered only once
-        (
-            previous_authorize_status != CheckoutAuthorizeStatus.FULL
-            and checkout_info.checkout.authorize_status == CheckoutAuthorizeStatus.FULL
+    previous_authorize_status_is_full = (
+        previous_authorize_status == CheckoutAuthorizeStatus.FULL
+    )
+    current_authorize_status_is_full = (
+        checkout_info.checkout.authorize_status == CheckoutAuthorizeStatus.FULL
+    )
+    if not previous_authorize_status_is_full and current_authorize_status_is_full:
+        call_checkout_info_event(
+            manager,
+            event_name=WebhookEventAsyncType.CHECKOUT_FULLY_AUTHORIZED,
+            checkout_info=checkout_info,
+            lines=lines,
         )
-    ):
-        user_id = user.id if user else None
-        app_id = app.id if app else None
-        automatic_checkout_completion_task.delay(checkout.pk, user_id, app_id)

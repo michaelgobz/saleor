@@ -23,12 +23,10 @@ from ...product.models import (
 from ..checkout.filters import CheckoutDiscountedObjectWhere
 from ..core.connection import where_filter_qs
 from ..order.filters import OrderDiscountedObjectWhere
-from ..product.filters import (
-    CategoryWhere,
-    CollectionWhere,
-    ProductVariantWhere,
-    ProductWhere,
-)
+from ..product.filters.category import CategoryWhere
+from ..product.filters.collection import CollectionWhere
+from ..product.filters.product import ProductWhere
+from ..product.filters.product_variant import ProductVariantWhere
 
 PREDICATE_OPERATOR_DATA_T = list[dict[str, list | dict | str | bool]]
 
@@ -220,7 +218,7 @@ def filter_qs_by_predicate(
             result_qs, base_qs, predicate, Operators.AND, predicate_type, currency
         )
 
-    return result_qs  # type: ignore[return-value]
+    return result_qs
 
 
 def _handle_and_data(

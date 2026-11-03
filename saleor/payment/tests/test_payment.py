@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from ...checkout.calculations import checkout_total
+from ...checkout.calculations import calculate_checkout_total
 from ...checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from ...core.prices import quantize_price
 from ...plugins.manager import PluginsManager, get_plugins_manager
@@ -17,6 +17,7 @@ from .. import (
     gateway,
 )
 from ..error_codes import PaymentErrorCode
+from ..gateway import is_currency_supported
 from ..interface import GatewayResponse, PaymentMethodInfo, TransactionData
 from ..models import Payment
 from ..utils import (
@@ -26,7 +27,6 @@ from ..utils import (
     create_payment,
     create_payment_information,
     create_transaction,
-    is_currency_supported,
     payment_owned_by_user,
     update_payment,
     validate_gateway_response,
@@ -119,8 +119,8 @@ def test_create_payment(checkout_with_item, address):
     manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
-    total = checkout_total(
-        manager=manager, checkout_info=checkout_info, lines=lines, address=address
+    total = calculate_checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines
     )
 
     data = {
@@ -160,8 +160,8 @@ def test_create_payment_from_checkout_requires_billing_address(checkout_with_ite
     manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
-    total = checkout_total(
-        manager=manager, checkout_info=checkout_info, lines=lines, address=None
+    total = calculate_checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines
     )
 
     data = {
@@ -202,8 +202,8 @@ def test_create_payment_information_for_checkout_payment(address, checkout_with_
     manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
-    total = checkout_total(
-        manager=manager, checkout_info=checkout_info, lines=lines, address=address
+    total = calculate_checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines
     )
 
     data = {
@@ -338,8 +338,8 @@ def test_create_payment_information_store(checkout_with_item, address, store):
     manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
-    total = checkout_total(
-        manager=manager, checkout_info=checkout_info, lines=lines, address=address
+    total = calculate_checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines
     )
 
     data = {
@@ -373,8 +373,8 @@ def test_create_payment_information_metadata(checkout_with_item, address, metada
     manager = get_plugins_manager(allow_replica=False)
     lines, _ = fetch_checkout_lines(checkout_with_item)
     checkout_info = fetch_checkout_info(checkout_with_item, lines, manager)
-    total = checkout_total(
-        manager=manager, checkout_info=checkout_info, lines=lines, address=address
+    total = calculate_checkout_total(
+        manager=manager, checkout_info=checkout_info, lines=lines
     )
 
     data = {
@@ -461,7 +461,7 @@ def test_gateway_charge_errors(payment_dummy, transaction_token, settings):
         gateway.capture(
             payment,
             get_plugins_manager(allow_replica=False),
-            amount=Decimal("0"),
+            amount=Decimal(0),
             channel_slug=payment_dummy.order.channel.slug,
         )
     assert exc.value.message == "Amount should be a positive number."
@@ -472,7 +472,7 @@ def test_gateway_charge_errors(payment_dummy, transaction_token, settings):
         gateway.capture(
             payment,
             get_plugins_manager(allow_replica=False),
-            amount=Decimal("10"),
+            amount=Decimal(10),
             channel_slug=payment_dummy.order.channel.slug,
         )
     assert exc.value.message == "This payment cannot be captured."
@@ -483,10 +483,10 @@ def test_gateway_charge_errors(payment_dummy, transaction_token, settings):
         gateway.capture(
             payment,
             get_plugins_manager(allow_replica=False),
-            amount=Decimal("1000000"),
+            amount=Decimal(1000000),
             channel_slug=payment_dummy.order.channel.slug,
         )
-    assert exc.value.message == ("Unable to charge more than un-captured amount.")
+    assert exc.value.message == "Unable to charge more than un-captured amount."
 
 
 def test_gateway_refund_errors(payment_txn_captured):
@@ -495,7 +495,7 @@ def test_gateway_refund_errors(payment_txn_captured):
         gateway.refund(
             payment,
             get_plugins_manager(allow_replica=False),
-            amount=Decimal("1000000"),
+            amount=Decimal(1000000),
             channel_slug=payment_txn_captured.order.channel.slug,
         )
     assert exc.value.message == "Cannot refund more than captured."
@@ -504,7 +504,7 @@ def test_gateway_refund_errors(payment_txn_captured):
         gateway.refund(
             payment,
             get_plugins_manager(allow_replica=False),
-            amount=Decimal("0"),
+            amount=Decimal(0),
             channel_slug=payment_txn_captured.order.channel.slug,
         )
     assert exc.value.message == "Amount should be a positive number."
@@ -515,7 +515,7 @@ def test_gateway_refund_errors(payment_txn_captured):
         gateway.refund(
             payment,
             get_plugins_manager(allow_replica=False),
-            amount=Decimal("1"),
+            amount=Decimal(1),
             channel_slug=payment_txn_captured.order.channel.slug,
         )
     assert exc.value.message == "This payment cannot be refunded."
@@ -690,7 +690,7 @@ def test_is_currency_supported(
     manager = get_plugins_manager(allow_replica=False)
     dummy_gateway_config.supported_currencies = "USD, EUR"
     monkeypatch.setattr(
-        "saleor.payment.gateways.dummy.plugin.DummyGatewayPlugin._get_gateway_config",
+        "saleor.plugins.tests.gateways.dummy.DummyGatewayPlugin._get_gateway_config",
         lambda _: dummy_gateway_config,
     )
 
