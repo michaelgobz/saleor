@@ -923,8 +923,28 @@ type Query {
   Retrieves a logistics shipment by ID.
   
   Added in Saleor 3.24.
+  
+  Requires one of the following permissions: MANAGE_ORDERS.
   """
   logisticsShipment(id: ID!): Shipment @doc(category: "Orders")
+
+  """
+  Returns GPS samples for drawing a shipment route on a map.
+  
+  Added in Saleor 3.24.
+  
+  Requires one of the following permissions: MANAGE_ORDERS.
+  """
+  logisticsShipmentLocations(
+    shipmentId: ID!
+
+    """
+    Maximum number of GPS samples to return, up to 100.
+    
+    Added in Saleor 3.24.
+    """
+    limit: Int
+  ): [DeliveryLocation]
 
   """Look up a navigation menu by ID or name."""
   menu(
@@ -16732,6 +16752,23 @@ type Shipment implements ObjectWithMetadata & Node @doc(category: "Orders") {
 
   """The ID of the object."""
   id: ID!
+
+  """
+  The latest GPS location reported for this shipment.
+  
+  Added in Saleor 3.24.
+  """
+  latestLocation: DeliveryLocation
+}
+
+"""
+Represents a GPS sample captured by a delivery device.
+
+Added in Saleor 3.24.
+"""
+type DeliveryLocation implements Node @doc(category: "Orders") {
+  """The ID of the object."""
+  id: ID!
 }
 
 type MenuCountableConnection @doc(category: "Menu") {
@@ -20573,7 +20610,9 @@ type Mutation {
   """
   Creates a shipment and queues it for the configured logistics adapter.
   
-  Added in Saleor 3.24.
+  Added in Saleor 3.24. 
+  
+  Requires one of the following permissions: MANAGE_ORDERS.
   """
   logisticsShipmentCreate(
     """Carrier identifier used by the logistics provider."""
@@ -20582,6 +20621,50 @@ type Mutation {
     """ID of the fulfillment to send to the logistics provider."""
     fulfillmentId: ID!
   ): ShipmentCreate @doc(category: "Orders")
+
+  """
+  Stores a delivery device GPS sample and updates the shipment map position.
+  
+  Added in Saleor 3.24. 
+  
+  Requires one of the following permissions: MANAGE_ORDERS.
+  """
+  logisticsShipmentLocationUpdate(
+    """
+    Optional GPS accuracy in meters.
+    
+    Added in Saleor 3.24.
+    """
+    accuracyMeters: Decimal
+
+    """
+    Time when the device captured the location.
+    
+    Added in Saleor 3.24.
+    """
+    capturedAt: DateTime
+
+    """
+    Latitude in decimal degrees.
+    
+    Added in Saleor 3.24.
+    """
+    latitude: Decimal!
+
+    """
+    Longitude in decimal degrees.
+    
+    Added in Saleor 3.24.
+    """
+    longitude: Decimal!
+
+    """
+    ID of the shipment being tracked.
+    
+    Added in Saleor 3.24.
+    """
+    shipmentId: ID!
+  ): ShipmentLocationUpdate @doc(category: "Orders")
 
   """
   Assigns storefront's navigation menus. 
@@ -29614,10 +29697,16 @@ type UpdatePrivateMetadata {
 """
 Creates a shipment and queues it for the configured logistics adapter.
 
-Added in Saleor 3.24.
+Added in Saleor 3.24. 
+
+Requires one of the following permissions: MANAGE_ORDERS.
 """
 type ShipmentCreate @doc(category: "Orders") {
-  """The shipment created for the fulfillment."""
+  """
+  The shipment created for the fulfillment.
+  
+  Added in Saleor 3.24.
+  """
   shipment: Shipment
   logisticsErrors: [LogisticsShipmentCreateError!]! @deprecated(reason: "Use `errors` field instead.")
   errors: [LogisticsShipmentCreateError!]!
@@ -29629,6 +29718,42 @@ An error raised while creating a logistics shipment.
 Added in Saleor 3.24.
 """
 type LogisticsShipmentCreateError @doc(category: "Orders") {
+  """
+  Name of a field that caused the error. A value of `null` indicates that the error isn't associated with a particular field.
+  """
+  field: String
+
+  """The error message."""
+  message: String
+
+  """Internal logistics error code."""
+  code: String!
+}
+
+"""
+Stores a delivery device GPS sample and updates the shipment map position.
+
+Added in Saleor 3.24. 
+
+Requires one of the following permissions: MANAGE_ORDERS.
+"""
+type ShipmentLocationUpdate @doc(category: "Orders") {
+  """
+  The shipment with its current GPS location updated.
+  
+  Added in Saleor 3.24.
+  """
+  shipment: Shipment
+  logisticsErrors: [LogisticsShipmentLocationUpdateError!]! @deprecated(reason: "Use `errors` field instead.")
+  errors: [LogisticsShipmentLocationUpdateError!]!
+}
+
+"""
+An error raised while updating a shipment GPS location.
+
+Added in Saleor 3.24.
+"""
+type LogisticsShipmentLocationUpdateError @doc(category: "Orders") {
   """
   Name of a field that caused the error. A value of `null` indicates that the error isn't associated with a particular field.
   """

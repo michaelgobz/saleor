@@ -90,6 +90,8 @@ COST_MAP = {
         "menuItem": {"complexity": 1},
         "menuItems": {"complexity": 1, "multipliers": ["first", "last"]},
         "menus": {"complexity": 1, "multipliers": ["first", "last"]},
+        "logisticsShipment": {"complexity": 1},
+        "logisticsShipmentLocations": {"complexity": 1, "multipliers": ["limit"]},
         "order": {"complexity": 1},
         "orderByToken": {"complexity": 1},
         "orders": {"complexity": 1, "multipliers": ["first", "last"]},
