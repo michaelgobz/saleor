@@ -20,6 +20,7 @@ from graphql.execution import ExecutionResult
 from ..core.utils.cache import CacheDict
 from ..graphql.notifications.schema import ExternalNotificationMutations
 from .account.schema import AccountMutations, AccountQueries
+from .accounting.schema import AccountingMutations, AccountingQueries
 from .app.schema import AppMutations, AppQueries
 from .attribute.schema import AttributeMutations, AttributeQueries
 from .attribute.types import ASSIGNED_ATTRIBUTE_TYPES
@@ -32,6 +33,7 @@ from .csv.schema import CsvMutations, CsvQueries
 from .discount.schema import DiscountMutations, DiscountQueries
 from .giftcard.schema import GiftCardMutations, GiftCardQueries
 from .invoice.schema import InvoiceMutations
+from .logistics.schema import LogisticsMutations, LogisticsQueries
 from .menu.schema import MenuMutations, MenuQueries
 from .meta.schema import MetaMutations
 from .metrics import record_field_usage
@@ -91,6 +93,7 @@ def monitor_fields_usage(schema: graphql.GraphQLSchema) -> None:
 
 class Query(
     AccountQueries,
+    AccountingQueries,
     AppQueries,
     AttributeQueries,
     ChannelQueries,
@@ -101,6 +104,7 @@ class Query(
     PluginsQueries,
     GiftCardQueries,
     MenuQueries,
+    LogisticsQueries,
     OrderQueries,
     PageQueries,
     PaymentQueries,
@@ -118,6 +122,7 @@ class Query(
 
 class Mutation(
     AccountMutations,
+    AccountingMutations,
     AppMutations,
     AttributeMutations,
     ChannelMutations,
@@ -130,6 +135,7 @@ class Mutation(
     GiftCardMutations,
     InvoiceMutations,
     MenuMutations,
+    LogisticsMutations,
     MetaMutations,
     OrderMutations,
     PageMutations,

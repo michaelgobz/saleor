@@ -293,6 +293,11 @@ if ENABLE_RESTRICT_WRITER_MIDDLEWARE:
 # Restrict inexplicit writer DB usage in Celery tasks
 CELERY_RESTRICT_WRITER_METHOD = "saleor.core.db.connection.log_writer_usage"
 
+LOGISTICS_GRAPHQL_ENDPOINT = os.environ.get("LOGISTICS_GRAPHQL_ENDPOINT", "")
+LOGISTICS_GRAPHQL_TOKEN = os.environ.get("LOGISTICS_GRAPHQL_TOKEN", "")
+ACCOUNTING_GRAPHQL_ENDPOINT = os.environ.get("ACCOUNTING_GRAPHQL_ENDPOINT", "")
+ACCOUNTING_GRAPHQL_TOKEN = os.environ.get("ACCOUNTING_GRAPHQL_TOKEN", "")
+
 INSTALLED_APPS = [
     # External apps that need to go before django's
     "storages",
@@ -319,6 +324,8 @@ INSTALLED_APPS = [
     "saleor.menu",
     "saleor.order",
     "saleor.invoice",
+    "saleor.logistics",
+    "saleor.accounting",
     "saleor.seo",
     "saleor.shipping",
     "saleor.site",

@@ -919,6 +919,13 @@ type Query {
     token: UUID!
   ): Order @doc(category: "Orders") @deprecated
 
+  """
+  Retrieves a logistics shipment by ID.
+  
+  Added in Saleor 3.24.
+  """
+  logisticsShipment(id: ID!): Shipment @doc(category: "Orders")
+
   """Look up a navigation menu by ID or name."""
   menu(
     """Slug of a channel for which the data should be returned."""
@@ -1521,6 +1528,13 @@ type Query {
     """ID of the app extension."""
     id: ID!
   ): AppExtension @doc(category: "Apps")
+
+  """
+  Retrieves an accounting journal entry by ID.
+  
+  Added in Saleor 3.24.
+  """
+  accountingJournalEntry(id: ID!): JournalEntry @doc(category: "Orders")
 
   """Returns address validation rules."""
   addressValidationRules(
@@ -16680,6 +16694,46 @@ input DraftOrderWhereInput @doc(category: "Orders") {
   OR: [DraftOrderWhereInput!]
 }
 
+"""
+Represents a logistics shipment.
+
+Added in Saleor 3.24.
+"""
+type Shipment implements ObjectWithMetadata & Node @doc(category: "Orders") {
+  """List of private metadata items. Requires staff permissions to access."""
+  privateMetadata: [MetadataItem!]!
+
+  """
+  A single key from private metadata. Requires staff permissions to access.
+  
+  Tip: Use GraphQL aliases to fetch multiple keys.
+  """
+  privateMetafield(key: String!): String
+
+  """
+  Private metadata. Requires staff permissions to access. Use `keys` to control which fields you want to include. The default is to include everything.
+  """
+  privateMetafields(keys: [String!]): Metadata
+
+  """List of public metadata items. Can be accessed without permissions."""
+  metadata: [MetadataItem!]!
+
+  """
+  A single key from public metadata.
+  
+  Tip: Use GraphQL aliases to fetch multiple keys.
+  """
+  metafield(key: String!): String
+
+  """
+  Public metadata. Use `keys` to control which fields you want to include. The default is to include everything.
+  """
+  metafields(keys: [String!]): Metadata
+
+  """The ID of the object."""
+  id: ID!
+}
+
 type MenuCountableConnection @doc(category: "Menu") {
   """Pagination data for this connection."""
   pageInfo: PageInfo!
@@ -17768,6 +17822,46 @@ input AppExtensionFilterInput @doc(category: "Apps") {
   Added in Saleor 3.22.
   """
   targetName: String
+}
+
+"""
+Represents an immutable double-entry accounting journal.
+
+Added in Saleor 3.24.
+"""
+type JournalEntry implements ObjectWithMetadata & Node @doc(category: "Orders") {
+  """List of private metadata items. Requires staff permissions to access."""
+  privateMetadata: [MetadataItem!]!
+
+  """
+  A single key from private metadata. Requires staff permissions to access.
+  
+  Tip: Use GraphQL aliases to fetch multiple keys.
+  """
+  privateMetafield(key: String!): String
+
+  """
+  Private metadata. Requires staff permissions to access. Use `keys` to control which fields you want to include. The default is to include everything.
+  """
+  privateMetafields(keys: [String!]): Metadata
+
+  """List of public metadata items. Can be accessed without permissions."""
+  metadata: [MetadataItem!]!
+
+  """
+  A single key from public metadata.
+  
+  Tip: Use GraphQL aliases to fetch multiple keys.
+  """
+  metafield(key: String!): String
+
+  """
+  Public metadata. Use `keys` to control which fields you want to include. The default is to include everything.
+  """
+  metafields(keys: [String!]): Metadata
+
+  """The ID of the object."""
+  id: ID!
 }
 
 """Represents address validation rules for a country."""
@@ -20477,6 +20571,19 @@ type Mutation {
   ): UpdatePrivateMetadata
 
   """
+  Creates a shipment and queues it for the configured logistics adapter.
+  
+  Added in Saleor 3.24.
+  """
+  logisticsShipmentCreate(
+    """Carrier identifier used by the logistics provider."""
+    carrier: String!
+
+    """ID of the fulfillment to send to the logistics provider."""
+    fulfillmentId: ID!
+  ): ShipmentCreate @doc(category: "Orders")
+
+  """
   Assigns storefront's navigation menus. 
   
   Requires one of the following permissions: MANAGE_MENUS, MANAGE_SETTINGS.
@@ -22337,6 +22444,25 @@ type Mutation {
     """The app ID to re-enable sync webhooks for."""
     appId: ID!
   ): AppReenableSyncWebhooks @doc(category: "Apps")
+
+  """
+  Creates an immutable balanced double-entry accounting journal.
+  
+  Added in Saleor 3.24.
+  """
+  accountingJournalEntryCreate(
+    """Three-letter currency."""
+    currency: String!
+
+    """Entry description."""
+    description: String!
+
+    """Debit and credit lines. The list must balance."""
+    lines: [JournalLineInput]!
+
+    """Unique entry reference."""
+    reference: String!
+  ): JournalEntryCreate @doc(category: "Orders")
 
   """Create JWT token."""
   tokenCreate(
@@ -29486,6 +29612,36 @@ type UpdatePrivateMetadata {
 }
 
 """
+Creates a shipment and queues it for the configured logistics adapter.
+
+Added in Saleor 3.24.
+"""
+type ShipmentCreate @doc(category: "Orders") {
+  """The shipment created for the fulfillment."""
+  shipment: Shipment
+  logisticsErrors: [LogisticsShipmentCreateError!]! @deprecated(reason: "Use `errors` field instead.")
+  errors: [LogisticsShipmentCreateError!]!
+}
+
+"""
+An error raised while creating a logistics shipment.
+
+Added in Saleor 3.24.
+"""
+type LogisticsShipmentCreateError @doc(category: "Orders") {
+  """
+  Name of a field that caused the error. A value of `null` indicates that the error isn't associated with a particular field.
+  """
+  field: String
+
+  """The error message."""
+  message: String
+
+  """Internal logistics error code."""
+  code: String!
+}
+
+"""
 Assigns storefront's navigation menus. 
 
 Requires one of the following permissions: MANAGE_MENUS, MANAGE_SETTINGS.
@@ -33640,6 +33796,50 @@ type AppReenableSyncWebhooks @doc(category: "Apps") {
   app: App
   appErrors: [AppError!]! @deprecated(reason: "Use `errors` field instead.")
   errors: [AppError!]!
+}
+
+"""
+Creates an immutable balanced double-entry accounting journal.
+
+Added in Saleor 3.24.
+"""
+type JournalEntryCreate @doc(category: "Orders") {
+  """The balanced journal entry created."""
+  journalEntry: JournalEntry
+  accountingErrors: [AccountingJournalEntryCreateError!]! @deprecated(reason: "Use `errors` field instead.")
+  errors: [AccountingJournalEntryCreateError!]!
+}
+
+"""
+An error raised while creating an accounting journal.
+
+Added in Saleor 3.24.
+"""
+type AccountingJournalEntryCreateError @doc(category: "Orders") {
+  """
+  Name of a field that caused the error. A value of `null` indicates that the error isn't associated with a particular field.
+  """
+  field: String
+
+  """The error message."""
+  message: String
+
+  """Internal accounting error code."""
+  code: String!
+}
+
+input JournalLineInput {
+  """ID of the account receiving the journal line."""
+  accountId: ID!
+
+  """Debit amount. Use zero for a credit line."""
+  debit: Decimal
+
+  """Credit amount. Use zero for a debit line."""
+  credit: Decimal
+
+  """Line description."""
+  description: String
 }
 
 """Create JWT token."""
