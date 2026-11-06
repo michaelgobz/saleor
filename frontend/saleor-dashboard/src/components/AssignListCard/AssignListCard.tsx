@@ -1,0 +1,212 @@
+import DeletableItem from "@dashboard/components/DeletableItem/DeletableItem";
+import { iconStrokeWidthBySize } from "@dashboard/components/icons";
+import { Box, Skeleton, Text } from "@saleor/macaw-ui-next";
+import clsx from "clsx";
+import { TriangleAlert } from "lucide-react";
+import { type ReactNode } from "react";
+import { Link as RouterLink } from "react-router-dom";
+
+import styles from "./AssignListCard.module.css";
+import { AssignListShowAllRow } from "./AssignListShowAllRow";
+
+export interface AssignListCardItem {
+  id: string;
+  name: string;
+  href?: string;
+  icon?: ReactNode;
+  /** Secondary line under the name (section, status, email). */
+  description?: ReactNode;
+}
+
+interface AssignListCardEmptyState {
+  icon: ReactNode;
+  title: ReactNode;
+  description: ReactNode;
+}
+
+/** Header meta when an empty assign list blocks selling. */
+export const AssignListRequiredMeta = ({ children }: { children: ReactNode }): ReactNode => (
+  <Box className={styles.requiredMeta} data-test-id="assign-list-required-meta">
+    <TriangleAlert size={14} strokeWidth={iconStrokeWidthBySize.small} aria-hidden />
+    <Text size={2} color="warning1">
+      {children}
+    </Text>
+  </Box>
+);
+
+interface AssignListCardProps {
+  title: ReactNode;
+  subtitle: ReactNode;
+  /**
+   * `warning` when the empty list blocks selling — warning header meta only
+   * (“Required to sell”). Do not tint the empty frame; readiness belongs in setup.
+   */
+  emphasis?: "default" | "warning";
+  intro: ReactNode;
+  items: AssignListCardItem[];
+  emptyState: AssignListCardEmptyState;
+  footerAction?: ReactNode;
+  /** Set when `items` is a preview: ends the list with a row that opens the full list. */
+  showAll?: { label: ReactNode; onClick: () => void };
+  onRemoveItem: (id: string) => void;
+  /** Hides the row remove control when the user cannot edit the list. */
+  removable?: boolean;
+  /** Tooltip / aria-label on the row trash control. */
+  removeLabel?: string;
+  disabled?: boolean;
+  /** Names are still resolving — skeleton rows instead of empty/list. */
+  loading?: boolean;
+  /**
+   * `sidebar` (default) insets the card to match channel ops cards.
+   * `flush` when the parent already applies that inset (account settings stack).
+   */
+  inset?: "sidebar" | "flush";
+  "data-test-id"?: string;
+  rowTestId?: string;
+  rowLinkTestId?: (id: string) => string;
+}
+
+export const AssignListCard = ({
+  title,
+  subtitle,
+  emphasis = "default",
+  intro,
+  items,
+  emptyState,
+  footerAction,
+  showAll,
+  onRemoveItem,
+  removable = true,
+  removeLabel,
+  disabled = false,
+  loading = false,
+  inset = "sidebar",
+  "data-test-id": dataTestId,
+  rowTestId = "assign-list-row",
+  rowLinkTestId = (id: string): string => `${id}-link`,
+}: AssignListCardProps): React.ReactNode => {
+  const hasItems = items.length > 0;
+  const warn = emphasis === "warning";
+
+  return (
+    <Box
+      className={clsx(styles.card, inset === "flush" && styles.cardFlush)}
+      data-test-id={dataTestId}
+    >
+      <Box className={styles.header}>
+        <Text size={5} fontWeight="bold" as="h2">
+          {title}
+        </Text>
+        {subtitle ? (
+          warn ? (
+            <AssignListRequiredMeta>{subtitle}</AssignListRequiredMeta>
+          ) : (
+            <Text size={2} color="default2">
+              {subtitle}
+            </Text>
+          )
+        ) : null}
+      </Box>
+
+      <Box className={styles.intro}>
+        <Text size={3} color="default2">
+          {intro}
+        </Text>
+      </Box>
+
+      {loading ? (
+        <Box
+          className={styles.list}
+          aria-busy="true"
+          data-test-id={dataTestId ? `${dataTestId}-loading` : undefined}
+        >
+          <Box className={styles.row}>
+            <Skeleton __height="1.25rem" __width="40%" />
+          </Box>
+          <Box className={styles.row}>
+            <Skeleton __height="1.25rem" __width="55%" />
+          </Box>
+        </Box>
+      ) : !hasItems ? (
+        <Box className={styles.emptyState}>
+          <Box className={styles.emptyLeading}>
+            <Box className={styles.emptyIcon} aria-hidden>
+              {emptyState.icon}
+            </Box>
+            <Box className={styles.emptyCopy}>
+              <Text size={3} fontWeight="medium">
+                {emptyState.title}
+              </Text>
+              <Text size={2} color="default2">
+                {emptyState.description}
+              </Text>
+            </Box>
+          </Box>
+          {footerAction ? <Box className={styles.emptyAction}>{footerAction}</Box> : null}
+        </Box>
+      ) : (
+        <>
+          <div className={styles.list}>
+            {items.map(item => (
+              <div key={item.id} className={styles.row} data-test-id={rowTestId}>
+                <Box className={styles.rowLeading}>
+                  {item.icon ? (
+                    <Box className={styles.itemIcon} aria-hidden>
+                      {item.icon}
+                    </Box>
+                  ) : null}
+                  <Box className={styles.rowCopy}>
+                    {item.href ? (
+                      <RouterLink
+                        to={item.href}
+                        className={styles.rowName}
+                        data-test-id={rowLinkTestId(item.id)}
+                      >
+                        <Text size={3} fontWeight="medium">
+                          {item.name}
+                        </Text>
+                      </RouterLink>
+                    ) : (
+                      <Text size={3} fontWeight="medium">
+                        {item.name}
+                      </Text>
+                    )}
+                    {item.description ? (
+                      <Text size={2} color="default2">
+                        {item.description}
+                      </Text>
+                    ) : null}
+                  </Box>
+                </Box>
+                {removable ? (
+                  <div className={styles.rowDelete}>
+                    <DeletableItem
+                      id={item.id}
+                      onDelete={onRemoveItem}
+                      disabled={disabled}
+                      label={removeLabel}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          {showAll ? (
+            <AssignListShowAllRow
+              label={showAll.label}
+              onClick={showAll.onClick}
+              data-test-id={dataTestId ? `${dataTestId}-show-all` : undefined}
+            />
+          ) : null}
+          {footerAction ? (
+            <Box className={styles.listFooter}>
+              <Box className={styles.listFooterAction}>{footerAction}</Box>
+            </Box>
+          ) : null}
+        </>
+      )}
+    </Box>
+  );
+};
+
+AssignListCard.displayName = "AssignListCard";

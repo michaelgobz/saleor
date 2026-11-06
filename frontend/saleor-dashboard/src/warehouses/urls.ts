@@ -1,0 +1,43 @@
+import { withQuery } from "@dashboard/utils/urls";
+import urlJoin from "url-join";
+
+import {
+  type ActiveTab,
+  type Dialog,
+  type Filters,
+  type Pagination,
+  type SingleAction,
+  type Sort,
+  type TabActionDialog,
+} from "../types";
+
+export const warehouseSection = "/warehouses/";
+
+export const warehouseListPath = warehouseSection;
+enum WarehouseListUrlFiltersEnum {
+  query = "query",
+}
+export type WarehouseListUrlFilters = Filters<WarehouseListUrlFiltersEnum>;
+export type WarehouseListUrlDialog = "create" | "delete" | TabActionDialog;
+export enum WarehouseListUrlSortField {
+  name = "name",
+}
+type WarehouseListUrlSort = Sort<WarehouseListUrlSortField>;
+export type WarehouseListUrlQueryParams = ActiveTab &
+  Dialog<WarehouseListUrlDialog> &
+  Pagination &
+  WarehouseListUrlFilters &
+  WarehouseListUrlSort &
+  SingleAction;
+export const warehouseListUrl = (params?: WarehouseListUrlQueryParams) =>
+  withQuery(warehouseListPath, params);
+
+export const warehousePath = (id: string) => urlJoin(warehouseSection, id);
+type WarehouseUrlDialog = "delete" | "setup" | "view-warehouse-metadata";
+export type WarehouseUrlQueryParams = Dialog<WarehouseUrlDialog> & SingleAction;
+export const warehouseUrl = (id: string, params?: WarehouseUrlQueryParams) =>
+  withQuery(warehousePath(encodeURIComponent(id)), params);
+
+export const warehouseAddPath = urlJoin(warehouseSection, "add");
+/** Legacy /warehouses/add opens the create dialog on the list. */
+export const warehouseAddUrl = warehouseListUrl({ action: "create" });

@@ -8,6 +8,11 @@ from ..order.models import Fulfillment, Order
 
 
 class ShipmentStatus(models.TextChoices):
+    """_summary_
+
+    Args:
+        models (_type_): _description_
+    """
     CREATED = "CREATED", "Created"
     IN_TRANSIT = "IN_TRANSIT", "In transit"
     DELIVERED = "DELIVERED", "Delivered"
@@ -15,6 +20,12 @@ class ShipmentStatus(models.TextChoices):
 
 
 class ReturnStatus(models.TextChoices):
+    """_summary_
+
+    Args:
+        models (_type_): _description_
+    """
+
     REQUESTED = "REQUESTED", "Requested"
     RECEIVED = "RECEIVED", "Received"
     COMPLETED = "COMPLETED", "Completed"
@@ -22,6 +33,11 @@ class ReturnStatus(models.TextChoices):
 
 
 class Shipment(ModelWithMetadata):
+    """_summary_
+
+    Args:
+        ModelWithMetadata (_type_): _description_
+    """
     fulfillment = models.OneToOneField(
         Fulfillment, related_name="shipment", on_delete=models.PROTECT
     )

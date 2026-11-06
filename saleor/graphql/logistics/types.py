@@ -3,11 +3,28 @@ import graphene
 from ...logistics import models
 from ..core.descriptions import ADDED_IN_324
 from ..core.doc_category import DOC_CATEGORY_ORDERS
+from ..core.scalars import DateTime, Decimal
 from ..core.types import Error, ModelObjectType
 from ..meta.types import ObjectWithMetadata
 
 
 class DeliveryLocation(ModelObjectType[models.DeliveryLocation]):
+    latitude = Decimal(
+        required=True,
+        description="Latitude in decimal degrees." + ADDED_IN_324,
+    )
+    longitude = Decimal(
+        required=True,
+        description="Longitude in decimal degrees." + ADDED_IN_324,
+    )
+    accuracy_meters = Decimal(
+        description="GPS accuracy in meters." + ADDED_IN_324,
+    )
+    captured_at = DateTime(
+        required=True,
+        description="Time when the device captured the location." + ADDED_IN_324,
+    )
+
     class Meta:
         description = "Represents a GPS sample captured by a delivery device." + ADDED_IN_324
         doc_category = DOC_CATEGORY_ORDERS
@@ -16,6 +33,18 @@ class DeliveryLocation(ModelObjectType[models.DeliveryLocation]):
 
 
 class Shipment(ModelObjectType[models.Shipment]):
+    carrier = graphene.String(
+        required=True,
+        description="Carrier identifier for this shipment." + ADDED_IN_324,
+    )
+    status = graphene.String(
+        required=True,
+        description="Current logistics status of this shipment." + ADDED_IN_324,
+    )
+    tracking_number = graphene.String(
+        required=True,
+        description="Carrier tracking number." + ADDED_IN_324,
+    )
     latest_location = graphene.Field(
         DeliveryLocation,
         description="The latest GPS location reported for this shipment." + ADDED_IN_324,

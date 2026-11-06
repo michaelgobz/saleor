@@ -1,0 +1,82 @@
+import { type Pagination } from "@dashboard/types";
+import { stringifyQs } from "@dashboard/utils/urls";
+import urlJoin from "url-join";
+
+import { type TranslationsEntitiesListFilterTab } from "./components/TranslationsEntitiesListPage/TranslationsEntitiesListPage";
+
+export enum TranslatableEntities {
+  categories = "categories",
+  products = "products",
+  productVariants = "variants",
+  collections = "collections",
+  sales = "sales",
+  vouchers = "vouchers",
+  // This is "pages" now
+  pages = "pages",
+  attributes = "attributes",
+  shippingMethods = "shippingMethods",
+  //  This is "structures" now
+  menuItems = "menuItems",
+}
+
+const translationsSection = "/translations/";
+
+export const languageListPath = translationsSection;
+export const languageListUrl = translationsSection;
+
+/** Opens the translation for a language, or the language list when none is known. */
+export function translationTargetUrl(
+  languageCode: string | null,
+  toLanguageUrl: (languageCode: string) => string,
+): string {
+  if (!languageCode) {
+    return languageListUrl;
+  }
+
+  return toLanguageUrl(languageCode);
+}
+
+export const languageEntitiesPath = (code: string) => urlJoin(translationsSection, code);
+export type LanguageEntitiesUrlQueryParams = Pagination &
+  Partial<{
+    query: string;
+    tab: TranslationsEntitiesListFilterTab;
+  }>;
+export const languageEntitiesUrl = (code: string, params: LanguageEntitiesUrlQueryParams) =>
+  languageEntitiesPath(code) + "?" + stringifyQs(params);
+
+export const languageEntityPath = (
+  code: string,
+  entity: TranslatableEntities,
+  id: string,
+  ...args: string[]
+) => urlJoin(languageEntitiesPath(code), entity.toString(), id, ...args);
+export const languageEntityUrl = (
+  code: string,
+  entity: TranslatableEntities,
+  id: string,
+  ...args: string[]
+) => languageEntityPath(code, entity, encodeURIComponent(id), ...args);
+
+export const productVariantUrl = (code: string, productId: string, variantId: string) =>
+  languageEntityUrl(
+    code,
+    TranslatableEntities.products,
+    productId,
+    TranslatableEntities.productVariants,
+    variantId,
+  );
+
+export const productMediaPathSegment = "media";
+
+export const productMediaUrl = (code: string, productId: string, mediaId: string) =>
+  languageEntityPath(
+    code,
+    TranslatableEntities.products,
+    encodeURIComponent(productId),
+    productMediaPathSegment,
+    encodeURIComponent(mediaId),
+  );
+
+export const productUrl = (code: string, productId: string) =>
+  languageEntityUrl(code, TranslatableEntities.products, productId);

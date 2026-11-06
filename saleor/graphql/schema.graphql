@@ -12460,6 +12460,13 @@ type Fulfillment implements Node & ObjectWithMetadata @doc(category: "Orders") {
   Added in Saleor 3.23.
   """
   reasonReference: Page
+
+  """
+  Logistics shipment associated with this fulfillment.
+
+  Added in Saleor 3.24.
+  """
+  shipment: Shipment
 }
 
 enum FulfillmentStatus @doc(category: "Orders") {
@@ -12949,6 +12956,112 @@ type PageTranslatableContent implements Node @doc(category: "Pages") {
 
   """List of page content attribute values that can be translated."""
   attributeValues: [AttributeValueTranslatableContent!]!
+}
+
+"""
+Represents a logistics shipment.
+
+Added in Saleor 3.24.
+"""
+type Shipment implements ObjectWithMetadata & Node @doc(category: "Orders") {
+  """List of private metadata items. Requires staff permissions to access."""
+  privateMetadata: [MetadataItem!]!
+
+  """
+  A single key from private metadata. Requires staff permissions to access.
+
+  Tip: Use GraphQL aliases to fetch multiple keys.
+  """
+  privateMetafield(key: String!): String
+
+  """
+  Private metadata. Requires staff permissions to access. Use `keys` to control which fields you want to include. The default is to include everything.
+  """
+  privateMetafields(keys: [String!]): Metadata
+
+  """List of public metadata items. Can be accessed without permissions."""
+  metadata: [MetadataItem!]!
+
+  """
+  A single key from public metadata.
+
+  Tip: Use GraphQL aliases to fetch multiple keys.
+  """
+  metafield(key: String!): String
+
+  """
+  Public metadata. Use `keys` to control which fields you want to include. The default is to include everything.
+  """
+  metafields(keys: [String!]): Metadata
+
+  """The ID of the object."""
+  id: ID!
+
+  """
+  Carrier identifier for this shipment.
+
+  Added in Saleor 3.24.
+  """
+  carrier: String!
+
+  """
+  Current logistics status of this shipment.
+
+  Added in Saleor 3.24.
+  """
+  status: String!
+
+  """
+  Carrier tracking number.
+
+  Added in Saleor 3.24.
+  """
+  trackingNumber: String!
+
+  """
+  The latest GPS location reported for this shipment.
+
+  Added in Saleor 3.24.
+  """
+  latestLocation: DeliveryLocation
+}
+
+"""
+Represents a GPS sample captured by a delivery device.
+
+Added in Saleor 3.24.
+"""
+type DeliveryLocation implements Node @doc(category: "Orders") {
+  """The ID of the object."""
+  id: ID!
+
+  """
+  Latitude in decimal degrees.
+
+  Added in Saleor 3.24.
+  """
+  latitude: Decimal!
+
+  """
+  Longitude in decimal degrees.
+
+  Added in Saleor 3.24.
+  """
+  longitude: Decimal!
+
+  """
+  GPS accuracy in meters.
+
+  Added in Saleor 3.24.
+  """
+  accuracyMeters: Decimal
+
+  """
+  Time when the device captured the location.
+
+  Added in Saleor 3.24.
+  """
+  capturedAt: DateTime!
 }
 
 enum OrderAction @doc(category: "Payments") {
@@ -16712,63 +16825,6 @@ input DraftOrderWhereInput @doc(category: "Orders") {
 
   """A list of conditions of which at least one must be met."""
   OR: [DraftOrderWhereInput!]
-}
-
-"""
-Represents a logistics shipment.
-
-Added in Saleor 3.24.
-"""
-type Shipment implements ObjectWithMetadata & Node @doc(category: "Orders") {
-  """List of private metadata items. Requires staff permissions to access."""
-  privateMetadata: [MetadataItem!]!
-
-  """
-  A single key from private metadata. Requires staff permissions to access.
-  
-  Tip: Use GraphQL aliases to fetch multiple keys.
-  """
-  privateMetafield(key: String!): String
-
-  """
-  Private metadata. Requires staff permissions to access. Use `keys` to control which fields you want to include. The default is to include everything.
-  """
-  privateMetafields(keys: [String!]): Metadata
-
-  """List of public metadata items. Can be accessed without permissions."""
-  metadata: [MetadataItem!]!
-
-  """
-  A single key from public metadata.
-  
-  Tip: Use GraphQL aliases to fetch multiple keys.
-  """
-  metafield(key: String!): String
-
-  """
-  Public metadata. Use `keys` to control which fields you want to include. The default is to include everything.
-  """
-  metafields(keys: [String!]): Metadata
-
-  """The ID of the object."""
-  id: ID!
-
-  """
-  The latest GPS location reported for this shipment.
-  
-  Added in Saleor 3.24.
-  """
-  latestLocation: DeliveryLocation
-}
-
-"""
-Represents a GPS sample captured by a delivery device.
-
-Added in Saleor 3.24.
-"""
-type DeliveryLocation implements Node @doc(category: "Orders") {
-  """The ID of the object."""
-  id: ID!
 }
 
 type MenuCountableConnection @doc(category: "Menu") {

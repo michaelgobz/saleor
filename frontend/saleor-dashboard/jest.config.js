@@ -1,0 +1,46 @@
+/** @type {import('jest').Config} */
+const config = {
+  resetMocks: false,
+  // Disable Jest 27 inline snapshot formatting: it requires Prettier 2, which is not installed.
+  prettierPath: null,
+  globals: {
+    FLAGS_SERVICE_ENABLED: false,
+    FLAGS: {},
+  },
+  globalSetup: "<rootDir>/testUtils/globalSetup.ts",
+  setupFilesAfterEnv: [
+    "jest-canvas-mock",
+    "jest-localstorage-mock",
+    "<rootDir>/testUtils/setup.ts",
+  ],
+  testEnvironment: "jest-environment-jsdom",
+  transform: {
+    "^.+\\.(jsx?|tsx?)$": "@swc/jest",
+    "^.+\\.(png|svg|jpe?g)$": "jest-file",
+  },
+  // Define where tests are located - defaults to src/ directory
+  roots: ["<rootDir>/src/"],
+  testRegex: ".*\\.test\\.tsx?$",
+  moduleFileExtensions: ["ts", "tsx", "js", "jsx", "json", "node"],
+  transformIgnorePatterns: ["node_modules/(?!\\.pnpm|chroma-js|zod|popper\\.js)"],
+  moduleNameMapper: {
+    "\\.(css)$": "identity-obj-proxy",
+    "^react-intl$": "<rootDir>/__mocks__/react-intl.ts",
+    "@assets(.*)$": "<rootDir>/assets/$1",
+    "@locale(.*)$": "<rootDir>/locale/$1",
+    "@dashboard/misc/getBaseUrl": "<rootDir>/testUtils/__mocks__/getBaseUrl.ts",
+    "^@dashboard/cloud-extensions$": "<rootDir>/testUtils/__mocks__/cloudExtensions.ts",
+    "@dashboard(.*)$": "<rootDir>/src/$1",
+    "@test/(.*)$": "<rootDir>/testUtils/$1",
+    "^@material-ui/core$": "<rootDir>/node_modules/@material-ui/core",
+    "^@material-ui/styles$": "<rootDir>/node_modules/@material-ui/styles",
+    "^react$": "<rootDir>/node_modules/react",
+    "^react-dom$": "<rootDir>/node_modules/react-dom",
+  },
+  coverageDirectory: "<rootDir>/coverage/units",
+  collectCoverageFrom: ["<rootDir>/src/**/*.{ts,tsx}"],
+  coveragePathIgnorePatterns: ["<rootDir>/src/index\\.tsx", "<rootDir>/src/cloud-extensions/src/"],
+};
+
+// oxlint-disable-next-line no-undef
+module.exports = config;

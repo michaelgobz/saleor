@@ -78,6 +78,7 @@ from ..core.context import ChannelContext
 from ..core.descriptions import (
     ADDED_IN_322,
     ADDED_IN_323,
+    ADDED_IN_324,
     DEPRECATED_IN_3X_INPUT,
     DEPRECATED_LEGACY_PAYMENTS,
     PREVIEW_FEATURE,
@@ -113,6 +114,8 @@ from ..giftcard.dataloaders import GiftCardsByOrderIdLoader
 from ..giftcard.types import GiftCard
 from ..invoice.dataloaders import InvoicesByOrderIdLoader
 from ..invoice.types import Invoice
+from ...logistics.models import Shipment as LogisticsShipment
+from ..logistics.types import Shipment
 from ..meta.resolvers import check_private_metadata_privilege, resolve_metadata
 from ..meta.types import MetadataItem, ObjectWithMetadata
 from ..page.dataloaders import PageByIdLoader
@@ -969,6 +972,11 @@ class Fulfillment(
         description="Reason Model (Page) reference for this fulfillment."
         + ADDED_IN_323,
     )
+    shipment = graphene.Field(
+        Shipment,
+        required=False,
+        description="Logistics shipment associated with this fulfillment." + ADDED_IN_324,
+    )
 
     class Meta:
         default_resolver = (
@@ -1003,6 +1011,15 @@ class Fulfillment(
         root: SyncWebhookControlContext[models.Fulfillment], _info
     ):
         return root.node.get_status_display()
+
+    @staticmethod
+    def resolve_shipment(
+        root: SyncWebhookControlContext[models.Fulfillment], _info
+    ):
+        try:
+            return root.node.shipment
+        except LogisticsShipment.DoesNotExist:
+            return None
 
     @staticmethod
     def resolve_warehouse(root: SyncWebhookControlContext[models.Fulfillment], info):
