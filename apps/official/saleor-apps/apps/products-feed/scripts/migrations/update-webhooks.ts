@@ -1,0 +1,30 @@
+import { type AuthData } from "@saleor/app-sdk/APL";
+import { WebhookMigrationRunner } from "@saleor/webhook-utils";
+
+import { createInstrumentedGraphqlClient } from "@/lib/create-instrumented-graphql-client";
+
+export const updateWebhooksScript = async ({
+  authData,
+  dryRun,
+}: {
+  authData: AuthData;
+  dryRun: boolean;
+}) => {
+  const client = createInstrumentedGraphqlClient({
+    saleorApiUrl: authData.saleorApiUrl,
+    token: authData.token,
+  });
+
+  const runner = new WebhookMigrationRunner({
+    dryRun,
+    logger: console,
+    client,
+    saleorApiUrl: authData.saleorApiUrl,
+    getManifests: async ({ appDetails }) => {
+      // Products feed application has currently no webhooks, so we return empty array
+      return [];
+    },
+  });
+
+  await runner.migrate();
+};

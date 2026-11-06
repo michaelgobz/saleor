@@ -1,0 +1,19 @@
+import { SaleorAsyncWebhook } from "@saleor/app-sdk/handlers/next-app-router";
+
+import {
+  FulfillmentTrackingNumberUpdatedDocument,
+  type FulfillmentTrackingNumberUpdatedEventFragment,
+} from "@/generated/graphql";
+import { createWebhookErrorHandler } from "@/lib/create-webhook-error-handler";
+import { saleorApp } from "@/lib/saleor-app";
+
+export const fulfillmentTrackingNumberUpdatedWebhookDefinition =
+  new SaleorAsyncWebhook<FulfillmentTrackingNumberUpdatedEventFragment>({
+    apl: saleorApp.apl,
+    event: "FULFILLMENT_TRACKING_NUMBER_UPDATED",
+    name: "NP Atobarai Fulfillment Tracking Number Updated",
+    isActive: true,
+    query: FulfillmentTrackingNumberUpdatedDocument,
+    webhookPath: "api/webhooks/saleor/fulfillment-tracking-number-updated",
+    onError: createWebhookErrorHandler("FULFILLMENT_TRACKING_NUMBER_UPDATED webhook"),
+  });

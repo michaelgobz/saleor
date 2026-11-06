@@ -1,0 +1,108 @@
+import { booleanEnv } from "@saleor/apps-shared/boolean-env";
+import { headerSecretEnv } from "@saleor/apps-shared/header-secret-env";
+import {
+  newSecretKeyRuntimeEnv,
+  newSecretKeyServerSchema,
+} from "@saleor/apps-shared/secret-key-resolution";
+import { formatEnvValidationError } from "@saleor/errors";
+import {
+  staleInstallationsCleanupRuntimeEnv,
+  staleInstallationsCleanupServerSchema,
+} from "@saleor/stale-installations-cleanup/env";
+import { createEnv } from "@t3-oss/env-nextjs";
+import { z } from "zod";
+
+export const env = createEnv({
+  client: {
+    NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
+  },
+  server: {
+    ALLOWED_DOMAIN_PATTERN: z.string().optional(),
+    APL: z.enum(["file", "dynamodb", "upstash"]).default("file"),
+    APP_API_BASE_URL: z.string().optional(),
+    APP_IFRAME_BASE_URL: z.string().optional(),
+    APP_LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+    FILE_APL_PATH: z.string().optional(),
+    MANIFEST_APP_ID: z.string().default("saleor.app.smtp"),
+    OTEL_ENABLED: booleanEnv.defaultFalse,
+    OTEL_SERVICE_NAME: z.string().optional(),
+    PORT: z.coerce.number().default(3000),
+    SECRET_KEY: z.string(),
+    /*
+     * Shared secret Vercel Cron sends as `Authorization: Bearer <value>`, used by the
+     * deprecation-notice and stale installations cleanup ticks. Optional so existing deployments
+     * keep booting without it; the cron routes refuse every request while it is unset.
+     */
+    CRON_SECRET: headerSecretEnv.optional(),
+    /*
+     * Installations the deprecation cron handles concurrently. The whole sweep over the APL must
+     * finish within the cron's maxDuration (vercel.json), so raise it as installations grow.
+     */
+    DEPRECATION_CRON_PARALLEL_CALLS: z.coerce.number().int().positive().default(25),
+    // Max time in milliseconds the deprecation cron waits for a single installation's Saleor.
+    DEPRECATION_CRON_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+    VERCEL_URL: z.string().optional(),
+    VERCEL_GIT_COMMIT_SHA: z.string().optional(),
+    OTEL_ACCESS_TOKEN: headerSecretEnv.optional(),
+    VERCEL_ENV: z.string().optional(),
+    REPOSITORY_URL: z.string().optional(),
+    NEXT_RUNTIME: z.string().optional(),
+    /**
+     * Fill these to enable fallback behavior - if app is not configured, these settings can be used.
+     * Be careful to fill all of them, otherwise it will not be used
+     */
+    FALLBACK_SMTP_HOST: z.string().min(1).optional(),
+    FALLBACK_SMTP_PORT: z.string().min(1).optional(),
+    FALLBACK_SMTP_USER: z.string().min(1).optional(),
+    FALLBACK_SMTP_PASSWORD: z.string().min(1).optional(),
+    FALLBACK_SMTP_ENCRYPTION: z.enum(["NONE", "TLS", "SSL"]).default("NONE"),
+    FALLBACK_SMTP_SENDER_NAME: z.string().min(1).optional(),
+    FALLBACK_SMTP_SENDER_DOMAIN: z.string().min(1).optional(),
+    FALLBACK_SMTP_EMAIL_REDIRECT_ENDPOINT: z.string().url().optional(),
+    FALLBACK_SMTP_EMAIL_REDIRECT_TOKEN: z.string().min(1).optional(),
+    ...newSecretKeyServerSchema,
+    ...staleInstallationsCleanupServerSchema,
+  },
+  shared: {
+    NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+    ENV: z.enum(["local", "development", "staging", "production"]).default("local"),
+  },
+  runtimeEnv: {
+    ALLOWED_DOMAIN_PATTERN: process.env.ALLOWED_DOMAIN_PATTERN,
+    APL: process.env.APL,
+    APP_API_BASE_URL: process.env.APP_API_BASE_URL,
+    APP_IFRAME_BASE_URL: process.env.APP_IFRAME_BASE_URL,
+    APP_LOG_LEVEL: process.env.APP_LOG_LEVEL,
+    FILE_APL_PATH: process.env.FILE_APL_PATH,
+    MANIFEST_APP_ID: process.env.MANIFEST_APP_ID,
+    ENV: process.env.ENV,
+    NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
+    NODE_ENV: process.env.NODE_ENV,
+    OTEL_ENABLED: process.env.OTEL_ENABLED,
+    OTEL_SERVICE_NAME: process.env.OTEL_SERVICE_NAME,
+    PORT: process.env.PORT,
+    SECRET_KEY: process.env.SECRET_KEY,
+    CRON_SECRET: process.env.CRON_SECRET,
+    DEPRECATION_CRON_PARALLEL_CALLS: process.env.DEPRECATION_CRON_PARALLEL_CALLS,
+    DEPRECATION_CRON_REQUEST_TIMEOUT_MS: process.env.DEPRECATION_CRON_REQUEST_TIMEOUT_MS,
+    VERCEL_URL: process.env.VERCEL_URL,
+    VERCEL_GIT_COMMIT_SHA: process.env.VERCEL_GIT_COMMIT_SHA,
+    OTEL_ACCESS_TOKEN: process.env.OTEL_ACCESS_TOKEN,
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    REPOSITORY_URL: process.env.REPOSITORY_URL,
+    NEXT_RUNTIME: process.env.NEXT_RUNTIME,
+    FALLBACK_SMTP_HOST: process.env.FALLBACK_SMTP_HOST,
+    FALLBACK_SMTP_PORT: process.env.FALLBACK_SMTP_PORT,
+    FALLBACK_SMTP_USER: process.env.FALLBACK_SMTP_USER,
+    FALLBACK_SMTP_PASSWORD: process.env.FALLBACK_SMTP_PASSWORD,
+    FALLBACK_SMTP_ENCRYPTION: process.env.FALLBACK_SMTP_ENCRYPTION,
+    FALLBACK_SMTP_SENDER_NAME: process.env.FALLBACK_SMTP_SENDER_NAME,
+    FALLBACK_SMTP_SENDER_DOMAIN: process.env.FALLBACK_SMTP_SENDER_DOMAIN,
+    FALLBACK_SMTP_EMAIL_REDIRECT_ENDPOINT: process.env.FALLBACK_SMTP_EMAIL_REDIRECT_ENDPOINT,
+    FALLBACK_SMTP_EMAIL_REDIRECT_TOKEN: process.env.FALLBACK_SMTP_EMAIL_REDIRECT_TOKEN,
+    ...newSecretKeyRuntimeEnv,
+    ...staleInstallationsCleanupRuntimeEnv,
+  },
+  isServer: typeof window === "undefined" || process.env.NODE_ENV === "test",
+  onValidationError: formatEnvValidationError,
+});

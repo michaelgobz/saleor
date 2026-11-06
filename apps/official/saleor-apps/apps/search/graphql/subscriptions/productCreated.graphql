@@ -1,0 +1,17 @@
+subscription ProductCreated {
+  event {
+    __typename
+    ... on ProductCreated {
+      version
+      __typename
+      product {
+        ...ProductWebhookPayload
+      }
+    }
+    recipient {
+      webhooks {
+        id
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+fragment TransactionRefundRequestedEvent on TransactionRefundRequested {
+  ...EventMetadata
+  idempotencyKey
+  action {
+    amount
+    currency
+  }
+  transaction {
+    id
+    pspReference
+    checkout {
+      id
+      channel {
+        ...Channel
+      }
+    }
+    order {
+      id
+      number
+      checkoutId
+      channel {
+        ...Channel
+      }
+    }
+  }
+}
+
+subscription TransactionRefundRequested {
+  event {
+    ...TransactionRefundRequestedEvent
+  }
+}

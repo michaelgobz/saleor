@@ -1,0 +1,13 @@
+query PagesDataForImport($first: Int, $after: String, $where: PageWhereInput) {
+  pages(first: $first, after: $after, where: $where) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    edges {
+      node {
+        ...PageData
+      }
+    }
+  }
+}

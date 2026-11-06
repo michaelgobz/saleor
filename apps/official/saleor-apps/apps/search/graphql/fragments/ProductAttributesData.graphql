@@ -1,0 +1,12 @@
+fragment ProductAttributesData on SelectedAttribute {
+  attribute {
+    name
+    inputType
+  }
+  values {
+    name
+    boolean
+    value
+    inputType
+  }
+}

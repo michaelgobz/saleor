@@ -1,0 +1,91 @@
+import { booleanEnv } from "@saleor/apps-shared/boolean-env";
+import { headerSecretEnv } from "@saleor/apps-shared/header-secret-env";
+import {
+  newSecretKeyRuntimeEnv,
+  newSecretKeyServerSchema,
+} from "@saleor/apps-shared/secret-key-resolution";
+import { formatEnvValidationError } from "@saleor/errors";
+import {
+  staleInstallationsCleanupRuntimeEnv,
+  staleInstallationsCleanupServerSchema,
+} from "@saleor/stale-installations-cleanup/env";
+import { createEnv } from "@t3-oss/env-nextjs";
+import { z } from "zod";
+
+export const env = createEnv({
+  client: {
+    NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
+  },
+  server: {
+    ...staleInstallationsCleanupServerSchema,
+    /*
+     * Shared secret Vercel Cron sends as `Authorization: Bearer <value>`. Optional so existing
+     * deployments keep booting without it; the cron routes refuse every request while it is unset.
+     */
+    CRON_SECRET: headerSecretEnv.optional(),
+    ...newSecretKeyServerSchema,
+    ALLOWED_DOMAIN_PATTERN: z.string().optional(),
+    APL: z.enum(["file", "dynamodb"]).default("file"),
+    APP_API_BASE_URL: z.string().optional(),
+    APP_IFRAME_BASE_URL: z.string().optional(),
+    APP_LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+    MANIFEST_APP_ID: z.string().default("saleor.app.payment.stripe"),
+    OTEL_ACCESS_TOKEN: headerSecretEnv.optional(),
+    OTEL_ENABLED: booleanEnv.defaultFalse,
+    OTEL_SERVICE_NAME: z.string().default("saleor-app-payment-stripe"),
+    PORT: z.coerce.number().default(3000),
+    REPOSITORY_URL: z.string().optional(),
+    SECRET_KEY: z.string(),
+    VERCEL_ENV: z.string().optional(),
+    VERCEL_GIT_COMMIT_SHA: z.string().optional(),
+    STRIPE_PARTNER_ID: z.string().optional(),
+    DYNAMODB_MAIN_TABLE_NAME: z.string(),
+    DYNAMODB_REQUEST_TIMEOUT_MS: z.coerce.number().default(5_000),
+    DYNAMODB_CONNECTION_TIMEOUT_MS: z.coerce.number().default(2_000),
+    AWS_REGION: z.string(),
+    AWS_ACCESS_KEY_ID: z.string().optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().optional(),
+    AWS_ROLE_ARN: z.string().optional(),
+    APPSTORE_URL: z.string().optional(),
+    APP_NAME: z.string().default("Stripe"),
+  },
+  shared: {
+    NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+    ENV: z.enum(["local", "development", "staging", "production"]).default("local"),
+  },
+  // we use the manual destruction here to validate if env variable is set inside turbo.json
+  runtimeEnv: {
+    ...staleInstallationsCleanupRuntimeEnv,
+    CRON_SECRET: process.env.CRON_SECRET,
+    ...newSecretKeyRuntimeEnv,
+    ALLOWED_DOMAIN_PATTERN: process.env.ALLOWED_DOMAIN_PATTERN,
+    APL: process.env.APL,
+    APP_API_BASE_URL: process.env.APP_API_BASE_URL,
+    APP_IFRAME_BASE_URL: process.env.APP_IFRAME_BASE_URL,
+    APP_LOG_LEVEL: process.env.APP_LOG_LEVEL,
+    ENV: process.env.ENV,
+    MANIFEST_APP_ID: process.env.MANIFEST_APP_ID,
+    NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
+    NODE_ENV: process.env.NODE_ENV,
+    OTEL_ACCESS_TOKEN: process.env.OTEL_ACCESS_TOKEN,
+    OTEL_ENABLED: process.env.OTEL_ENABLED,
+    OTEL_SERVICE_NAME: process.env.OTEL_SERVICE_NAME,
+    PORT: process.env.PORT,
+    REPOSITORY_URL: process.env.REPOSITORY_URL,
+    SECRET_KEY: process.env.SECRET_KEY,
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    VERCEL_GIT_COMMIT_SHA: process.env.VERCEL_GIT_COMMIT_SHA,
+    STRIPE_PARTNER_ID: process.env.STRIPE_PARTNER_ID,
+    DYNAMODB_MAIN_TABLE_NAME: process.env.DYNAMODB_MAIN_TABLE_NAME,
+    DYNAMODB_REQUEST_TIMEOUT_MS: process.env.DYNAMODB_REQUEST_TIMEOUT_MS,
+    DYNAMODB_CONNECTION_TIMEOUT_MS: process.env.DYNAMODB_CONNECTION_TIMEOUT_MS,
+    AWS_REGION: process.env.AWS_REGION,
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
+    AWS_ROLE_ARN: process.env.AWS_ROLE_ARN,
+    APPSTORE_URL: process.env.APPSTORE_URL,
+    APP_NAME: process.env.APP_NAME,
+  },
+  isServer: typeof window === "undefined" || process.env.NODE_ENV === "test",
+  onValidationError: formatEnvValidationError,
+});

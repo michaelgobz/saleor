@@ -1,0 +1,267 @@
+import { err, ok } from "neverthrow";
+import type Stripe from "stripe";
+import { describe, expect, it, vi } from "vitest";
+
+import { mockedAppConfigRepo } from "@/__tests__/mocks/app-config-repo";
+import {
+  mockedSaleorActionIdempotencyKey,
+  mockedSaleorAppId,
+  mockedSaleorChannelId,
+  mockedSaleorTransactionId,
+} from "@/__tests__/mocks/constants";
+import { mockStripeProblemReporter } from "@/__tests__/mocks/mock-stripe-problem-reporter";
+import { mockedStripePaymentIntentId } from "@/__tests__/mocks/mocked-stripe-payment-intent-id";
+import { mockedStripePaymentIntentsApi } from "@/__tests__/mocks/mocked-stripe-payment-intents-api";
+import { mockedSaleorApiUrl } from "@/__tests__/mocks/saleor-api-url";
+import { getMockedTransactionChargeRequestedEvent } from "@/__tests__/mocks/saleor-events/transaction-charge-requested-event";
+import {
+  AppIsNotConfiguredResponse,
+  BrokenAppResponse,
+} from "@/app/api/webhooks/saleor/saleor-webhook-responses";
+import { StripeAPIError } from "@/modules/stripe/stripe-api-error";
+import { type IStripePaymentIntentsApiFactory } from "@/modules/stripe/types";
+import { ChargeFailureResult } from "@/modules/transaction-result/failure-result";
+import { ChargeSuccessResult } from "@/modules/transaction-result/success-result";
+
+import { TransactionChargeRequestedUseCase } from "./use-case";
+import { TransactionChargeRequestedUseCaseResponses } from "./use-case-response";
+
+vi.mock("@saleor/app-problems", () => ({
+  AppProblemsReporter: class {
+    reportProblem() {
+      return Promise.resolve({ isErr: () => false });
+    }
+    clearProblems() {
+      return Promise.resolve({ isErr: () => false });
+    }
+  },
+}));
+
+vi.mock("@/lib/logger", () => ({
+  createLogger: () => ({
+    error: vi.fn(),
+    warn: vi.fn(),
+    info: vi.fn(),
+    debug: vi.fn(),
+  }),
+}));
+
+describe("TransactionChargeRequestedUseCase", () => {
+  const stripePaymentIntentsApiFactory = {
+    create: () => mockedStripePaymentIntentsApi,
+  } satisfies IStripePaymentIntentsApiFactory;
+
+  it("Calls Stripe PaymentIntent API to capture payment intent and returns ChargeSuccess when payment intent is captured successfully", async () => {
+    const spy = vi
+      .spyOn(mockedStripePaymentIntentsApi, "capturePaymentIntent")
+      .mockImplementationOnce(async () =>
+        ok({
+          amount: 100,
+          currency: "usd",
+          id: mockedStripePaymentIntentId.toString(), // stripe doesn't expect to get branded type here
+          status: "succeeded",
+        } as Stripe.PaymentIntent),
+      );
+
+    const uc = new TransactionChargeRequestedUseCase({
+      appConfigRepo: mockedAppConfigRepo,
+      stripePaymentIntentsApiFactory,
+    });
+
+    const result = await uc.execute({
+      saleorApiUrl: mockedSaleorApiUrl,
+      appId: mockedSaleorAppId,
+      event: getMockedTransactionChargeRequestedEvent(),
+      problemReporter: mockStripeProblemReporter,
+    });
+
+    expect(result._unsafeUnwrap()).toBeInstanceOf(
+      TransactionChargeRequestedUseCaseResponses.Success,
+    );
+
+    expect(result._unsafeUnwrap().transactionResult).toBeInstanceOf(ChargeSuccessResult);
+
+    expect(spy).toHaveBeenCalledWith({
+      id: mockedStripePaymentIntentId,
+      idempotencyKey: mockedSaleorActionIdempotencyKey,
+      metadata: {
+        saleor_checkout_id: "mock-channel-1",
+      },
+    });
+  });
+
+  it("Calls Stripe PaymentIntent API to capture payment intent and returns ChargeFailureResult when payment intent capture fails", async () => {
+    const spy = vi
+      .spyOn(mockedStripePaymentIntentsApi, "capturePaymentIntent")
+      .mockImplementationOnce(async () => err(new StripeAPIError("Error from Stripe API")));
+
+    const uc = new TransactionChargeRequestedUseCase({
+      appConfigRepo: mockedAppConfigRepo,
+      stripePaymentIntentsApiFactory,
+    });
+
+    const result = await uc.execute({
+      saleorApiUrl: mockedSaleorApiUrl,
+      appId: mockedSaleorAppId,
+      event: getMockedTransactionChargeRequestedEvent(),
+      problemReporter: mockStripeProblemReporter,
+    });
+
+    expect(result._unsafeUnwrap()).toBeInstanceOf(
+      TransactionChargeRequestedUseCaseResponses.Failure,
+    );
+    expect(result._unsafeUnwrap().transactionResult).toBeInstanceOf(ChargeFailureResult);
+
+    expect(spy).toHaveBeenCalledWith({
+      id: mockedStripePaymentIntentId,
+      idempotencyKey: mockedSaleorActionIdempotencyKey,
+      metadata: {
+        saleor_checkout_id: "mock-channel-1",
+      },
+    });
+  });
+
+  it("Adds Saleor order and original checkout to payment intent metadata on capture when checkout was completed", async () => {
+    const event = getMockedTransactionChargeRequestedEvent();
+    const spy = vi
+      .spyOn(mockedStripePaymentIntentsApi, "capturePaymentIntent")
+      .mockImplementationOnce(async () =>
+        ok({
+          amount: 100,
+          currency: "usd",
+          id: mockedStripePaymentIntentId.toString(),
+          status: "succeeded",
+        } as Stripe.PaymentIntent),
+      );
+
+    const uc = new TransactionChargeRequestedUseCase({
+      appConfigRepo: mockedAppConfigRepo,
+      stripePaymentIntentsApiFactory,
+    });
+
+    await uc.execute({
+      saleorApiUrl: mockedSaleorApiUrl,
+      appId: mockedSaleorAppId,
+      event: {
+        ...event,
+        transaction: {
+          id: mockedSaleorTransactionId,
+          pspReference: mockedStripePaymentIntentId,
+          checkout: null,
+          order: {
+            id: "order-id",
+            number: "123",
+            checkoutId: "checkout-id",
+            channel: { id: mockedSaleorChannelId, slug: "channel-slug" },
+          },
+        },
+      },
+      problemReporter: mockStripeProblemReporter,
+    });
+
+    expect(spy).toHaveBeenCalledWith({
+      id: mockedStripePaymentIntentId,
+      idempotencyKey: mockedSaleorActionIdempotencyKey,
+      metadata: {
+        saleor_order_id: "order-id",
+        saleor_order_number: "123",
+        saleor_checkout_id: "checkout-id",
+      },
+    });
+  });
+
+  it("Returns 'MissingConfigErrorResponse' if config not found for specified channel", async () => {
+    const spy = vi
+      .spyOn(mockedAppConfigRepo, "getStripeConfig")
+      .mockImplementationOnce(async () => ok(null));
+
+    const uc = new TransactionChargeRequestedUseCase({
+      appConfigRepo: mockedAppConfigRepo,
+      stripePaymentIntentsApiFactory,
+    });
+
+    const responsePayload = await uc.execute({
+      saleorApiUrl: mockedSaleorApiUrl,
+      appId: mockedSaleorAppId,
+      event: getMockedTransactionChargeRequestedEvent(),
+      problemReporter: mockStripeProblemReporter,
+    });
+
+    const err = responsePayload._unsafeUnwrapErr();
+
+    expect(spy).toHaveBeenCalledOnce();
+
+    expect(err).toBeInstanceOf(AppIsNotConfiguredResponse);
+  });
+
+  it("Returns 'BrokenAppResponse' when currency coming from Stripe is not supported", async () => {
+    vi.spyOn(mockedStripePaymentIntentsApi, "capturePaymentIntent").mockImplementation(async () =>
+      ok({
+        amount: 100,
+        currency: "abc",
+        status: "succeeded",
+      } as Stripe.PaymentIntent),
+    );
+    const uc = new TransactionChargeRequestedUseCase({
+      appConfigRepo: mockedAppConfigRepo,
+      stripePaymentIntentsApiFactory,
+    });
+
+    const response = await uc.execute({
+      saleorApiUrl: mockedSaleorApiUrl,
+      appId: mockedSaleorAppId,
+      event: getMockedTransactionChargeRequestedEvent(),
+      problemReporter: mockStripeProblemReporter,
+    });
+
+    expect(response._unsafeUnwrapErr()).toBeInstanceOf(BrokenAppResponse);
+  });
+
+  it("Throws error when Saleor event has no transaction", async () => {
+    const saleorEvent = { ...getMockedTransactionChargeRequestedEvent(), transaction: null };
+
+    const uc = new TransactionChargeRequestedUseCase({
+      appConfigRepo: mockedAppConfigRepo,
+      stripePaymentIntentsApiFactory,
+    });
+
+    await expect(
+      uc.execute({
+        saleorApiUrl: mockedSaleorApiUrl,
+        appId: mockedSaleorAppId,
+        event: saleorEvent,
+        problemReporter: mockStripeProblemReporter,
+      }),
+    ).rejects.toThrowErrorMatchingInlineSnapshot(
+      `[MissingTransactionError: Transaction not found in event]`,
+    );
+  });
+
+  it("Throws error when Saleor event has no channel for Saleor Checkout or Order", async () => {
+    const saleorEvent = {
+      ...getMockedTransactionChargeRequestedEvent(),
+      transaction: {
+        checkout: null,
+        order: null,
+        pspReference: mockedStripePaymentIntentId,
+        id: mockedSaleorTransactionId,
+      },
+    };
+
+    const uc = new TransactionChargeRequestedUseCase({
+      appConfigRepo: mockedAppConfigRepo,
+      stripePaymentIntentsApiFactory,
+    });
+
+    await expect(
+      uc.execute({
+        saleorApiUrl: mockedSaleorApiUrl,
+        appId: mockedSaleorAppId,
+        event: saleorEvent,
+        problemReporter: mockStripeProblemReporter,
+      }),
+    ).rejects.toThrowErrorMatchingInlineSnapshot(
+      `[MissingChannelIdError: Channel ID not found in event Checkout or Order]`,
+    );
+  });
+});

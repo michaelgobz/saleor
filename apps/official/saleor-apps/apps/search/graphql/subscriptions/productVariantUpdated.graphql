@@ -1,0 +1,17 @@
+subscription ProductVariantUpdated {
+  event {
+    __typename
+    ... on ProductVariantUpdated {
+      version
+      __typename
+      productVariant {
+        ...ProductVariantWebhookPayload
+      }
+    }
+    recipient {
+      webhooks {
+        id
+      }
+    }
+  }
+}

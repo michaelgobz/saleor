@@ -1,0 +1,391 @@
+import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { buildSyncWebhookResponsePayload } from "@saleor/app-sdk/handlers/shared";
+import { ObservabilityAttributes } from "@saleor/apps-otel/src/observability-attributes";
+import { withSpanAttributesAppRouter } from "@saleor/apps-otel/src/with-span-attributes";
+import { compose } from "@saleor/apps-shared/compose";
+import { captureException, setTag } from "@sentry/nextjs";
+import Decimal from "decimal.js-light";
+
+import { AppConfig } from "@/lib/app-config";
+import { AppConfigExtractor } from "@/lib/app-config-extractor";
+import { AppConfigurationLogger } from "@/lib/app-configuration-logger";
+import { metadataCache, wrapWithMetadataCache } from "@/lib/app-metadata-cache";
+import { createInstrumentedGraphqlClient } from "@/lib/create-instrumented-graphql-client";
+import { SubscriptionPayloadErrorChecker } from "@/lib/error-utils";
+import { afterDetached } from "@/lib/otel/after-detached";
+import { appExternalTracer } from "@/lib/otel/tracing";
+import { withFlushOtelMetrics } from "@/lib/otel/with-flush-otel-metrics";
+import { createLogger } from "@/logger";
+import { loggerContext, withLoggerContext } from "@/logger-context";
+import { updateExemptionStatusPublicMetadata } from "@/modules/app/exemption-status-public-metadata-updater";
+import { createAvataxProblemReporter } from "@/modules/app-problems";
+import { suspiciousLineCalculationCheck } from "@/modules/avatax/calculate-taxes/avatax-calculate-taxes-adapter";
+import { AvataxCalculateTaxesPayloadLinesTransformer } from "@/modules/avatax/calculate-taxes/avatax-calculate-taxes-payload-lines-transformer";
+import { AvataxCalculateTaxesResponseTransformer } from "@/modules/avatax/calculate-taxes/avatax-calculate-taxes-response-transformer";
+import { AvataxCalculateTaxesTaxCodeMatcher } from "@/modules/avatax/calculate-taxes/avatax-calculate-taxes-tax-code-matcher";
+import { reportUnhandledCalculateTaxesError } from "@/modules/calculate-taxes/report-unhandled-calculate-taxes-error";
+import { CalculateTaxesUseCase } from "@/modules/calculate-taxes/use-case/calculate-taxes.use-case";
+import { LogWriterFactory } from "@/modules/client-logs/log-writer-factory";
+import { AvataxTimeoutError } from "@/modules/taxes/tax-error";
+import { checkoutCalculateTaxesSyncWebhook } from "@/modules/webhooks/definitions/checkout-calculate-taxes";
+
+const logger = createLogger("checkoutCalculateTaxesSyncWebhook");
+
+const withMetadataCache = wrapWithMetadataCache(metadataCache);
+
+const checkoutCalculateTaxesSyncWebhookReponse =
+  buildSyncWebhookResponsePayload<"CHECKOUT_CALCULATE_TAXES">;
+
+const handler = checkoutCalculateTaxesSyncWebhook.createHandler(async (_req, ctx) => {
+  return appExternalTracer.startActiveSpan(
+    "executing checkoutCalculateTaxes webhook handler",
+    {
+      kind: SpanKind.SERVER,
+    },
+    async (span) => {
+      /**
+       * Create deps in handler, so it's potentially faster and reduce lambda start
+       * TODO: It's rather not true, we should move it outside
+       */
+      const subscriptionErrorChecker = new SubscriptionPayloadErrorChecker(
+        logger,
+        captureException,
+      );
+      const useCase = new CalculateTaxesUseCase({
+        configExtractor: new AppConfigExtractor(),
+        logWriterFactory: new LogWriterFactory(),
+        payloadLinesTransformer: new AvataxCalculateTaxesPayloadLinesTransformer(
+          new AvataxCalculateTaxesTaxCodeMatcher(),
+        ),
+        calculateTaxesResponseTransformer: new AvataxCalculateTaxesResponseTransformer(),
+      });
+
+      try {
+        const { payload, authData } = ctx;
+
+        subscriptionErrorChecker.checkPayload(payload);
+
+        loggerContext.set(ObservabilityAttributes.CHANNEL_SLUG, ctx.payload.taxBase.channel.slug);
+        loggerContext.set(ObservabilityAttributes.CHECKOUT_ID, ctx.payload.taxBase.sourceObject.id);
+
+        if (payload.version) {
+          setTag(ObservabilityAttributes.SALEOR_VERSION, payload.version);
+          loggerContext.set(ObservabilityAttributes.SALEOR_VERSION, payload.version);
+        }
+
+        logger.info("Handler for CHECKOUT_CALCULATE_TAXES webhook called");
+
+        const appMetadata = payload.recipient?.privateMetadata ?? [];
+        const channelSlug = payload.taxBase.channel.slug;
+
+        const configExtractor = new AppConfigExtractor();
+
+        metadataCache.setMetadata(appMetadata);
+
+        const config = configExtractor
+          .extractAppConfigFromPrivateMetadata(appMetadata)
+          .map((config) => {
+            try {
+              new AppConfigurationLogger(logger).logConfiguration(config, channelSlug);
+            } catch (e) {
+              captureException(
+                new AppConfigExtractor.LogConfigurationMetricError(
+                  "Failed to log configuration metric",
+                  {
+                    cause: e,
+                  },
+                ),
+              );
+            }
+
+            return config;
+          });
+
+        if (config.isErr()) {
+          logger.warn("Failed to extract app config from metadata", {
+            error: config.error,
+          });
+
+          span.recordException(config.error);
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: "App configuration is broken",
+          });
+
+          return Response.json(
+            {
+              message: `App configuration is broken for checkout: ${payload.taxBase.sourceObject.id}`,
+            },
+            { status: 400 },
+          );
+        }
+
+        const providerConfig = config.value.getConfigForChannelSlug(channelSlug);
+
+        return useCase.calculateTaxes(payload, authData).then((result) => {
+          return result.match(
+            (value) => {
+              span.setStatus({
+                code: SpanStatusCode.OK,
+                message: "Taxes calculated successfully",
+              });
+
+              if (
+                providerConfig.isOk() &&
+                providerConfig.value.avataxConfig.config.isExemptionStatusPublicMetadataEnabled
+              ) {
+                try {
+                  const exemptAmountTotalDecimal = new Decimal(value.transaction.totalExempt ?? 0);
+
+                  const exemptAmountTotal = exemptAmountTotalDecimal.toNumber();
+
+                  const entityUseCode =
+                    value.transaction.entityUseCode ??
+                    value.transaction.customerUsageType ??
+                    undefined;
+
+                  afterDetached(() => {
+                    const isExemptionApplied = exemptAmountTotalDecimal.gt(0);
+                    const currentExemptionStatus =
+                      payload.taxBase.sourceObject.avataxExemptionStatus ?? null;
+
+                    const client = createInstrumentedGraphqlClient({
+                      saleorApiUrl: authData.saleorApiUrl,
+                      token: authData.token,
+                    });
+
+                    updateExemptionStatusPublicMetadata({
+                      id: payload.taxBase.sourceObject.id,
+                      client,
+                      isExemptionApplied,
+                      currentMetadataValue: currentExemptionStatus,
+                      next: {
+                        exemptAmountTotal,
+                        entityUseCode,
+                        calculatedAt: new Date(),
+                      },
+                      onError: (error) => {
+                        captureException(error);
+                        logger.warn("Failed to update checkout exemption status metadata", {
+                          error:
+                            error instanceof Error
+                              ? { name: error.name, message: error.message }
+                              : { message: String(error) },
+                        });
+                      },
+                    });
+                  });
+                } catch (error) {
+                  captureException(error);
+                  logger.warn("Failed to compute checkout exemption status metadata", {
+                    error:
+                      error instanceof Error
+                        ? { name: error.name, message: error.message }
+                        : { message: String(error) },
+                  });
+                }
+              }
+
+              if (providerConfig.isOk()) {
+                const hasSuspiciousLine = value.response.lines.some(suspiciousLineCalculationCheck);
+
+                if (hasSuspiciousLine) {
+                  const problemReporter = createAvataxProblemReporter(authData);
+                  const avataxConfig = providerConfig.value.avataxConfig;
+
+                  afterDetached(() =>
+                    problemReporter.reportSuspiciousZeroTax(
+                      avataxConfig.id,
+                      avataxConfig.config.name,
+                    ),
+                  );
+                }
+              }
+
+              return Response.json(checkoutCalculateTaxesSyncWebhookReponse(value.response), {
+                status: 200,
+              });
+            },
+            (error) => {
+              logger.warn("Error calculating taxes", { error });
+              span.recordException(error);
+
+              switch (error.constructor) {
+                case CalculateTaxesUseCase.TimeoutError: {
+                  logger.warn("AvaTax API request timed out", { error });
+
+                  span.setStatus({
+                    code: SpanStatusCode.ERROR,
+                    message: "AvaTax API request timed out",
+                  });
+
+                  return Response.json(
+                    {
+                      message: "AvaTax API request timed out",
+                    },
+                    { status: 504 },
+                  );
+                }
+
+                case CalculateTaxesUseCase.InvalidAppAddressError: {
+                  logger.warn(
+                    "InvalidAppAddressError: App returns status 400 due to broken address configuration",
+                    { error },
+                  );
+
+                  span.setStatus({
+                    code: SpanStatusCode.ERROR,
+                    message: "Failed to calculate taxes: invalid address in app configuration",
+                  });
+
+                  if (providerConfig.isOk()) {
+                    const problemReporter = createAvataxProblemReporter(authData);
+                    const avataxConfig = providerConfig.value.avataxConfig;
+
+                    afterDetached(() =>
+                      problemReporter.reportInvalidAddress(
+                        avataxConfig.id,
+                        avataxConfig.config.name,
+                      ),
+                    );
+                  }
+
+                  return Response.json(
+                    {
+                      message: "InvalidAppAddressError: Check address in app configuration",
+                    },
+                    { status: 400 },
+                  );
+                }
+
+                case CalculateTaxesUseCase.FailedCalculatingTaxesError: {
+                  reportUnhandledCalculateTaxesError(error, "500");
+
+                  span.setStatus({
+                    code: SpanStatusCode.ERROR,
+                    message: "Failed to calculate taxes: error from AvaTax API",
+                  });
+
+                  if (providerConfig.isOk()) {
+                    const problemReporter = createAvataxProblemReporter(authData);
+                    const avataxConfig = providerConfig.value.avataxConfig;
+
+                    afterDetached(() =>
+                      problemReporter.reportApiProblem(error.cause, {
+                        id: avataxConfig.id,
+                        name: avataxConfig.config.name,
+                        companyCode: avataxConfig.config.companyCode,
+                      }),
+                    );
+                  }
+
+                  return Response.json(
+                    {
+                      message: `Failed to calculate taxes for checkout: ${payload.taxBase.sourceObject.id}`,
+                    },
+                    { status: 500 },
+                  );
+                }
+
+                case CalculateTaxesUseCase.ConfigBrokenError: {
+                  span.setStatus({
+                    code: SpanStatusCode.ERROR,
+                    message: "Failed to calculate taxes: invalid configuration",
+                  });
+
+                  {
+                    const innerError = error.errors?.[0];
+
+                    if (
+                      innerError instanceof AppConfig.MissingConfigurationError ||
+                      innerError instanceof AppConfig.InvalidChannelSlugError
+                    ) {
+                      const problemReporter = createAvataxProblemReporter(authData);
+                      const reason =
+                        innerError instanceof AppConfig.MissingConfigurationError
+                          ? "Channel references a provider configuration that no longer exists"
+                          : "Channel is not configured in the AvaTax app";
+
+                      afterDetached(() =>
+                        problemReporter.reportChannelConfigMissing(channelSlug, reason),
+                      );
+                    }
+                  }
+
+                  return Response.json(
+                    {
+                      message: `Failed to calculate taxes due to invalid configuration for checkout: ${payload.taxBase.sourceObject.id}`,
+                    },
+                    { status: 500 },
+                  );
+                }
+
+                case CalculateTaxesUseCase.ExpectedIncompletePayloadError: {
+                  span.setStatus({
+                    code: SpanStatusCode.ERROR,
+                    message: "Failed to calculate taxes: incomplete payload",
+                  });
+
+                  return Response.json(
+                    {
+                      message: `Taxes can't be calculated due to incomplete payload for checkout: ${payload.taxBase.sourceObject.id}`,
+                    },
+                    { status: 202 },
+                  );
+                }
+
+                default:
+                case CalculateTaxesUseCase.UnhandledError: {
+                  reportUnhandledCalculateTaxesError(error, "500");
+                  span.setStatus({
+                    code: SpanStatusCode.ERROR,
+                    message: "Failed to calculate taxes: unhandled error",
+                  });
+
+                  return Response.json(
+                    {
+                      message: `Failed to calculate taxes (Unhandled error) for checkout: ${payload.taxBase.sourceObject.id}`,
+                    },
+                    { status: 500 },
+                  );
+                }
+              }
+            },
+          );
+        });
+      } catch (error) {
+        span.recordException(error as Error);
+
+        if (error instanceof AvataxTimeoutError) {
+          logger.warn("AvaTax API request timed out", { error });
+
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: "AvaTax API request timed out",
+          });
+
+          return Response.json({ message: "AvaTax API request timed out" }, { status: 504 });
+        }
+
+        reportUnhandledCalculateTaxesError(error, "500");
+
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: "Failed to calculate taxes: unhandled error",
+        });
+
+        return Response.json({ message: "Unhandled error" }, { status: 500 });
+      }
+    },
+  );
+});
+
+/**
+ * TODO: Add tests to handler
+ */
+export const POST = compose(
+  withLoggerContext,
+  withFlushOtelMetrics,
+  withMetadataCache,
+  withSpanAttributesAppRouter,
+)(handler);

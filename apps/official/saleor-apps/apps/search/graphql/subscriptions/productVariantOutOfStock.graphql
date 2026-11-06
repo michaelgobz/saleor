@@ -1,0 +1,17 @@
+subscription ProductVariantOutOfStock {
+  event {
+    __typename
+    ... on ProductVariantOutOfStock {
+      version
+      __typename
+      productVariant {
+        ...ProductVariantWebhookPayload
+      }
+    }
+    recipient {
+      webhooks {
+        id
+      }
+    }
+  }
+}

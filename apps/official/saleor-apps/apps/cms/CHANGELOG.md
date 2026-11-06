@@ -1,0 +1,1106 @@
+# saleor-app-cms
+
+## 2.20.2
+
+### Patch Changes
+
+- fa2a728: The app is now built with Turbopack instead of webpack, so builds and local development are faster. App behavior is unchanged.
+- Updated dependencies [602b8d8]
+  - @saleor/webhook-utils@0.3.6
+
+## 2.20.1
+
+### Patch Changes
+
+- Updated dependencies [c1a728f]
+- Updated dependencies [840a60d]
+  - @saleor/apps-logger@1.6.9
+  - @saleor/apps-shared@1.17.4
+  - @saleor/webhook-utils@0.3.5
+  - @saleor/stale-installations-cleanup@0.3.1
+
+## 2.20.0
+
+### Minor Changes
+
+- cf92cf5: Stale installations cleanup now only removes data of installations on the Saleor Cloud it is configured for. Set `SALEOR_CLOUD_ROOT_DOMAINS` to that Cloud's root domains, comma separated, e.g. `saleor.cloud,eu.saleor.cloud`. Until it is set, the job doesn't run.
+
+  Before, Saleor Cloud reported any environment it doesn't host as gone, so data of installations on another Saleor Cloud (e.g. staging), on self-hosted Saleor or on custom domains would have been removed. Now only installations at `<name>.<root domain>` are checked; everything else is kept and counted as `skipped` in the summary.
+
+### Patch Changes
+
+- Updated dependencies [cf92cf5]
+- Updated dependencies [888f9ab]
+  - @saleor/stale-installations-cleanup@0.3.0
+
+## 2.19.1
+
+### Patch Changes
+
+- b08cb53: Stale installations cleanup logs now fit in Vercel's limit of 256 log lines per request. Before, it logged one line per stale installation, so with many of them the remaining installations and the final summary were dropped from the logs. Now it logs the summary (`checked`, `unknown`, `stale`, `items`) first, then lists stale installations 100 per line, then the result.
+- Updated dependencies [b08cb53]
+  - @saleor/stale-installations-cleanup@0.2.0
+
+## 2.19.0
+
+### Minor Changes
+
+- c94bfe4: The app now cleans up after deleted Saleor Cloud environments. A daily job asks Saleor Cloud which environments the app is installed in still exist, by their Saleor Cloud or custom domain, and removes everything the app stored for those that are gone. Before, data of deleted environments stayed in the app's database indefinitely.
+
+  The job only runs once `CRON_SECRET`, `SALEOR_CLOUD_API_URL` and `SALEOR_CLOUD_OIDC_AUDIENCE` are set. It starts in dry-run mode, logging what it would remove; set `STALE_INSTALLATIONS_CLEANUP_DRY_RUN=false` to delete.
+
+### Patch Changes
+
+- 88e026b: The app now refuses to start when a secret it sends in HTTP headers (`CRON_SECRET`, `UPSTASH_TOKEN`, `OTEL_ACCESS_TOKEN`) contains non-ASCII characters, and the error names the variable. Before, the app started normally and then the requests using that secret failed at runtime. If one of these secrets has accented or other non-ASCII letters, replace it.
+- 88e026b: `APL=saleor-cloud` is no longer accepted, and the app now refuses to start with an error naming `APL`. That storage option was removed from the app SDK earlier. Before, most apps started anyway and then failed on the first request, and the Stripe app quietly saved auth data to a local file instead. If you still use this value, switch `APL` to `dynamodb`, `upstash` or `file`.
+- Updated dependencies [c94bfe4]
+  - @saleor/stale-installations-cleanup@0.1.0
+
+## 2.18.10
+
+### Patch Changes
+
+- 4cff73c: Updated Macaw UI to v3. Configuration screens keep the same layout and behavior; dialogs, dropdowns, tooltips and popovers now run on newer versions of their underlying components.
+
+## 2.18.9
+
+### Patch Changes
+
+- 7783337: Upgraded next.js v16.4.1
+
+## 2.18.8
+
+### Patch Changes
+
+- Updated dependencies [ab5a656]
+  - @saleor/apps-logger@1.6.8
+  - @saleor/apps-shared@1.17.3
+  - @saleor/webhook-utils@0.3.4
+
+## 2.18.7
+
+### Patch Changes
+
+- 3a4b70a: Fixed logging in the `APP_DELETED` webhook. Before, every uninstall logged "You cant use LoggerContext outside of the wrapped scope" warnings, and its log lines had no request path or Saleor API URL context. Now the handler runs inside the logger context, so the warnings are gone and the logs carry the same context as other webhooks.
+- 14691bc: Upgraded neverthrow from v6.2.1 to v8.1.1 and zod from v3.21.4 to v3.24.1. App behavior doesn't change.
+- 0e0d0f4: When Saleor rejects the app's token while the app reads its configuration (for example after the environment was restored or the app was reinstalled), the app now logs a warning instead of an error. App behavior doesn't change: as before, the app treats it as missing configuration.
+
+## 2.18.6
+
+### Patch Changes
+
+- a2fbe4a: Upgraded Next.js from v15.5.27 to v16.3.8. Apps keep building with Webpack for now; the switch to Turbopack will ship separately.
+
+## 2.18.5
+
+### Patch Changes
+
+- 60f11e2: Upgrade next.js to 16.3.8 or 15.5.27
+
+## 2.18.4
+
+### Patch Changes
+
+- 635e29e: Upgraded Sentry SDK to v10. Previously, Sentry context (breadcrumbs, tags, user) could leak between concurrent requests handled by the same server instance. Now each request gets its own isolated Sentry scope, so error reports only contain data from the request that failed.
+
+  Sentry no longer wraps API route handlers. Previously, this wrapper stopped OpenTelemetry from recording spans created inside handlers. Now those spans appear in traces again. Errors from API routes are still reported to Sentry.
+
+- abdba39: Fixed OpenTelemetry spans that could go missing when a route was loaded before instrumentation was registered. Previously, tracers created at module load (e.g. DynamoDB APL) could stay silent; now they share the same OpenTelemetry instance as instrumentation and always record spans. This also prepares the apps for the Next.js 16 upgrade, where this load order happens on Vercel.
+- Updated dependencies [4c5c512]
+  - @saleor/apps-logger@1.6.7
+  - @saleor/apps-shared@1.17.2
+  - @saleor/webhook-utils@0.3.3
+
+## 2.18.3
+
+### Patch Changes
+
+- ce36410: Upgraded Next.js to v15.5.26
+- Updated dependencies [c12c623]
+  - @saleor/apps-shared@1.17.1
+
+## 2.18.2
+
+### Patch Changes
+
+- Updated dependencies [831f396]
+  - @saleor/apps-shared@1.17.0
+
+## 2.18.1
+
+### Patch Changes
+
+- Updated dependencies [9c585ac]
+  - @saleor/apps-otel@2.4.2
+  - @saleor/apps-logger@1.6.6
+  - @saleor/apps-shared@1.16.2
+  - @saleor/webhook-utils@0.3.2
+
+## 2.18.0
+
+### Minor Changes
+
+- b7efe3b: Dropped support for Saleor 3.21. Before, these apps could be installed on Saleor 3.21 and newer. Now, the minimum supported version is 3.22 - installing on an older Saleor will be rejected by the Dashboard. Saleor 3.21 users should stay on the previous app release until they upgrade their Saleor instance.
+
+### Patch Changes
+
+- Updated dependencies [53fa836]
+  - @saleor/apps-logger@1.6.5
+  - @saleor/apps-shared@1.16.1
+  - @saleor/webhook-utils@0.3.1
+
+## 2.17.3
+
+### Patch Changes
+
+- 238a85b: Fixed error reporting when a CMS provider fails with a non-standard error. Previously such failures were logged as `Error: [object Object]`, hiding the actual reason (for example an expired Strapi token) and causing them to be reported as generic sync failures. Now the original error payload is preserved, so the message is visible and authentication problems are correctly reported as auth errors.
+- 40321e5: Apps now identify themselves when they call the Saleor GraphQL API. Before, requests
+  went out with the runtime's default `User-Agent`, so it was impossible to tell from
+  Saleor's access logs which app produced them. Now every server-side request carries
+  `User-Agent: <app-package-name>/<app-version>`, e.g. `saleor-app-avatax/3.1.0`.
+- Updated dependencies [40321e5]
+  - @saleor/apps-shared@1.16.0
+
+## 2.17.2
+
+### Patch Changes
+
+- Updated dependencies [d78dcb0]
+- Updated dependencies [d78dcb0]
+  - @saleor/apps-shared@1.15.0
+  - @saleor/apps-ui@1.4.0
+
+## 2.17.1
+
+### Patch Changes
+
+- 546b559: Updated Macaw UI to v2. Icons that used to come from Macaw UI (close, trash, edit, chevrons, arrows, copy, external link, and others) now come from Lucide, so a few icons look slightly different but keep the same meaning and placement.
+
+## 2.17.0
+
+### Minor Changes
+
+- f7f0e74: Minimum Saleor version required is now 3.21 (Saleor 3.20 is EOL)
+
+## 2.16.0
+
+### Minor Changes
+
+- 164454d: Implemented APP_DELETED handler. On Saleor 3.23+ app will react to its own removal and prune APL data
+
+### Patch Changes
+
+- c8a4efe: When environment variables fail validation at startup, the app now prints a readable error message and the offending fields, then exits with code 1 — instead of dumping a long stack trace. Before: a wall of webpack stack frames around `Invalid environment variables`. After: e.g. `Validation error: Required at "SECRET_KEY"` followed by a JSON list of the failing fields.
+- Updated dependencies [6683590]
+  - @saleor/webhook-utils@0.3.0
+
+## 2.15.8
+
+### Patch Changes
+
+- 3691d44: Upgraded Axios to v1.15.2 to fix CVE-2026-40175 and more
+- 9044c32: Upgraded protobufjs to v7.5.8 to fix the following CVEs: CVE-2026-41242,
+  CVE-2026-44290, CVE-2026-44291, CVE-2026-44292, CVE-2026-44293,
+  CVE-2026-44294, CVE-2026-44295, CVE-2026-45740.
+
+  This is only relevant for you if you use & enabled OpenTelemetry.
+
+## 2.15.7
+
+### Patch Changes
+
+- 2865a4f: Upgraded next.js to v15.5.18, more info: https://vercel.com/changelog/next-js-may-2026-security-release
+
+## 2.15.6
+
+### Patch Changes
+
+- 4af78c1: Failed JWT verification in tRPC procedures no longer reports to Sentry as an error. Before, an expired or invalid token raised a 500 (or 403) and produced an error in monitoring even though it was a normal client-side auth failure. Now it logs a warning and returns 401, so dashboards stay clean and the client can react to the auth state correctly.
+
+## 2.15.5
+
+### Patch Changes
+
+- 0744721: Added support for changing `SECRET_KEY` in production environment.
+
+  In order to use new secret key add `NEW_SECRET_KEY` env variable.
+  App will use `NEW_SECRET_KEY` for saving new configurations, and will use existing `SECRET_KEY` as a fallback for decryption.
+
+  To update all configurations in all app instances, use rotation script in each app: `pnpm rotate-secret-key`.
+
+  For more details read `packages/shared/src/key-rotation/README.md` documentation
+
+- Updated dependencies [0744721]
+  - @saleor/apps-shared@1.14.5
+
+## 2.15.4
+
+### Patch Changes
+
+- 91f6d5f: Added support for OIDC between AWS and Vercel (using `@vercel/oidc-aws-credentials-provider`). Now, when `AWS_ARN` env variable is provided, it will take precedence over IAM secrets. This is more secure way to authenticate and is preferred. IAM secrets stay supported, e.g. for local DynamoDB setup.
+
+## 2.15.3
+
+### Patch Changes
+
+- ff4174e: Added more logs when fetching data from Saleor on failure to improve debugging.
+- Updated dependencies [ff4174e]
+  - @saleor/apps-shared@1.14.4
+
+## 2.15.2
+
+### Patch Changes
+
+- 622d13c: Updated GraphQL schema to 3.23
+
+## 2.15.1
+
+### Patch Changes
+
+- 3ecde04: Updated @saleor/app-sdk to v1.7.1
+- b57266c: Attach Saleor domain to Sentry events for better aggregation
+- Updated dependencies [3ecde04]
+  - @saleor/app-problems@1.0.2
+  - @saleor/apps-logger@1.6.4
+  - @saleor/apps-otel@2.4.1
+  - @saleor/react-hook-form-macaw@0.2.17
+  - @saleor/sentry-utils@0.2.6
+  - @saleor/apps-shared@1.14.3
+  - @saleor/apps-ui@1.3.3
+
+## 2.15.0
+
+### Minor Changes
+
+- fab1f78: Webhook responses now return plain text response to Saleor, so it should be properly displayed in dashboard "webhook errors". Previously app was returning `{"message": "..."}` which is not recognized shape officially by Saleor nor Dashboard - it was rendered like text anyway.
+
+### Patch Changes
+
+- 0484f64: Add error cause for verifyJwt failures on tRPC
+- 8cc005b: Updated aws-sdk packages and dynamodb-toolbox to latest versions
+- Updated dependencies [8cc005b]
+  - @saleor/app-problems@1.0.1
+
+## 2.14.0
+
+### Minor Changes
+
+- a1e76fba: Added support for Problems API. Now app tries to detected errors from connected platform and set Problem on Saleor instance, available for staff users.
+
+### Patch Changes
+
+- ddfa9593: Changed how generated graphql->typescript types work. Now only types that are directly or indirectly connected to written documents (mutations, queries) are generated
+
+## 2.13.9
+
+### Patch Changes
+
+- d9bb00f5: GraphQL schema has been refreshed to use latest 3.22 (this updates schema but does not change which APIs are executed)
+- c1cbffb4: Applied "consistent imports" rule from ESLint to ensure type-only imports are marked with `import type` clause. This should improve tree shaking and reduce side effects
+- dec95470: Removed nested graphql.schema files for each app/package and added root schema. Now all packages have symlink pointing to the same file.
+- Updated dependencies [f0d36e14]
+  - @saleor/apps-shared@1.14.2
+  - @saleor/apps-logger@1.6.3
+  - @saleor/apps-otel@2.4.0
+  - @saleor/react-hook-form-macaw@0.2.16
+  - @saleor/sentry-utils@0.2.5
+  - @saleor/apps-ui@1.3.2
+
+## 2.13.8
+
+### Patch Changes
+
+- d7ce7f67: Added client-side error capturing so client exceptions are reported to Sentry.
+
+## 2.13.7
+
+### Patch Changes
+
+- 07057788: Update DynamoDB/AWS & Toolbox dependencies
+
+## 2.13.6
+
+### Patch Changes
+
+- d5d7a4fe: Introduced lib t3-oss/env, which adds build-time env variables validation. Now all env variables are statically declared and exposed type-safe way
+- 6eb71d91: Removed legacy SaleorCloudAPL initialization. This APL is deprecated and will be removed in app-sdk. Apps can no longer use it. This is not marked as a major change, because this API is private to Saleor Cloud
+- 6e5f69c5: Added max DynamoDB connection and request limits (2s for connection, 5s for request), so in case of downtime, app will terminate earlier
+
+## 2.13.5
+
+### Patch Changes
+
+- 560c3de4: Added logging to DynamoDB APL for better debugging and error visibility.
+
+## 2.13.4
+
+### Patch Changes
+
+- 2a4f27ad: Fixed how AWS sdk is initialized by explicitly passing credentials. This is caused by Vercel issue, which started to implicitly override some of our credentials by injecting their own.
+
+## 2.13.3
+
+### Patch Changes
+
+- 9e17703c: Updated tTRPC to 10.45.3
+
+## 2.13.2
+
+### Patch Changes
+
+- Updated dependencies [37b91c88]
+  - @saleor/apps-otel@2.4.0
+  - @saleor/apps-logger@1.6.3
+
+## 2.13.1
+
+### Patch Changes
+
+- 98459d79: Updated Next.js to 15.2.6
+- b1f10da0: Added logs when app fails to install due to error in APL, or due to disallowed domain and when app installs successfully
+- Updated dependencies [98459d79]
+  - @saleor/apps-logger@1.6.2
+  - @saleor/apps-otel@2.3.1
+  - @saleor/react-hook-form-macaw@0.2.16
+  - @saleor/sentry-utils@0.2.5
+  - @saleor/apps-shared@1.14.1
+  - @saleor/apps-ui@1.3.2
+
+## 2.13.0
+
+### Minor Changes
+
+- 16c6448f: After this change required Saleor version for running the app will be **3.20**
+
+### Patch Changes
+
+- 86747b3c: When users open app outside of Saleor Dashboard's iframe we will now display an error message with explanation. Previously we rendered app's UI, which caused frontend to make requests to the app without any required data (tokens, saleorApiUrl, etc.) which resulted in error logs.
+
+## 2.12.6
+
+### Patch Changes
+
+- Updated dependencies [6b9305d3]
+  - @saleor/apps-shared@1.14.0
+
+## 2.12.5
+
+### Patch Changes
+
+- 16b87f53: Update MacawUI to 1.3.0
+- a7c1cedf: Updated @saleor/app-sdk to 1.3.0
+- Updated dependencies [16b87f53]
+  - @saleor/react-hook-form-macaw@0.2.15
+  - @saleor/apps-shared@1.13.1
+  - @saleor/apps-ui@1.3.1
+
+## 2.12.4
+
+### Patch Changes
+
+- 51b4d859: Installed DynamoDB APL (controlled via env variable).
+
+## 2.12.3
+
+### Patch Changes
+
+- Updated dependencies [7a834f53]
+- Updated dependencies [b1c0139a]
+- Updated dependencies [7a834f53]
+- Updated dependencies [674b4fa0]
+  - @saleor/apps-ui@1.3.0
+
+## 2.12.2
+
+### Patch Changes
+
+- @saleor/apps-logger@1.6.1
+
+## 2.12.1
+
+### Patch Changes
+
+- Updated dependencies [00070dc3]
+  - @saleor/apps-shared@1.13.0
+
+## 2.12.0
+
+### Minor Changes
+
+- fe9c5cd0: Added bulk processing of uploading products to Strapi CMS. After this change you can use `STRAPI_BATCH_SIZE` to control number to request send in the same batch to Strapi API with `STRAPI_MILIS_DELAY_BETWEEN_BATCHES` controlling how frequent those batches are send to Strapi API.
+
+### Patch Changes
+
+- c490ca75: Fixed link to Saleor docs. After this change links should point to the newest version of docs without redirects.
+- Updated dependencies [d3702072]
+- Updated dependencies [c68f1e9f]
+  - @saleor/apps-logger@1.6.0
+  - @saleor/apps-otel@2.3.0
+
+## 2.11.9
+
+### Patch Changes
+
+- e3c75265: Add new `ATTR_SERVICE_INSTANCE_ID` OTEL attribute to app instrumentation.
+- 4c5c63d5: Use TypeScript unions instead of enums in types generated from Graphql files.
+- Updated dependencies [e3c75265]
+- Updated dependencies [b4ed42c9]
+- Updated dependencies [e3c75265]
+- Updated dependencies [b4ed42c9]
+  - @saleor/apps-otel@2.2.0
+  - @saleor/apps-shared@1.12.3
+  - @saleor/apps-logger@1.5.5
+
+## 2.11.8
+
+### Patch Changes
+
+- 94c52129: Update to Next.js 15
+  - @saleor/apps-logger@1.5.4
+  - @saleor/apps-otel@2.1.5
+  - @saleor/react-hook-form-macaw@0.2.14
+  - @saleor/sentry-utils@0.2.4
+  - @saleor/apps-shared@1.12.2
+  - @saleor/apps-ui@1.2.12
+
+## 2.11.7
+
+### Patch Changes
+
+- Updated dependencies [1aff5e42]
+  - @saleor/apps-logger@1.5.4
+  - @saleor/apps-otel@2.1.5
+
+## 2.11.6
+
+### Patch Changes
+
+- a76465fb: Update `@saleor/app-sdk` to `v1.0.0`
+- Updated dependencies [a76465fb]
+  - @saleor/apps-logger@1.5.3
+  - @saleor/apps-otel@2.1.4
+
+## 2.11.5
+
+### Patch Changes
+
+- 339518c2: Fixed how we initialize Sentry SDK for API routes when runtime is Node.js. After this change we will use `NodeClient` directly from Sentry SDK to avoid interfering with our OTEL setup. We also removed not needed Sentry integration for edge runtime
+
+## 2.11.4
+
+### Patch Changes
+
+- c8e61ac2: Updated Sentry to 9.6.1
+- da9899d5: Cleanup deps, peerDeps & devDependencies for package
+- Updated dependencies [da9899d5]
+  - @saleor/react-hook-form-macaw@0.2.14
+  - @saleor/apps-logger@1.5.2
+  - @saleor/apps-shared@1.12.2
+  - @saleor/apps-otel@2.1.3
+  - @saleor/apps-ui@1.2.12
+  - @saleor/sentry-utils@0.2.4
+
+## 2.11.3
+
+### Patch Changes
+
+- Updated dependencies [6e94e99c]
+  - @saleor/apps-otel@2.1.2
+
+## 2.11.2
+
+### Patch Changes
+
+- 996d9be1: Use [PNPM catalogs](https://pnpm.io/catalogs) feature to ensure that dependencies are in sync between different packages in monorepo.
+- aa1c7597: Added new attributes to OTEL setup - it will allow better GitHub integration with our OTEL provider
+- Updated dependencies [996d9be1]
+- Updated dependencies [aa1c7597]
+  - @saleor/react-hook-form-macaw@0.2.13
+  - @saleor/apps-logger@1.5.1
+  - @saleor/apps-shared@1.12.1
+  - @saleor/apps-otel@2.1.1
+  - @saleor/apps-ui@1.2.11
+  - @saleor/sentry-utils@0.2.4
+
+## 2.11.1
+
+### Patch Changes
+
+- Updated dependencies [8154e9e9]
+  - @saleor/apps-otel@2.1.0
+
+## 2.11.0
+
+### Minor Changes
+
+- 3c4358ae: Setup OTEL via instrumentation hook. After this change app will use [official way](https://nextjs.org/docs/14/app/building-your-application/optimizing/open-telemetry) of setting up OTEL. There are no visible changes to the end user.
+
+### Patch Changes
+
+- defa0b60: Rename `wrapWithSpanAttributes` to `withSpanAttributes`. No changes to the end user.
+- e3fe0f70: Use `@vercel/otel` package to setup OTEL. After this change spans will be automatically flushed by Vercel.
+- Updated dependencies [3c4358ae]
+- Updated dependencies [9cfb8ace]
+- Updated dependencies [e3fe0f70]
+- Updated dependencies [23a31eb4]
+- Updated dependencies [defa0b60]
+- Updated dependencies [defa0b60]
+  - @saleor/apps-otel@2.0.0
+  - @saleor/apps-logger@1.5.0
+  - @saleor/apps-shared@1.12.0
+
+## 2.10.1
+
+### Patch Changes
+
+- b3e136b0: Add `saleor-app` prefix to `package.json` so names of npm app projects are in sync with names of Vercel projects. No visible changes to the user.
+
+## 2.10.0
+
+### Minor Changes
+
+- 34da7f12: Adding the SKU as synced field to the CMS app
+
+### Patch Changes
+
+- 2f06b1e9: Bumping app-sdk to v0.52.0 - adding native APL support for vercel-kv and redis
+- a8f63fc4: Modified vercel.json to allow multiple regions. Now Vercel will replicate function in "dub1" and "iad1"
+
+## 2.9.19
+
+### Patch Changes
+
+- 0f0bff21: Move `ThemeSynchronizer` utility to shared packages.
+
+## 2.9.18
+
+### Patch Changes
+
+- 0db174a8: Removed regex escape for `ALLOWED_DOMAINS_URL` env variable from register handler. It isn't user input and escaping regex was causing problem with apps installation.
+
+## 2.9.17
+
+### Patch Changes
+
+- 9bbf9ee5: Increased Vercel log limit to new value - 256KB. See [announcement](https://vercel.com/changelog/updated-logging-limits-for-vercel-functions) blog post from Vercel for more details.
+- 9bbf9ee5: Added new `LoggerVercelTransport` support. It will help us send logs to our infrastructure without need of OTEL unstable logs API.
+- 9bbf9ee5: Escape ALLOWED_DOMAIN_PATTERN regex. It ensures that regex constructed from env variable is sanitized and can't be used to Denial of Service attack.
+- 9bbf9ee5: Fixed autofixable linting issues. No functional changes.
+- Updated dependencies [9bbf9ee5]
+- Updated dependencies [9bbf9ee5]
+  - @saleor/apps-logger@1.4.3
+  - @saleor/react-hook-form-macaw@0.2.12
+  - @saleor/apps-shared@1.11.4
+  - @saleor/apps-otel@1.3.5
+  - @saleor/apps-ui@1.2.10
+
+## 2.9.16
+
+### Patch Changes
+
+- 83ad6531: Updated Node.js to 22.11
+- Updated dependencies [1e70b997]
+- Updated dependencies [83ad6531]
+  - @saleor/apps-logger@1.4.2
+  - @saleor/apps-otel@1.3.4
+  - @saleor/react-hook-form-macaw@0.2.11
+  - @saleor/sentry-utils@0.2.4
+  - @saleor/apps-shared@1.11.3
+  - @saleor/apps-ui@1.2.9
+
+## 2.9.15
+
+### Patch Changes
+
+- Updated dependencies [69992d56]
+  - @saleor/apps-logger@1.4.1
+
+## 2.9.14
+
+### Patch Changes
+
+- Updated dependencies [92a2a5fd]
+  - @saleor/apps-logger@1.4.0
+
+## 2.9.13
+
+### Patch Changes
+
+- d088ef37: Use new way of creating logger from `@saleor/apps-logger`
+- Updated dependencies [2f37f075]
+- Updated dependencies [d088ef37]
+- Updated dependencies [6d528dc6]
+  - @saleor/apps-logger@1.3.0
+
+## 2.9.12
+
+### Patch Changes
+
+- Updated dependencies [6be0103c]
+  - @saleor/apps-logger@1.2.10
+
+## 2.9.11
+
+### Patch Changes
+
+- Updated dependencies [f1025fae]
+  - @saleor/apps-otel@1.3.3
+
+## 2.9.10
+
+### Patch Changes
+
+- Updated dependencies [93969b2a]
+  - @saleor/apps-otel@1.3.2
+
+## 2.9.9
+
+### Patch Changes
+
+- fe5d5d5e: Updated @saleor/app-sdk to 0.50.3. This version removes the limitation of body size for the webhook payloads.
+
+## 2.9.8
+
+### Patch Changes
+
+- 2bc8c187: Now, the flag "bundlePagesExternals" is enabled, this means the cold-starts time were reduced for this app.
+
+## 2.9.7
+
+### Patch Changes
+
+- 45a47156: Updated @saleor/app-sdk to 0.50.2. No functional changes are introduced
+
+## 2.9.6
+
+### Patch Changes
+
+- 6fed4b19: Migrate to new newest MacawUI version. Functionally nothing has changed. UI may look a bit different but it will be on par with Dashboard UI.
+- Updated dependencies [6fed4b19]
+  - @saleor/react-hook-form-macaw@0.2.10
+  - @saleor/apps-shared@1.11.2
+  - @saleor/apps-ui@1.2.8
+
+## 2.9.5
+
+### Patch Changes
+
+- b8400088: You can now distinguish which environment is alias in environment select.
+  Environments select no longer show first option when you edit your config, now shows option that was selected
+
+## 2.9.4
+
+### Patch Changes
+
+- e38c1417: You can now find how to run and test each app in README file
+
+## 2.9.3
+
+### Patch Changes
+
+- 17077505: Updated TypeScript version to 4.5.4.
+- Updated dependencies [17077505]
+  - @saleor/react-hook-form-macaw@0.2.9
+  - @saleor/sentry-utils@0.2.3
+  - @saleor/apps-logger@1.2.9
+  - @saleor/apps-shared@1.11.1
+  - @saleor/apps-otel@1.3.1
+  - @saleor/apps-ui@1.2.7
+
+## 2.9.2
+
+### Patch Changes
+
+- 52332d71: You can now see additional logs when webhook processing is skip because of lack of connection or processor
+
+## 2.9.1
+
+### Patch Changes
+
+- ab5baf4e: You can now see when webhook processing is skip due to no having related channels
+
+## 2.9.0
+
+### Minor Changes
+
+- 19f288a4: You can now see more context information in logs that should be helpful in debugging issues with the app.
+
+### Patch Changes
+
+- Updated dependencies [6f2d6abb]
+  - @saleor/apps-otel@1.3.0
+
+## 2.8.3
+
+### Patch Changes
+
+- fbdbaa28: Remove custom Next.js + Sentry error. It was causing non existing paths to be reported as 500 instead of 404. We catch Sentry errors in implicit anyway in api routes.
+- Updated dependencies [fbdbaa28]
+  - @saleor/sentry-utils@0.2.2
+
+## 2.8.2
+
+### Patch Changes
+
+- 2f59041c: Reverted shared Sentry configuration (init() part). It was not working properly - source maps were not properly assigned. Now configuration is not shared, but repeated in every app separately
+- Updated dependencies [2f59041c]
+  - @saleor/sentry-utils@0.2.1
+
+## 2.8.1
+
+### Patch Changes
+
+- 0c4ba39f: Update next.js config after Sentry rollback.
+- Updated dependencies [0c4ba39f]
+- Updated dependencies [0c4ba39f]
+- Updated dependencies [5c851a6c]
+  - @saleor/apps-otel@1.2.2
+  - @saleor/apps-logger@1.2.8
+
+## 2.8.0
+
+### Minor Changes
+
+- c4dcb863: Remove Pino logger library. It was already deprecated but for non migrated apps it was causing build errors. Right now we have one logger - @saleor/app-logger pkg.
+- 1a9912f5: Setup Sentry inside Next.js instrumentation file. It ensures that Sentry works properly for serverless environment.
+
+### Patch Changes
+
+- 37ecb246: Update pnpm to 9.2.0 version. It means that we also dropped support for Node.js less than 16.
+- cc047b1d: Downgraded Sentry package to v7. Previous upgrade to 8.x cause Sentry to conflict with Open Telemetry setup and Sentry was not working
+- Updated dependencies [37ecb246]
+- Updated dependencies [c4dcb863]
+- Updated dependencies [1a9912f5]
+  - @saleor/apps-logger@1.2.7
+  - @saleor/apps-otel@1.2.1
+  - @saleor/react-hook-form-macaw@0.2.8
+  - @saleor/sentry-utils@0.2.0
+  - @saleor/apps-shared@1.11.0
+  - @saleor/apps-ui@1.2.6
+
+## 2.7.6
+
+### Patch Changes
+
+- 64d88b24: Update packages to ESM. See node [docs](https://nodejs.org/api/esm.html) for more info.
+- 5cbd3b63: Updated @saleor/app-sdk package to 0.50.1
+- Updated dependencies [64d88b24]
+- Updated dependencies [5cbd3b63]
+- Updated dependencies [e1ea31be]
+  - @saleor/react-hook-form-macaw@0.2.7
+  - @saleor/apps-logger@1.2.6
+  - @saleor/apps-shared@1.10.3
+  - @saleor/apps-otel@1.2.0
+  - @saleor/apps-ui@1.2.5
+
+## 2.7.5
+
+### Patch Changes
+
+- 4ffef6be: Update `@sentry/nextjs` to 8.0.0 version. It should help us with attaching additional data to Sentry errors.
+- 2604ce1e: Updated Next.js to 14.2.3
+- Updated dependencies [4ffef6be]
+- Updated dependencies [2604ce1e]
+  - @saleor/apps-logger@1.2.5
+  - @saleor/apps-shared@1.10.2
+  - @saleor/apps-ui@1.2.4
+  - @saleor/apps-otel@1.1.0
+  - @saleor/react-hook-form-macaw@0.2.6
+
+## 2.7.4
+
+### Patch Changes
+
+- Updated dependencies [eec25524]
+  - @saleor/apps-logger@1.2.4
+
+## 2.7.3
+
+### Patch Changes
+
+- Updated dependencies [528b981e]
+  - @saleor/apps-logger@1.2.3
+
+## 2.7.2
+
+### Patch Changes
+
+- f22f2b8a: Combine `APP_LOG_LEVEL` variable for `pino` & `tslog` libraries. After this change `APP_LOG_LEVEL` will take string which is one of `silent | trace | debug | info | warn | error | fatal`.
+- Updated dependencies [f22f2b8a]
+- Updated dependencies [df03c571]
+  - @saleor/apps-logger@1.2.2
+  - @saleor/apps-shared@1.10.1
+
+## 2.7.1
+
+### Patch Changes
+
+- Updated dependencies [0a441ac9]
+- Updated dependencies [f7ecb7bd]
+  - @saleor/apps-logger@1.2.1
+
+## 2.7.0
+
+### Minor Changes
+
+- b29318a2: Currently, Dashboard requires from a user to have "MANAGE_APPS" to have access to the apps tab.
+  Since the release 3.20 Dashboard will allow all users to access to apps tabs without checking permission.
+  This means that apps will be checking if the user has "MANAGE_APPS" internally and show message "You do not have permission to access this page" if the user does not have the permission.
+
+### Patch Changes
+
+- Updated dependencies [b29318a2]
+  - @saleor/apps-shared@1.10.0
+
+## 2.6.5
+
+### Patch Changes
+
+- 29d10d4a: Update Next.js to version 14.1.0.
+- Updated dependencies [29d10d4a]
+  - @saleor/apps-shared@1.9.4
+  - @saleor/apps-ui@1.2.3
+  - @saleor/apps-logger@1.2.0
+  - @saleor/apps-otel@1.1.0
+  - @saleor/react-hook-form-macaw@0.2.6
+
+## 2.6.4
+
+### Patch Changes
+
+- Updated dependencies [1e07a6ff]
+  - @saleor/apps-logger@1.2.0
+
+## 2.6.3
+
+### Patch Changes
+
+- 67afe8e4: Apps that use OTEL can now collect and send spans containing details about GraphQL requests.
+- Updated dependencies [67afe8e4]
+- Updated dependencies [67afe8e4]
+  - @saleor/apps-shared@1.9.3
+  - @saleor/apps-otel@1.1.0
+
+## 2.6.2
+
+### Patch Changes
+
+- Updated dependencies [2683431]
+  - @saleor/apps-logger@1.1.1
+
+## 2.6.1
+
+### Patch Changes
+
+- Updated dependencies [93848f2]
+- Updated dependencies [93848f2]
+  - @saleor/apps-logger@1.1.0
+
+## 2.6.0
+
+### Minor Changes
+
+- d9e4cb3: Implemented Open Telemetry traces, replaced logger with one compatible with OTEL
+
+### Patch Changes
+
+- 0849d8e: Applied logger from shared @saleor/apps-logger package
+- Updated dependencies [d9e4cb3]
+- Updated dependencies [0849d8e]
+  - @saleor/apps-otel@1.0.0
+  - @saleor/apps-logger@1.0.0
+
+## 2.5.4
+
+### Patch Changes
+
+- 3f21682: Reduced available Vercel RAM from 1GB to 512MB
+
+## 2.5.3
+
+### Patch Changes
+
+- 5f564a0: Updated @saleor/app-sdk to 0.47.2
+
+## 2.5.2
+
+### Patch Changes
+
+- 531e7c1: Disabled Sentry tracing and Replays by default
+
+## 2.5.1
+
+### Patch Changes
+
+- 99f7066: Updated Macaw UI to 1.0.0-pre.7. Removed legacy Material UI dependency from older Macaw. Code was updated to work properly with some API changes
+- Updated dependencies [99f7066]
+  - @saleor/react-hook-form-macaw@0.2.6
+  - @saleor/apps-shared@1.9.2
+  - @saleor/apps-ui@1.2.2
+
+## 2.5.0
+
+### Minor Changes
+
+- a50df02: Reduced Sentry traces sample rate to 0.1
+
+### Patch Changes
+
+- 1454572: Updated package contentful-management from 10.38.3 to 10.46.4
+- f4c67e8: Updated TRPC version
+
+## 2.4.2
+
+### Patch Changes
+
+- fdabc51: Mapped app-sdk package to root library
+- Updated dependencies [fdabc51]
+  - @saleor/apps-shared@1.9.1
+  - @saleor/apps-ui@1.2.1
+
+## 2.4.1
+
+### Patch Changes
+
+- 148a6d7: Updated Sentry to 7.77.0
+
+## 2.4.0
+
+### Minor Changes
+
+- 958dbcd: Changed how Contentful ID is created.
+
+  Previously, Saleor's ID was used to create entry in Contentful.
+  However, this implementation was failing when special characters in ID occurred (like "==").
+
+  Now, entry in Contentful is created using it's own system ID, generated by Contentful itself.
+
+  App will first query entries via variant ID field, so it still works without a breaking change.
+
+  It's recommended to set "unique" parameter on variant ID field
+
+## 2.3.4
+
+### Patch Changes
+
+- 1f7f472: Fixed the issue with `uploadProductVariant` error not being captured in Sentry.
+
+## 2.3.3
+
+### Patch Changes
+
+- 5d3d81d: Bumped @hookform/resolvers from 2.9.11 to 3.3.1
+- 5dee65a: Updated dependencies:
+  - @graphql-codegen/cli@5.0.0
+- 2e29699: Updated Sentry package
+
+## 2.3.2
+
+### Patch Changes
+
+- e8660e8: Extracted UI components and use shared package
+- 30140ee: Improved some text typos.
+- Updated dependencies [e8660e8]
+- Updated dependencies [e8660e8]
+- Updated dependencies [e8660e8]
+- Updated dependencies [e8660e8]
+- Updated dependencies [e8660e8]
+- Updated dependencies [e8660e8]
+  - @saleor/apps-shared@1.9.0
+  - @saleor/apps-ui@1.2.0
+
+## 2.3.1
+
+### Patch Changes
+
+- a81f061: Updated Macaw to pre-127
+- d9d0f64: Fixed background color of the modal. Previously white background was missing and only blur was applied. Now it is blurred and white with an opacity (in the dark mode it is fixed with dark grey)
+- fcc37e7: Remove clsx package from the projects no longer using it.
+- Updated dependencies [2a1385b]
+- Updated dependencies [a81f061]
+- Updated dependencies [fcc37e7]
+  - @saleor/apps-shared@1.8.1
+  - @saleor/react-hook-form-macaw@0.2.5
+  - @saleor/apps-ui@1.1.8
+
+## 2.3.0
+
+### Minor Changes
+
+- 6f1c5c9: Added Payload CMS support.
+
+### Patch Changes
+
+- e9378e7: Fix PayloadCMS form where two inputs were stuck together without a margin. Now, they are placed in two columns
+- 6f1c5c9: Fix styling of modal in the dark mode
+
+## 2.2.2
+
+### Patch Changes
+
+- 8b3d961: Updated Macaw UI to pre.118
+- c50797e: Extracted MetadataManager creation to factory from shared package
+- Updated dependencies [8b3d961]
+- Updated dependencies [c50797e]
+  - @saleor/react-hook-form-macaw@0.2.4
+  - @saleor/apps-shared@1.8.0
+  - @saleor/apps-ui@1.1.7
+
+## 2.2.1
+
+### Patch Changes
+
+- 3002354: Added error logging for exceptions thrown at tRPC routes.
+
+## 2.2.0
+
+### Minor Changes
+
+- fe767a4: Changed public (manifest) name app to be "CMS" (previously it was "CMS 2", since two apps existed at the same time)
+
+## 2.1.2
+
+### Patch Changes
+
+- 261957f: Updated dependencies: vite, vitest, eslint, prettier, dotenv, turbo, syncpack, changesets, lint staged
+- Updated dependencies [261957f]
+  - @saleor/react-hook-form-macaw@0.2.3
+  - @saleor/apps-shared@1.7.6
+  - @saleor/apps-ui@1.1.6
+
+## 2.1.1
+
+### Patch Changes
+
+- 2fab86b: Updated graphql package to 16.7.1 and @graphql-codegen related dependencies to the latest version.
+- aa6fec1: Updated Macaw UI to pre-106
+- 4578659: Made Builder.io api keys inputs type of "password" so they are masked now
+- Updated dependencies [aa6fec1]
+- Updated dependencies [aa6fec1]
+  - @saleor/react-hook-form-macaw@0.2.2
+  - @saleor/apps-shared@1.7.5
+  - @saleor/apps-ui@1.1.5
+
+## 2.1.0
+
+### Minor Changes
+
+- 5d41af9: Added validation for channel-provider connection. Now form will display error when user tries to add a connection that already exists.
+- 5d41af9: Added set of improvements around app quality
+
+  - Ensured forms have fields properly set as "required", so form validation will prevent empty form submissions
+  - Contentful and DatoCMS forms now validate the credentials.
+  - Added logs (server side) in various places
+  - Bulk sync finished now triggers notification
+
+- 5d41af9: Added skeletons instead raw "Loading" texts. Also removed unnecessary warning message in bulk sync section
+
+### Patch Changes
+
+- Updated dependencies [70cb741]
+- Updated dependencies [e7c2d3a]
+- Updated dependencies [3c6cd4c]
+- Updated dependencies [6210447]
+  - @saleor/react-hook-form-macaw@0.2.1
+  - @saleor/apps-shared@1.7.4
+  - @saleor/apps-ui@1.1.4

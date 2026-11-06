@@ -1,0 +1,17 @@
+subscription PageCreated {
+  event {
+    __typename
+    ... on PageCreated {
+      version
+      __typename
+      page {
+        ...PageData
+      }
+    }
+    recipient {
+      webhooks {
+        id
+      }
+    }
+  }
+}

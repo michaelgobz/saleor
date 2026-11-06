@@ -1,0 +1,78 @@
+import { BaseError } from "@saleor/errors";
+import { z } from "zod";
+
+import { zodReadableError } from "@/lib/zod-readable-error";
+import { type SaleorTransactionToken } from "@/modules/saleor/saleor-transaction-token";
+
+import { type AtobaraiCustomer, AtobaraiCustomerSchema } from "../atobarai-customer";
+import {
+  type AtobaraiDeliveryDestination,
+  AtobaraiDeliveryDestinationSchema,
+} from "../atobarai-delivery-destination";
+import { type AtobaraiGoods, AtobaraiGoodsSchema } from "../atobarai-goods/atobarai-goods";
+import { type AtobaraiMoney } from "../atobarai-money";
+import { ATOBARAI_SETTLEMENT_TYPE } from "../atobarai-settelment-type";
+import { type AtobaraiShopOrderDate } from "../atobarai-shop-order-date";
+
+const schema = z
+  .object({
+    transactions: z.array(
+      z.object({
+        shop_transaction_id: z.string().max(40),
+        shop_order_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, {
+          message: "Date must be in YYYY-MM-DD format",
+        }),
+        settlement_type: z.literal(ATOBARAI_SETTLEMENT_TYPE),
+        billed_amount: z.number().positive(),
+        customer: AtobaraiCustomerSchema,
+        dest_customer: AtobaraiDeliveryDestinationSchema,
+        goods: AtobaraiGoodsSchema,
+      }),
+    ),
+  })
+  .brand("AtobaraiRegisterTransactionPayload");
+
+export const AtobaraiRegisterTransactionPayloadValidationError = BaseError.subclass(
+  "AtobaraiRegisterTransactionPayloadValidationError",
+  {
+    props: {
+      _brand: "AtobaraiRegisterTransactionPayloadValidationError" as const,
+    },
+  },
+);
+
+export const createAtobaraiRegisterTransactionPayload = (args: {
+  saleorTransactionToken: SaleorTransactionToken;
+  atobaraiMoney: AtobaraiMoney;
+  atobaraiCustomer: AtobaraiCustomer;
+  atobaraiDeliveryDestination: AtobaraiDeliveryDestination;
+  atobaraiGoods: AtobaraiGoods;
+  atobaraiShopOrderDate: AtobaraiShopOrderDate;
+}) => {
+  const parseResult = schema.safeParse({
+    transactions: [
+      {
+        shop_transaction_id: args.saleorTransactionToken,
+        shop_order_date: args.atobaraiShopOrderDate,
+        settlement_type: ATOBARAI_SETTLEMENT_TYPE,
+        billed_amount: args.atobaraiMoney.amount,
+        customer: args.atobaraiCustomer,
+        dest_customer: args.atobaraiDeliveryDestination,
+        goods: args.atobaraiGoods,
+      },
+    ],
+  });
+
+  if (!parseResult.success) {
+    const readableError = zodReadableError(parseResult.error);
+
+    throw new AtobaraiRegisterTransactionPayloadValidationError(
+      `Invalid register transaction payload: ${readableError.message}`,
+      { cause: readableError },
+    );
+  }
+
+  return parseResult.data;
+};
+
+export type AtobaraiRegisterTransactionPayload = z.infer<typeof schema>;

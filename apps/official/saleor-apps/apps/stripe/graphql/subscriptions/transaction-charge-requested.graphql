@@ -1,0 +1,31 @@
+fragment TransactionChargeRequestedEvent on TransactionChargeRequested {
+  ...EventMetadata
+  idempotencyKey
+  action {
+    amount
+  }
+  transaction {
+    id
+    pspReference
+    checkout {
+      id
+      channel {
+        ...Channel
+      }
+    }
+    order {
+      id
+      number
+      checkoutId
+      channel {
+        ...Channel
+      }
+    }
+  }
+}
+
+subscription TransactionChargeRequested {
+  event {
+    ...TransactionChargeRequestedEvent
+  }
+}

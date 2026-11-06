@@ -1,0 +1,34 @@
+fragment FulfillmentTrackingNumberUpdatedEvent on FulfillmentTrackingNumberUpdated {
+  ...EventMetadata
+  fulfillment {
+    trackingNumber
+    atobaraiPDCompanyCode: privateMetafield(key: "np-atobarai.pd-company-code")
+  }
+  order {
+    id
+    channel {
+      ...Channel
+    }
+    transactions {
+      pspReference
+      events {
+        type
+      }
+      createdBy {
+        ... on App {
+          __typename
+          id
+        }
+        ... on User {
+          __typename
+        }
+      }
+    }
+  }
+}
+
+subscription FulfillmentTrackingNumberUpdated {
+  event {
+    ...FulfillmentTrackingNumberUpdatedEvent
+  }
+}

@@ -1,0 +1,320 @@
+import { type SaleorApiUrl } from "@saleor/apps-domain/saleor-api-url";
+import { err, fromThrowable, ok, type Result } from "neverthrow";
+import { type Client } from "urql";
+
+import { InvalidEventValidationError } from "@/app/api/webhooks/saleor/use-case-errors";
+import { type FulfillmentTrackingNumberUpdatedEventFragment } from "@/generated/graphql";
+import { createLogger } from "@/lib/logger";
+import { type AppConfigRepo } from "@/modules/app-config/repo/app-config-repo";
+import { createAtobaraiFulfillmentReportPayload } from "@/modules/atobarai/api/atobarai-fulfillment-report-payload";
+import { type IAtobaraiApiClientFactory } from "@/modules/atobarai/api/types";
+import {
+  type AtobaraiShippingCompanyCode,
+  AtobaraiShippingCompanyCodeValidationError,
+  createAtobaraiShippingCompanyCode,
+} from "@/modules/atobarai/atobarai-shipping-company-code";
+import { createAtobaraiTransactionId } from "@/modules/atobarai/atobarai-transaction-id";
+import { type IOrderNoteService } from "@/modules/saleor/order-note-service";
+import { TransactionRecord } from "@/modules/transactions-recording/transaction-record";
+import { type TransactionRecordRepo } from "@/modules/transactions-recording/types";
+
+import { BaseUseCase } from "../base-use-case";
+import { type AppIsNotConfiguredResponse, BrokenAppResponse } from "../saleor-webhook-responses";
+import { FulfillmentTrackingNumberUpdatedUseCaseResponse } from "./use-case-response";
+
+export type TransactionValidationCause =
+  | "NO_COMPLETED_TRANSACTIONS"
+  | "MULTIPLE_COMPLETED_TRANSACTIONS";
+
+type UseCaseExecuteResult = Promise<
+  Result<
+    FulfillmentTrackingNumberUpdatedUseCaseResponse,
+    AppIsNotConfiguredResponse | BrokenAppResponse
+  >
+>;
+
+export type SaleorOrderNoteServiceFactory = (graphqlClient: Client) => IOrderNoteService;
+
+export class FulfillmentTrackingNumberUpdatedUseCase extends BaseUseCase {
+  protected logger = createLogger("FulfillmentTrackingNumberUpdatedUseCase");
+  protected appConfigRepo: Pick<AppConfigRepo, "getChannelConfig">;
+  private atobaraiApiClientFactory: IAtobaraiApiClientFactory;
+  private transactionRecordRepo: TransactionRecordRepo;
+  private orderNoteServiceFactory: SaleorOrderNoteServiceFactory;
+
+  constructor(deps: {
+    appConfigRepo: Pick<AppConfigRepo, "getChannelConfig">;
+    atobaraiApiClientFactory: IAtobaraiApiClientFactory;
+    transactionRecordRepo: TransactionRecordRepo;
+    orderNoteServiceFactory: SaleorOrderNoteServiceFactory;
+  }) {
+    super();
+    this.appConfigRepo = deps.appConfigRepo;
+    this.atobaraiApiClientFactory = deps.atobaraiApiClientFactory;
+    this.transactionRecordRepo = deps.transactionRecordRepo;
+    this.orderNoteServiceFactory = deps.orderNoteServiceFactory;
+  }
+
+  private parseEvent({
+    event,
+    appId,
+  }: {
+    event: FulfillmentTrackingNumberUpdatedEventFragment;
+    appId: string;
+  }) {
+    if (!event.fulfillment?.trackingNumber) {
+      this.logger.warn("Fulfillment tracking number is missing", {
+        event: {
+          orderId: event.order?.id,
+        },
+      });
+
+      return err(new InvalidEventValidationError("Fulfillment tracking number is missing"));
+    }
+
+    if (!event.order?.transactions?.length) {
+      this.logger.warn("Order transactions are missing", {
+        event: {
+          orderId: event.order?.id,
+        },
+      });
+
+      return err(new InvalidEventValidationError("Order transactions are missing"));
+    }
+
+    const completedTransactions = event.order.transactions.filter((t) =>
+      t.events.some((e) => e.type === "CHARGE_SUCCESS" || e.type === "AUTHORIZATION_SUCCESS"),
+    );
+
+    if (completedTransactions.length === 0) {
+      this.logger.warn("No completed transactions found for the order", {
+        event: { orderId: event.order.id },
+      });
+
+      return err(
+        new InvalidEventValidationError("No completed transactions found for the order", {
+          props: {
+            validationCause: "NO_COMPLETED_TRANSACTIONS" as TransactionValidationCause,
+          },
+        }),
+      );
+    }
+
+    const ownedCompletedTransactions = completedTransactions.filter(
+      (t) => t.createdBy?.__typename === "App" && t.createdBy.id === appId,
+    );
+
+    if (ownedCompletedTransactions.length === 0) {
+      this.logger.info("No completed transactions owned by this app. Skipping.", {
+        event: { orderId: event.order.id },
+      });
+
+      return err(new InvalidEventValidationError("Transaction was not created by the app"));
+    }
+
+    if (completedTransactions.length > 1) {
+      // App supports only single transaction per order / checkout. This is a limitation of how we send goods to Atobarai.
+      this.logger.warn("Multiple completed transactions found for the order", {
+        event: { orderId: event.order.id },
+      });
+
+      return err(
+        new InvalidEventValidationError("Multiple completed transactions found for the order", {
+          props: {
+            validationCause: "MULTIPLE_COMPLETED_TRANSACTIONS" as TransactionValidationCause,
+          },
+        }),
+      );
+    }
+
+    const transaction = ownedCompletedTransactions[0];
+
+    return ok({
+      orderId: event.order.id,
+      channelId: event.order.channel.id,
+      pspReference: transaction.pspReference,
+      trackingNumber: event.fulfillment.trackingNumber,
+    });
+  }
+
+  private resolveAtobaraiPDCompanyCodeFromMetadata(
+    event: FulfillmentTrackingNumberUpdatedEventFragment,
+  ): Result<
+    AtobaraiShippingCompanyCode | null,
+    InstanceType<typeof AtobaraiShippingCompanyCodeValidationError>
+  > {
+    if (event.fulfillment?.atobaraiPDCompanyCode) {
+      this.logger.info("Using Atobarai PD company code from private metadata", {
+        atobaraiPDCompanyCode: event.fulfillment.atobaraiPDCompanyCode,
+      });
+
+      return fromThrowable(
+        createAtobaraiShippingCompanyCode,
+        AtobaraiShippingCompanyCodeValidationError.normalize,
+      )(event.fulfillment.atobaraiPDCompanyCode);
+    }
+
+    return ok(null);
+  }
+
+  async execute(params: {
+    appId: string;
+    saleorApiUrl: SaleorApiUrl;
+    event: FulfillmentTrackingNumberUpdatedEventFragment;
+    graphqlClient: Client;
+  }): UseCaseExecuteResult {
+    const { appId, saleorApiUrl, event, graphqlClient } = params;
+
+    const parsingResult = this.parseEvent({ event, appId });
+
+    if (parsingResult.isErr()) {
+      const validationCause = (
+        parsingResult.error as { validationCause?: TransactionValidationCause }
+      ).validationCause;
+
+      if (event.order?.id && validationCause) {
+        await this.addOrderNote({
+          orderId: event.order.id,
+          graphqlClient,
+          message: `NP Atobarai skipped fulfillment reporting: ${parsingResult.error.message}`,
+        });
+      }
+
+      return ok(
+        new FulfillmentTrackingNumberUpdatedUseCaseResponse.Failure(
+          new InvalidEventValidationError("Failed to parse Saleor event", {
+            cause: parsingResult.error,
+            props: {
+              publicMessage: parsingResult.error.message,
+            },
+          }),
+        ),
+      );
+    }
+
+    const { orderId, channelId, pspReference, trackingNumber } = parsingResult.value;
+
+    const atobaraiConfigResult = await this.getAtobaraiConfigForChannel({
+      channelId,
+      appId,
+      saleorApiUrl,
+    });
+
+    if (atobaraiConfigResult.isErr()) {
+      return err(atobaraiConfigResult.error);
+    }
+
+    const apiClient = this.atobaraiApiClientFactory.create({
+      atobaraiTerminalId: atobaraiConfigResult.value.terminalId,
+      atobaraiMerchantCode: atobaraiConfigResult.value.merchantCode,
+      atobaraiSecretSpCode: atobaraiConfigResult.value.secretSpCode,
+      atobaraiEnvironment: atobaraiConfigResult.value.useSandbox ? "sandbox" : "production",
+    });
+
+    const metadataShippingCompanyCodeResult = this.resolveAtobaraiPDCompanyCodeFromMetadata(event);
+
+    if (metadataShippingCompanyCodeResult.isErr()) {
+      return ok(
+        new FulfillmentTrackingNumberUpdatedUseCaseResponse.Failure(
+          new InvalidEventValidationError(metadataShippingCompanyCodeResult.error.message, {
+            cause: metadataShippingCompanyCodeResult.error,
+            props: {
+              publicMessage: metadataShippingCompanyCodeResult.error.message,
+            },
+          }),
+        ),
+      );
+    }
+
+    const reportFulfillmentResult = await apiClient.reportFulfillment(
+      createAtobaraiFulfillmentReportPayload({
+        trackingNumber,
+        atobaraiTransactionId: createAtobaraiTransactionId(pspReference),
+        shippingCompanyCode:
+          metadataShippingCompanyCodeResult.value || atobaraiConfigResult.value.shippingCompanyCode,
+      }),
+      {
+        rejectMultipleResults: true,
+      },
+    );
+
+    if (reportFulfillmentResult.isErr()) {
+      this.logger.warn("Failed to report fulfillment", {
+        error: reportFulfillmentResult.error,
+        orderId,
+        trackingNumber,
+      });
+
+      await this.addOrderNote({
+        orderId,
+        graphqlClient,
+        message: `Failed to report fulfillment for tracking number ${trackingNumber}`,
+      });
+
+      return ok(
+        new FulfillmentTrackingNumberUpdatedUseCaseResponse.Failure(reportFulfillmentResult.error),
+      );
+    }
+
+    await this.addOrderNote({
+      orderId,
+      graphqlClient,
+      message: `Successfully reported fulfillment for tracking number ${trackingNumber}`,
+    });
+
+    const fulfillmentResult = reportFulfillmentResult.value;
+
+    const atobaraiTransactionId = createAtobaraiTransactionId(
+      fulfillmentResult.results[0].np_transaction_id,
+    );
+
+    const appTransaction = new TransactionRecord({
+      atobaraiTransactionId,
+      saleorTrackingNumber: trackingNumber,
+      fulfillmentMetadataShippingCompanyCode: metadataShippingCompanyCodeResult.value,
+    });
+
+    const updateTransactionResult = await this.transactionRecordRepo.updateTransaction(
+      {
+        saleorApiUrl,
+        appId,
+      },
+      appTransaction,
+    );
+
+    if (updateTransactionResult.isErr()) {
+      this.logger.error("Failed to update transaction in app transaction repo", {
+        error: updateTransactionResult.error,
+      });
+
+      return err(new BrokenAppResponse(updateTransactionResult.error));
+    }
+
+    return ok(new FulfillmentTrackingNumberUpdatedUseCaseResponse.Success());
+  }
+
+  private async addOrderNote({
+    orderId,
+    message,
+    graphqlClient,
+  }: {
+    orderId: string;
+    message: string;
+    graphqlClient: Client;
+  }): Promise<void> {
+    const orderNoteService = this.orderNoteServiceFactory(graphqlClient);
+
+    const result = await orderNoteService.addOrderNote({
+      orderId,
+      message,
+    });
+
+    if (result.isErr()) {
+      this.logger.warn("Failed to add order note", {
+        orderId,
+        noteMessage: message,
+        error: result.error,
+      });
+    }
+  }
+}
